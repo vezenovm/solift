@@ -1,0 +1,66 @@
+import subprocess
+
+import pytest
+
+from z3sol.workspace import Guard, Project, Workspace, WorkspaceError
+
+
+def git_project(path):
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    (path / "src").mkdir()
+    (path / "src" / "A.sol").write_text("contract A {}\n")
+    (path / "foundry.toml").write_text("[profile.default]\n")
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    return path
+
+
+def test_a_workspace_deletes_only_inside_itself(tmp_path):
+    workspace = Workspace(tmp_path / "work")
+    (workspace.fresh("out") / "file").write_text("x")
+    assert not any(workspace.fresh("out").iterdir())
+    with pytest.raises(WorkspaceError, match="outside the workspace"):
+        workspace.fresh("../elsewhere")
+
+
+def test_a_directory_with_other_files_is_not_taken_as_a_workspace(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "notes.txt").write_text("keep")
+    with pytest.raises(WorkspaceError, match="is not a z3sol workspace"):
+        Workspace(tmp_path / "data")
+
+
+def test_the_overlay_links_and_copies_and_replaces_only_copies(tmp_path):
+    project = Project(git_project(tmp_path / "project"), link=("foundry.toml",), copy=("src",), generated="test/gen")
+    workspace = Workspace(tmp_path / "work")
+    root = project.overlay(workspace, replace={"src/A.sol": "contract B {}\n"})
+    assert (root / "foundry.toml").is_symlink()
+    assert (root / "src" / "A.sol").read_text() == "contract B {}\n"
+    assert (project.root / "src" / "A.sol").read_text() == "contract A {}\n"
+    assert (root / "test" / "gen").is_dir()
+    with pytest.raises(WorkspaceError, match="not under a copied path"):
+        project.overlay(workspace, replace={"foundry.toml": ""})
+
+
+def test_the_guard_finds_a_file_that_changed_in_the_project_and_ignores_the_workspace(tmp_path):
+    root = git_project(tmp_path / "project")
+    workspace = Workspace(root / "build" / "work")
+    guard = Project(root).guard(workspace)
+    (workspace.fresh("out") / "artifact.json").write_text("{}")
+    assert guard.changes() == []
+    (root / "src" / "A.sol").write_text("contract A { }\n")
+    (root / "cache.json").write_text("{}")
+    changes = guard.changes()
+    assert f"the git status of {root} changed during the run" in changes
+    assert f"{root}/src/A.sol changed during the run" in changes
+    assert f"{root}/cache.json changed during the run" in changes
+
+
+def test_the_guard_finds_an_ignored_build_output(tmp_path):
+    root = git_project(tmp_path / "project")
+    (root / ".gitignore").write_text("out/\n")
+    workspace = Workspace(tmp_path / "work")
+    guard = Guard(root, workspace.path / "stamp")
+    (root / "out").mkdir()
+    (root / "out" / "A.json").write_text("{}")
+    assert f"{root}/out/A.json changed during the run" in guard.changes()
