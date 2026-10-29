@@ -1,0 +1,19 @@
+# The default profile builds the extractor's test contracts in tests/fixtures. z3sol runs forge with FOUNDRY_OUT and
+# FOUNDRY_CACHE_PATH set, so `out` and `cache_path` here are only for a manual `forge build`.
+[profile.default]
+src = "tests/fixtures/contracts"
+test = "tests/fixtures/test"
+script = "tests/fixtures/script"
+out = "build/forge/out"
+cache_path = "build/forge/cache"
+libs = ["lib"]
+solc = "0.8.30"
+auto_detect_solc = false
+evm_version = "osaka"
+optimizer = true
+optimizer_runs = 1
+bytecode_hash = "none"
+remappings = [
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+  "forge-std/=lib/forge-std/src/",
+]

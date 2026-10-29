@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.27;
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+// One function for each construct that the extractor refuses.
+contract OutOfScope {
+  uint256 internal $total;
+
+  function loop(uint256 _n) internal pure returns (uint256) {
+    uint256 sum = 0;
+    for (uint256 k = 0; k < _n; k++) {
+      sum += k;
+    }
+    return sum;
+  }
+
+  function storageWrite(uint256 _x) internal returns (uint256) {
+    $total = _x;
+    return _x;
+  }
+
+  function uncheckedBlock(uint256 _a) internal pure returns (uint256) {
+    unchecked {
+      return _a + 1;
+    }
+  }
+
+  function signedParameter(int256 _a) internal pure returns (uint256) {
+    return _a > 0 ? 1 : 0;
+  }
+
+  function cast(uint256 _a) internal pure returns (uint256) {
+    return uint128(_a);
+  }
+
+  function tupleReturn(uint256 _a) internal pure returns (uint256, uint256) {
+    return (_a, _a);
+  }
+
+  function tupleDeclaration(uint256 _a) internal pure returns (uint256) {
+    (uint256 x, uint256 y) = tupleReturn(_a);
+    return x + y;
+  }
+
+  function exponentiation(uint256 _a) internal pure returns (uint256) {
+    return _a ** 2;
+  }
+
+  function assembly_(uint256 _a) internal pure returns (uint256) {
+    uint256 r = _a;
+    assembly {
+      r := add(r, 1)
+    }
+    return r;
+  }
+
+  function unmappedRead() internal view returns (uint256) {
+    return block.timestamp;
+  }
+
+  function modulo(uint256 _a) internal pure returns (uint256) {
+    return _a % 3;
+  }
+
+  function narrowArithmetic(uint128 _a) internal pure returns (uint256) {
+    return _a + _a;
+  }
+
+  function mathMax(uint256 _a, uint256 _b) internal pure returns (uint256) {
+    return Math.max(_a, _b);
+  }
+
+  function recursion(uint256 _a) internal pure returns (uint256) {
+    if (_a == 0) {
+      return 0;
+    }
+    return recursion(_a - 1);
+  }
+
+  function assignment(uint256 _a) internal pure returns (uint256) {
+    uint256 x = _a;
+    x = x + 1;
+    return x;
+  }
+
+  function requireCall(uint256 _a) internal pure returns (uint256) {
+    require(_a > 0, "zero");
+    return _a;
+  }
+
+  function namedReturn(uint256 _a) internal pure returns (uint256 r) {
+    r = _a;
+  }
+
+  function readsTotal() internal view returns (uint256) {
+    return $total;
+  }
+}

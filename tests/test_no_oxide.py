@@ -9,7 +9,8 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKIPPED_DIRS = {".git", ".venv", "build"}
+# lib holds the Solidity dependencies as git submodules.
+SKIPPED_DIRS = {".git", ".venv", "build", "lib"}
 OWN_PACKAGES = {"z3sol", "tests", "acceptance", "examples"}
 # Import names of the pinned dependencies that the code imports.
 DEPENDENCY_IMPORTS = {"z3", "pytest"}
