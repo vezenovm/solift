@@ -21,12 +21,14 @@ TRUE = z3.BoolVal(True)
 
 @dataclass
 class Terms:
-    """`locals` holds each local of the modeled function, where it is declared."""
+    """`locals` holds each local of the modeled function, where it is declared. `comparisons` holds the two operand
+    values of each comparison and each min, for the boundary vectors."""
 
     value: z3.ExprRef
     reverts: z3.BoolRef
     outside: z3.BoolRef
     locals: dict[str, z3.ExprRef]
+    comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = field(default_factory=list)
 
 
 def symbols(model: Model) -> dict[str, z3.ExprRef]:
@@ -43,7 +45,7 @@ def domain(model: Model, inputs: dict[str, z3.ExprRef]) -> z3.BoolRef:
 def terms(model: Model, inputs: dict[str, z3.ExprRef]) -> Terms:
     run = _Run(model, inputs)
     value, reverts, outside = run.call(model.function, {}, top=True)
-    return Terms(value, reverts, outside, run.locals)
+    return Terms(value, reverts, outside, run.locals, run.comparisons)
 
 
 def _or(a, b):
@@ -70,6 +72,7 @@ class _Run:
         self.inputs = inputs
         self.functions = {f.name: f for f in model.callees}
         self.locals: dict[str, z3.ExprRef] = {}
+        self.comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = []
         self.stack: list[str] = []
 
     def call(self, function: Function, env: dict, top: bool = False):
@@ -139,6 +142,8 @@ class _Run:
         parts = [self.expr(arg, env) for arg in e.args]
         values = [p[0] for p in parts]
         operator = TABLE[e.op]
+        if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
+            self.comparisons.append((values[0], values[1]))
         reverts = [p[1] for p in parts] + ([operator.reverts(*values)] if operator.reverts else [])
         outside = [p[2] for p in parts] + ([operator.outside(*values)] if operator.outside else [])
         return operator.value(*values), _any(reverts), _any(outside)
