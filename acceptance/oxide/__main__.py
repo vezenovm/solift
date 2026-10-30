@@ -4,8 +4,9 @@
 
 1. One run of every spec (specs.py): the models of DepositSubsidy._quoteSubsidy, DepositSubsidy.quoteSubsidy,
    DepositSubsidy._pricedGas and PlainWithdrawalSubsidy.quoteSubsidy, with the theorems of prove.py on them, and of
-   Caps.getCurrentAvailable, with its own theorems; their vectors; and their Halmos links against the bytecode built
-   from Oxide's sources, with Oxide's harness or, for Caps, the harness in harness/.
+   Caps.getCurrentAvailable, MigrationSubsidy._pricedGas and MigrationSubsidy._quoteSubsidy, with their own theorems;
+   their vectors; and their Halmos links against the bytecode built from Oxide's sources, with Oxide's harness or, for
+   the contracts that Oxide does not prove, the harnesses in harness/.
 2. z3 proves each model of a function of formulas/subsidies.py equal to Oxide's formula of it.
 3. Each mutant fails on the theorem it breaks.
 

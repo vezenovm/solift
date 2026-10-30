@@ -14,6 +14,7 @@ PROJECT = Project(
     copy=("src", "proofs/subsidies/src/SubsidyHarnesses.sol", "proofs/subsidies/test/SubsidySetup.sol"),
     add={
         "proofs/subsidies/test/CapsSetup.sol": HARNESS / "CapsSetup.sol",
+        "proofs/subsidies/test/MigrationSubsidySetup.sol": HARNESS / "MigrationSubsidySetup.sol",
     },
     generated="proofs/subsidies/test/z3sol",
 )

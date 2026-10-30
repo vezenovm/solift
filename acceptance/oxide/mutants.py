@@ -1,12 +1,14 @@
-"""Mutants of the subsidy functions and of Caps. Each changes one expression of one function, and a theorem must reject
-it: the run of the mutant fails on that theorem, and the theorems in `holds` still prove. The model follows the
-contract, so the link of a mutant still passes. The mutants marked `link` show that with a Halmos run."""
+"""Mutants of the subsidy functions, of Caps and of MigrationSubsidy. Each changes one expression of one function, and a
+theorem must reject it: the run of the mutant fails on that theorem, and the theorems in `holds` still prove. The
+model follows the contract, so the link of a mutant still passes. The mutants marked `link` show that with a Halmos
+run."""
 
 from dataclasses import dataclass
 
 DEPOSIT = "src/periphery/DepositSubsidy.sol"
 WITHDRAWAL = "src/periphery/PlainWithdrawalSubsidy.sol"
 CAPS = "src/core/Caps.sol"
+MIGRATION = "src/periphery/migration/MigrationSubsidy.sol"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ GAS_PRICE = "Math.min(tx.gasprice, block.basefee + OxideConstants.MAX_PRIORITY_F
 PRICED_GAS = {"spec": "deposit-priced-gas", "function": "_pricedGas"}
 WITHDRAWAL_QUOTE = {"spec": "withdrawal-quote", "path": WITHDRAWAL, "function": "quoteSubsidy"}
 AVAILABLE = {"spec": "caps-available", "path": CAPS, "function": "getCurrentAvailable"}
+MIGRATION_PRICED_GAS = {"spec": "migration-priced-gas", "path": MIGRATION, "function": "_pricedGas"}
+MIGRATION_QUOTE = {"spec": "migration-quote", "path": MIGRATION, "function": "_quoteSubsidy"}
 
 MUTANTS = [
     Mutant(
@@ -123,6 +127,41 @@ MUTANTS = [
         holds=("available-at-most-the-global-limit",),
         link=True,
         **AVAILABLE,
+    ),
+    Mutant(
+        "migration-refund-cap-a-sixth",
+        "Math.min(refund, gross / 5)",
+        "Math.min(refund, gross / 6)",
+        breaks="migration-priced-gas-at-most-gas-used",
+        holds=("migration-priced-gas-at-most-the-largest-ceiling", "migration-priced-gas-does-not-revert"),
+        **MIGRATION_PRICED_GAS,
+    ),
+    Mutant(
+        "migration-fresh-balance-twice-in-the-ceiling",
+        "ceiling += FRESH_BALANCE_GAS",
+        "ceiling += 2 * FRESH_BALANCE_GAS",
+        breaks="migration-priced-gas-at-most-the-largest-ceiling",
+        holds=("migration-priced-gas-at-most-gas-used",),
+        **MIGRATION_PRICED_GAS,
+    ),
+    Mutant(
+        "migration-profit-twice",
+        "Math.min(gasCost + cfg.targetRelayerProfit, cfg.maxSubsidyPerOperation)",
+        "Math.min(gasCost + cfg.targetRelayerProfit + cfg.targetRelayerProfit, cfg.maxSubsidyPerOperation)",
+        breaks="migration-pays-at-most-gas-and-profit",
+        holds=("migration-quote-does-not-revert",),
+        link=True,
+        **MIGRATION_QUOTE,
+    ),
+    Mutant(
+        "migration-gas-price-not-capped-by-tx-gasprice",
+        GAS_PRICE,
+        "block.basefee + OxideConstants.MAX_PRIORITY_FEE_WEI",
+        breaks="migration-pays-at-most-gas-and-profit",
+        holds=("migration-quote-does-not-revert",),
+        spec="migration-quote",
+        path=MIGRATION,
+        function="_cappedGasPrice",
     ),
 ]
 
