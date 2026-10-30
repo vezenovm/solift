@@ -5,7 +5,7 @@ import pytest
 import z3
 
 from tests.test_smt import evaluate
-from z3sol import forge
+from z3sol import forge, ops
 from z3sol.extract import ExtractionError, extract
 from z3sol.ir import uint
 from z3sol.smt import symbols, terms
@@ -286,3 +286,15 @@ def test_an_address_constant_keeps_its_conversion_unless_it_is_an_address_litera
     assert "  address internal constant NOBODY = address(0);\n" in text
     priced = source(extract(build, f"{PRICER}._priced", PRICED_READS).model)
     assert "  address internal constant OTHER = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;\n" in priced
+
+
+def test_a_conditional_takes_the_type_that_holds_both_branches(build):
+    model = extract(build, f"{PRICER}._wide", {}).model
+    assert evaluate(model, {"_flag": True, "_x": 3}) == (False, 4, False)
+    assert evaluate(model, {"_flag": False, "_x": 3}) == (False, 2**255 + 1, False)
+
+
+def test_an_operation_whose_type_differs_from_solc_s_is_refused(build, monkeypatch):
+    monkeypatch.setattr(ops, "literal_type", lambda value: uint(8))
+    with pytest.raises(ExtractionError, match="ite has the type uint8 here and uint256 in solc"):
+        extract(build, f"{PRICER}._wide", {})

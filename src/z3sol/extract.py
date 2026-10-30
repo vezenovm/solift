@@ -459,10 +459,15 @@ class _Extractor:
         return self._op(node, op, *(self._expr(operand, scope) for operand in operands))
 
     def _op(self, node, op: str, *args: Expr) -> Expr:
+        """The operation, with the type that ops.make gives it, which must be the type that solc gives it."""
         try:
-            return dataclasses.replace(ops.make(op, *args), src=self.src(node))
+            made = dataclasses.replace(ops.make(op, *args), src=self.src(node))
         except TypeError as err:
             self.fail(node, str(err))
+        solc = self._type(node)
+        if solc.kind != "literal" and solc != made.type:
+            self.fail(node, f"{op} has the type {made.type.solidity} here and {solc.solidity} in solc")
+        return made
 
     def _signed(self, node) -> None:
         type_string = node.get("typeDescriptions", {}).get("typeString") or ""

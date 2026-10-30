@@ -180,10 +180,11 @@ def make(op: str, *args: Expr, src: Src | None = None) -> Op:
         if _same_kind(types[1], types[2]):
             result = types[1]
         else:
+            # A conditional takes the type that holds both branches, a literal by its value: solc types
+            # `flag ? x : 2**255` as uint256 for a uint8 x.
             _numbers(op, types[1:], where)
-            result = common_type(types[1], types[2])
-            if result is None:
-                result = literal_type(max(arg.value for arg in args[1:]))
+            widths = [literal_type(arg.value) if arg.type.kind == "literal" else arg.type for arg in args[1:]]
+            result = widths[0] if widths[0].bits >= widths[1].bits else widths[1]
     return Op(op, tuple(args), result, src)
 
 
