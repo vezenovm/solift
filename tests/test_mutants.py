@@ -61,3 +61,13 @@ def test_a_mutant_counts_as_rejected_only_when_its_one_expected_failure_is_the_o
     assert problems(Mutant("m", "a", "b", breaks="t-broken", link=True), mutant_record([broken], [expected])) == [
         "link: not run"
     ]
+
+
+def test_only_the_expected_counterexample_of_the_broken_theorem_is_exempt():
+    mutant = Mutant("m", "a", "b", breaks="t-broken")
+    unsure = {"id": "t-broken", "verdict": "COUNTEREXAMPLE", "witness": "UNKNOWN", "ok": False, "detail": ""}
+    failure = "deposit-quote: theorem t-broken: COUNTEREXAMPLE, witness UNKNOWN, expected PROVED"
+    assert problems(mutant, mutant_record([unsure], [failure])) == [failure]
+    no_values = {**unsure, "witness": "WITNESS", "detail": "the solver gave no value for x."}
+    expected = "deposit-quote: theorem t-broken: COUNTEREXAMPLE, expected PROVED"
+    assert problems(mutant, mutant_record([no_values], [expected])) == ["t-broken: the solver gave no value for x."]

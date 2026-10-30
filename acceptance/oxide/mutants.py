@@ -119,15 +119,18 @@ def apply(source: str, mutant: Mutant) -> str:
 
 
 def problems(mutant: Mutant, record: dict) -> list[str]:
-    """Why the run of a mutant does not show that its theorem rejects it. The run must fail on `breaks` with a
-    counterexample and on nothing else: each theorem in `holds` proves with a witness, and every other check passes."""
+    """Why the run of a mutant does not show that its theorem rejects it. The run must fail on `breaks` with a complete
+    counterexample and a witness, and on nothing else: each theorem in `holds` proves with a witness, and every other
+    check passes."""
     (spec,) = record["specs"]
     theorems = {t["id"]: t for t in spec.get("theorems", [])}
-    expected = f"{spec['spec']}: theorem {mutant.breaks}: "
-    found = [f for f in record["failures"] if not f.startswith(expected)]
-    verdict = theorems.get(mutant.breaks, {}).get("verdict")
-    if verdict != "COUNTEREXAMPLE":
-        found.append(f"{mutant.breaks} is {verdict}, not COUNTEREXAMPLE")
+    expected = f"{spec['spec']}: theorem {mutant.breaks}: COUNTEREXAMPLE, expected PROVED"
+    found = [f for f in record["failures"] if f != expected]
+    broken = theorems.get(mutant.breaks, {})
+    if broken.get("verdict") != "COUNTEREXAMPLE":
+        found.append(f"{mutant.breaks} is {broken.get('verdict')}, not COUNTEREXAMPLE")
+    elif broken.get("detail"):
+        found.append(f"{mutant.breaks}: {broken['detail']}")
     for held in mutant.holds:
         if not theorems.get(held, {}).get("ok"):
             found.append(f"{held} is not ok")
