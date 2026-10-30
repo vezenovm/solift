@@ -36,7 +36,9 @@ def test_the_quoter_theorems_give_their_results_on_the_hand_built_model(q):
         "capped-without-a-margin": ("PROVED", "WITNESS"),
     }
     assert all(r.ok for r in found.values())
-    assert set(found["quote-at-most-gas"].counterexample) == {"margin"}
+    inputs = {"_gas", "_price", "margin", "cap", "floor", "pot", "txGasPrice", "baseFee"}
+    assert set(found["quote-at-most-gas"].counterexample) == inputs
+    assert set(found["quote-at-most-gas-plus-margin"].witness_values) == inputs
 
 
 def test_each_result_lists_what_its_theorem_assumed(q):
@@ -188,7 +190,8 @@ def test_a_counterexample_without_the_values_it_shows_fails(q, monkeypatch):
     assert prove(pays_nothing, q).ok
     monkeypatch.setattr(solvers, "check", lambda *args, **kwargs: solvers.Answer("sat", "cvc5", 0.0, {"_gas": 1}))
     result = prove(pays_nothing, q)
-    assert not result.ok and result.detail.startswith("the solver gave no value for pot")
+    assert not result.ok
+    assert result.detail.startswith("the solver gave no value for _price, margin, cap, floor, pot, txGasPrice, baseFee")
 
 
 def test_given_indexes_an_input_as_terms_do_even_when_it_is_named_like_an_attribute():
@@ -222,3 +225,86 @@ def test_a_free_variable_is_named_by_an_identifier(q):
     with pytest.raises(TheoremError, match="gas limit is not an identifier"):
         q.free("gas limit")
     assert str(q.free("gasLimit")) == "gasLimit"
+
+
+def test_a_free_variable_of_an_unsigned_kind_lies_in_its_range_and_keeps_its_kind(q):
+    @theorem(witness=lambda q: q.free("x") > 0)
+    def bounded(q):
+        """a uint8 is below 256"""
+        return q.free("x", "uint8") < 256
+
+    @theorem(witness=lambda q: q.free("x") > 0)
+    def unbounded(q):
+        """an integer is below 256"""
+        return q.free("x") < 256
+
+    assert prove(bounded, q).verdict == "PROVED"
+    assert prove(unbounded, q).verdict == "COUNTEREXAMPLE"
+    view = q.scoped()
+    view.free("y", "uint256")
+    assert view.free("y") is view.free("y", "uint256")
+    with pytest.raises(TheoremError, match="y is a free uint256, not a int"):
+        view.free("y", "int")
+    with pytest.raises(TheoremError, match="has the kind uint7"):
+        view.free("z", "uint7")
+    assert "y" not in q.scoped().free_variables
+
+
+def test_the_lemma_domain_is_established_by_inside_or_by_hypotheses_that_imply_it(q):
+    def small(q):
+        """the gas, the gas price and the price are small"""
+        return z3.And(q._gas < 2**64, q.txGasPrice < 2**64, q._price < 2**128)
+
+    @theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+    def capped(q):
+        """the quote is at most the cap"""
+        return q.result <= q.cap
+
+    @theorem(assume=("no-revert",), given=small, witness=lambda q: q.result > 0)
+    def capped_when_small(q):
+        """the quote is at most the cap"""
+        return q.result <= q.cap
+
+    @theorem(witness=lambda q: q._gas > 0)
+    def only_inputs(q):
+        """the gas is not negative"""
+        return q._gas >= 0
+
+    found = {t.id: prove(t, q) for t in (*SPEC.theorems, capped, capped_when_small, only_inputs)}
+    assert {i: r.lemma_domain for i, r in found.items()} == {
+        "quote-at-most-gas-plus-margin": "established",
+        "quote-at-most-gas": "established",
+        "capped": "not-established",
+        "capped-when-small": "established",
+        "only-inputs": "not-used",
+    }
+
+
+def test_a_theorem_on_a_callee_names_it_and_its_arguments_count_for_the_lemma_domain():
+    a, x = Var("a", input=True), Var("x")
+    halve = Function("halve", (x,), UINT256, (Return(ops.make("mulDiv", x, Const(1), Const(2))),))
+    q = Terms(Model("C", Function("f", (a,), UINT256, (Return(Call("halve", (a,), UINT256)),)), callees=(halve,)))
+
+    @theorem(witness=lambda q: q.free("y") > 0)
+    def halves(q):
+        """where it does not revert, halve(y) * 2 <= y"""
+        call = q.call("halve", q.free("y"))
+        return z3.Or(call.reverts, call.value * 2 <= q.free("y"))
+
+    @theorem(witness=lambda q: q.free("y") > 0)
+    def halves_a_uint128(q):
+        """halve(y) * 2 <= y for a uint128 y"""
+        call = q.call("halve", q.free("y", "uint128"))
+        return z3.Or(call.reverts, call.value * 2 <= q.free("y"))
+
+    @theorem(witness=lambda q: True)
+    def halves_minus_one(q):
+        """halve(-1) is below 1"""
+        return q.call("halve", -1).value < 1
+
+    found = {t.id: prove(t, q) for t in (halves, halves_a_uint128, halves_minus_one)}
+    assert {i: (r.lemma_domain, r.callees) for i, r in found.items()} == {
+        "halves": ("not-established", ["halve"]),
+        "halves-a-uint128": ("established", ["halve"]),
+        "halves-minus-one": ("not-established", ["halve"]),
+    }

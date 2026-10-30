@@ -31,8 +31,11 @@ def run_vectors(workspace, project, root, model, vectors, name):
 
 def test_the_vectors_reach_each_outcome_and_the_solidity_gives_the_z3_result_on_each(quoter):
     workspace, project, root, model = quoter
-    vectors = sample(model)
+    samples = sample(model)
+    vectors = samples.vectors
     assert {v.outcome for v in vectors} == {"pays", "zero", "reverts"}
+    assert samples.outcomes == {"pays": "reached", "zero": "reached", "reverts": "reached"}
+    assert samples.boundaries["reached"] > 0
     statuses = run_vectors(workspace, project, root, model, vectors, "right")
     assert len(statuses) == len(vectors)
     assert set(statuses.values()) == {"Success"}
@@ -41,19 +44,30 @@ def test_the_vectors_reach_each_outcome_and_the_solidity_gives_the_z3_result_on_
 def test_the_vectors_find_a_wrong_row_of_the_operator_table(quoter, monkeypatch):
     workspace, project, root, model = quoter
     monkeypatch.setitem(ops.TABLE, "sub", dataclasses.replace(ops.TABLE["sub"], value=lambda a, b: a - b + 1))
-    vectors = sample(model)
+    vectors = sample(model).vectors
     statuses = run_vectors(workspace, project, root, model, vectors, "wrong")
     assert "Failure" in set(statuses.values())
 
 
-def test_an_outcome_that_no_input_reaches_must_be_declared():
+def test_an_outcome_that_no_input_reaches_is_unreachable_and_an_impossible_one_that_an_input_reaches_fails():
+    """a / 4 + 1 is never zero and never reverts."""
     a = Var("a", input=True)
     model = Model("C", Function("f", (a,), UINT256, (Return(ops.make("add", ops.make("div", a, Const(4)), Const(1))),)))
-    with pytest.raises(VectorError, match="neither random inputs nor z3 reached zero"):
-        sample(model)
-    assert {v.outcome for v in sample(model, impossible=("zero", "reverts"))} == {"pays"}
+    samples = sample(model)
+    assert samples.outcomes == {"pays": "reached", "zero": "unreachable", "reverts": "unreachable"}
+    assert {v.outcome for v in samples.vectors} == {"pays"}
+    assert sample(model, impossible=("zero", "reverts")).outcomes == samples.outcomes
     with pytest.raises(VectorError, match="the spec calls pays impossible, but"):
         sample(model, impossible=("pays", "zero", "reverts"))
+
+
+def test_a_comparison_boundary_that_no_input_reaches_is_unreachable():
+    """return a <= type(uint256).max ? 1 : 0: no input is one above the maximum, so that boundary is unreachable."""
+    a = Var("a", input=True)
+    body = (Return(ops.make("ite", ops.make("le", a, Const(2**256 - 1)), Const(1), Const(0))),)
+    samples = sample(Model("C", Function("f", (a,), UINT256, body)))
+    assert samples.boundaries == {"reached": 2, "unreachable": 1}
+    assert samples.outcomes == {"pays": "reached", "zero": "unreachable", "reverts": "unreachable"}
 
 
 def test_z3_finds_an_input_for_an_outcome_that_no_random_input_reaches():
@@ -63,7 +77,7 @@ def test_z3_finds_an_input_for_an_outcome_that_no_random_input_reaches():
         If(ops.make("ne", a, Const(123456789)), (Return(Const(1)),)),
         Return(ops.make("add", a, Const(2**256 - 123456789))),
     )
-    vectors = sample(Model("C", Function("f", (a,), UINT256, body)), impossible=("zero",))
+    vectors = sample(Model("C", Function("f", (a,), UINT256, body)), impossible=("zero",)).vectors
     assert [v.values["a"] for v in vectors if v.reverts] == [123456789]
 
 
@@ -90,7 +104,7 @@ def test_the_vectors_compare_an_address_or_an_enum_result(quoter):
     for model in models:
         stem = names(model)[0].removesuffix("Model")
         (root / project.generated / f"{stem}.sol").write_text(source(model))
-        vectors = sample(model, impossible=("reverts",))
+        vectors = sample(model, impossible=("reverts",)).vectors
         (root / project.generated / f"{stem}Vectors.t.sol").write_text(vectors_source(model, vectors))
         contracts.append(f"{stem}Vectors")
     statuses = forge.test(root, workspace.fresh("typed-out"), workspace.fresh("typed-cache"), tuple(contracts))

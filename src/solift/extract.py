@@ -57,6 +57,7 @@ from solift.ir import (
     Assign,
     Call,
     Const,
+    Effect,
     Expr,
     Function,
     If,
@@ -172,7 +173,7 @@ class _Extractor:
         # callees being extracted; and the expression that is the whole value of the statement being extracted.
         self.written: set[int] = set()
         self.written_copies: set[int] = set()
-        self.effects: list[str] = []
+        self.effects: list[Effect] = []
         self.callee_reads: dict[int, set] = {}
         self.callee_writes: dict[int, set] = {}
         self.reading: list[set] = []
@@ -383,7 +384,7 @@ class _Extractor:
             elif kind == "EmitStatement":
                 for arg in node["eventCall"]["arguments"]:
                     self._cannot_revert(arg, scope)
-                self._effect(node)
+                self._effect(node, "event", self._event(node["eventCall"]))
             else:
                 self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
         return tuple(out)
@@ -473,7 +474,7 @@ class _Extractor:
         root = _root(lhs)
         target = self.nodes.get(root.get("referencedDeclaration")) if root else None
         if target is not None and target.get("stateVariable"):
-            self._write(expression, scope)
+            self._write(expression, scope, "write")
             self.written.add(target["id"])
             for writes in self.writing:
                 writes.add(target["id"])
@@ -482,7 +483,7 @@ class _Extractor:
         if isinstance(local, tuple):
             if local[0] != "copy" or root is lhs:
                 self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy")
-            self._write(expression, scope)
+            self._write(expression, scope, "copy")
             self.written_copies.add(root["referencedDeclaration"])
             return None
         var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
@@ -500,15 +501,23 @@ class _Extractor:
         self._assignable(rhs, value.type, var.type)
         return Assign(var, value, self.src(expression))
 
-    def _write(self, expression, scope: dict) -> None:
+    def _write(self, expression, scope: dict, kind: str) -> None:
         if expression["operator"] != "=":
             self.fail(expression, f"a write with {expression['operator']}: its value can revert")
         self._cannot_revert(expression["leftHandSide"], scope)
         self._cannot_revert(expression["rightHandSide"], scope)
-        self._effect(expression)
+        self._effect(expression, kind, _normal(self.text(expression["leftHandSide"])))
 
-    def _effect(self, node) -> None:
-        self.effects.append(f"{self.src(node)}: {' '.join(self.text(node).split())}")
+    def _effect(self, node, kind: str, place: str) -> None:
+        self.effects.append(Effect(kind, place, " ".join(self.text(node).split()), self.src(node)))
+
+    def _event(self, call) -> str:
+        """The signature of the event that an emit calls, such as `Updated(uint256)`."""
+        decl = self.nodes.get(call["expression"].get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "EventDefinition":
+            return _normal(self.text(call["expression"]))
+        types = [p["typeDescriptions"]["typeString"] for p in decl["parameters"]["parameters"]]
+        return f"{decl['name']}({','.join(types)})"
 
     def _cannot_revert(self, node, scope: dict) -> None:
         """Refuses a part of a write or an event that could revert: the model leaves it out."""

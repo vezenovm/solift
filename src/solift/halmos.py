@@ -65,7 +65,7 @@ class LinkRun:
 
 
 class HalmosEngine:
-    """The interface of a link engine: `name`, `versions()`, and `run()`."""
+    """The interface of a link engine: `name`, `options()`, `versions()`, and `run()`."""
 
     name = "halmos"
 
@@ -73,6 +73,9 @@ class HalmosEngine:
         self.solver = solver
         self.loop = loop
         self.extra_args = extra_args
+
+    def options(self) -> dict:
+        return {"solver": self.solver, "loop": self.loop, "extra_args": list(self.extra_args)}
 
     def versions(self) -> dict[str, str]:
         return {

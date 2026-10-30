@@ -189,12 +189,27 @@ class Read:
 
 
 @dataclass(frozen=True)
+class Effect:
+    """A write or an event that the model leaves out. `kind` is "write" (to storage), "copy" (to a field of a memory
+    copy of storage) or "event". `place` names what it writes as a read map names a read, such as `$info.rate` or
+    `$balances[_who]`, or the event by its signature, such as `Updated(uint256)`. `source` is its text."""
+
+    kind: str
+    place: str
+    source: str
+    src: Src | None = None
+
+    def __str__(self) -> str:
+        return f"{self.src}: {self.source}"
+
+
+@dataclass(frozen=True)
 class Model:
     """`function` is the modeled function. Its parameters and the reads are the inputs. `callees` are the internal
     functions that it calls. `imports` are the import directives that the emitted Solidity needs, `pragma` its version
     pragma and `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted
     contracts instead of the contract and function names (solidity.names). `effects` are the writes and events of the
-    function and its callees, which the model leaves out, each as `path:line:column: source`."""
+    function and its callees, which the model leaves out."""
 
     contract: str
     function: Function
@@ -204,7 +219,7 @@ class Model:
     pragma: str = "^0.8.0"
     spdx: str = "UNLICENSED"
     stem: str = ""
-    effects: tuple[str, ...] = ()
+    effects: tuple[Effect, ...] = ()
 
     @property
     def name(self) -> str:

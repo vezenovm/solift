@@ -26,7 +26,40 @@ def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_
         record["versions"]
     )
     assert QUOTER in spec["sources"]
-    assert record["schema"] == 2
+    assert record["schema"] == 3
+
+
+def test_the_record_holds_the_scope_of_each_theorem_and_what_the_results_rest_on(tmp_path):
+    record = run(SPEC, Workspace(tmp_path / "work"))
+    (spec,) = record["specs"]
+    for t in spec["theorems"]:
+        assert (t["link"], t["lemma_domain"], t["callees"]) == ("passed", "established", [])
+        assert len(t["query_sha256"]) == 64
+    assert spec["vectors"]["outcomes"] == {"pays": "reached", "zero": "reached", "reverts": "reached"}
+    assert record["build"]["inputs"] and all(len(h) == 64 for h in record["build"]["inputs"])
+    assert {"examples/quoter/spec.py", "examples/__init__.py"} <= set(record["spec files"])
+    assert record["engine"] == {"name": "halmos", "options": {"solver": "yices", "loop": 4, "extra_args": []}}
+    assert record["project"]["profile"] is None and record["project"]["added"] == {}
+    unlinked = run(SPEC, Workspace(tmp_path / "unlinked"), link=False, vectors=False)
+    assert {t["link"] for t in unlinked["specs"][0]["theorems"]} == {"not-run"}
+
+
+def test_an_error_in_a_theorem_fails_that_theorem_and_the_run_goes_on(tmp_path):
+    def typo(q):
+        """a theorem that names an input the model does not have"""
+        return q.result <= q.margn
+
+    broken = SPEC.theorem(witness=lambda q: q.result > 0)(typo)
+    try:
+        record = run(SPEC, Workspace(tmp_path / "work"), link=False, vectors=False)
+    finally:
+        SPEC.theorems.remove(broken)
+    assert record["failures"] == [
+        "quoter: theorem typo: AttributeError: Quoter._quote has no input, local or free variable margn"
+    ]
+    assert [t["id"] for t in record["specs"][0]["theorems"]] == ["quote-at-most-gas-plus-margin", "quote-at-most-gas"]
+    (failure,) = record["tracebacks"]
+    assert failure["stage"] == "theorem typo" and "AttributeError" in failure["traceback"]
 
 
 def test_a_mutant_that_breaks_a_theorem_fails_the_run_and_its_link_still_passes(tmp_path):

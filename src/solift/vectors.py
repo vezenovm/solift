@@ -5,7 +5,8 @@ proves that smt.py composes the rows as the Solidity does: the vectors check tha
 each min of the model, z3 finds inputs that do not revert where the two sides are equal and one apart, with inputs that
 pay first, so that an early return does not skip the comparison. Random inputs then cover each outcome: pays (a
 positive or true result), zero, and reverts. z3 finds an input for an outcome that no random input reaches, such as a
-revert that only inputs near 2**256 reach. A generated forge test runs the emitted Solidity on each vector and
+revert that only inputs near 2**256 reach. An outcome or a boundary that z3 proves no input reaches is recorded as
+unreachable, and an "unknown" from z3 is an error. A generated forge test runs the emitted Solidity on each vector and
 compares whether it reverts, and its result, with the z3 terms.
 """
 
@@ -40,6 +41,17 @@ class Vector:
     @property
     def outcome(self) -> str:
         return "reverts" if self.reverts else "pays" if self.result else "zero"
+
+
+@dataclass(frozen=True)
+class Samples:
+    """The vectors, and how each outcome and each comparison boundary fared: `outcomes` maps each outcome to reached or
+    unreachable, and `boundaries` counts the boundaries (a comparison at one offset) that a vector reached and those
+    that z3 proved unreachable."""
+
+    vectors: list[Vector]
+    outcomes: dict[str, str]
+    boundaries: dict[str, int]
 
 
 class _Terms:
@@ -103,12 +115,15 @@ def reaching(model: Model, outcome: str, built: _Terms | None = None) -> Vector 
 
 
 def boundary(model: Model, built: _Terms | None = None) -> list[Vector]:
+    return _boundaries(model, built)[0]
+
+
+def _boundaries(model: Model, built: _Terms | None = None) -> tuple[list[Vector], int]:
+    """The vectors at the boundary of each comparison, and the number of boundaries that z3 proves no input reaches."""
     built = built or _Terms(model)
     inputs, t = built.inputs, built.terms
-    if not t.comparisons:
-        return []
     pays = t.value if z3.is_bool(t.value) else t.value > 0
-    found = []
+    found, unreachable = [], 0
     for a, b in t.comparisons:
         for offset in (-1, 0, 1):
             undecided = False
@@ -124,7 +139,8 @@ def boundary(model: Model, built: _Terms | None = None) -> list[Vector]:
             else:
                 if undecided:
                     raise VectorError(f"{model.name}: z3 gave unknown at the boundary of a comparison, {a} vs {b}")
-    return found
+                unreachable += 1
+    return found, unreachable
 
 
 def draw(rng: random.Random, bound: int | None, drawn: list[int]):
@@ -146,13 +162,11 @@ def draw(rng: random.Random, bound: int | None, drawn: list[int]):
     return min(max(value, 0), bound - 1)
 
 
-def sample(model: Model, impossible: tuple[str, ...] = ()) -> list[Vector]:
+def sample(model: Model, impossible: tuple[str, ...] = ()) -> Samples:
     """The boundary vectors, then up to PER_OUTCOME random vectors for each outcome. `impossible` names the outcomes
-    that no input reaches, which the vectors then do not require."""
+    that the spec asserts no input reaches: a vector that reaches one is an error."""
     built = _Terms(model)
-    found = boundary(model, built)
-    if not found and built.terms.comparisons:
-        raise VectorError(f"{model.name}: z3 found no input at the boundary of any comparison")
+    found, unreachable = _boundaries(model, built)
     rng = random.Random(model.name)
     kept = {outcome: [] for outcome in OUTCOMES}
     for _ in range(CANDIDATES):
@@ -164,17 +178,20 @@ def sample(model: Model, impossible: tuple[str, ...] = ()) -> list[Vector]:
         vector = built.evaluate(values)
         if len(kept[vector.outcome]) < PER_OUTCOME:
             kept[vector.outcome].append(vector)
+    outcomes = {}
     for outcome in OUTCOMES:
-        if outcome in impossible:
-            vector = kept[outcome][0] if kept[outcome] else reaching(model, outcome, built)
-            if vector is not None:
-                raise VectorError(f"{model.name}: the spec calls {outcome} impossible, but {vector.values} reaches it")
-        elif not kept[outcome]:
+        if not kept[outcome]:
             vector = reaching(model, outcome, built)
-            if vector is None or vector.outcome != outcome:
-                raise VectorError(f"{model.name}: neither random inputs nor z3 reached {outcome}")
-            kept[outcome].append(vector)
-    return found + [vector for outcome in OUTCOMES for vector in kept[outcome]]
+            if vector is not None and vector.outcome != outcome:
+                raise VectorError(f"{model.name}: z3's input {vector.values} for {outcome} gives {vector.outcome}")
+            if vector is not None:
+                kept[outcome].append(vector)
+        if kept[outcome] and outcome in impossible:
+            values = kept[outcome][0].values
+            raise VectorError(f"{model.name}: the spec calls {outcome} impossible, but {values} reaches it")
+        outcomes[outcome] = "reached" if kept[outcome] else "unreachable"
+    vectors = found + [vector for outcome in OUTCOMES for vector in kept[outcome]]
+    return Samples(vectors, outcomes, {"reached": len(found), "unreachable": unreachable})
 
 
 def vectors_source(model: Model, vectors: list[Vector], test_import: str = "forge-std/Test.sol") -> str:

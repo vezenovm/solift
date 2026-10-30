@@ -268,11 +268,11 @@ def test_a_function_that_writes_storage_is_modeled_by_its_value_and_the_model_li
     assert [v.name for v in model.inputs] == ["_price", "_who", "stored", "balance"]
     assert evaluate(model, {"_price": 10**18, "_who": 1, "stored": 0, "balance": 5}) == (False, 10**18 + 5, False)
     assert reverts(model, {"_price": 0, "_who": 1, "stored": 0, "balance": 5})
-    assert [e.partition(": ")[2] for e in model.effects] == [
-        "info.lastTimestamp = uint96(block.timestamp)",
-        "info.rate = rate",
-        "$info = info",
-        "emit Updated(rate)",
+    assert [(e.kind, e.place, e.source) for e in model.effects] == [
+        ("copy", "info.lastTimestamp", "info.lastTimestamp = uint96(block.timestamp)"),
+        ("copy", "info.rate", "info.rate = rate"),
+        ("write", "$info", "$info = info"),
+        ("event", "Updated(uint256)", "emit Updated(rate)"),
     ]
     effect = "//   tests/fixtures/contracts/Writes.sol:32:7: info.lastTimestamp = uint96(block.timestamp)\n"
     assert effect in source(model)
