@@ -13,6 +13,10 @@ For each function of a spec, solift:
 
 You write the theorems, the read map and a test harness. Nobody writes the model.
 
+![Halmos proves the Solidity that solift emits from the extracted model equal to the contract's bytecode, and the
+solvers prove the theorems on the model's SMT terms, which sampled vectors check against the emitted
+Solidity](docs/proof-chain.png)
+
 ## What it found
 
 At the commit of Resupply's lending pair that the exploit of 2025-06-26 drained, the theorem "a borrower that the pair
@@ -102,18 +106,26 @@ and your harness. External view calls and cut points are assumed not to revert.
 
 ## What it takes
 
-| Takes | Refuses, with the place in the source |
-|---|---|
-| checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
-| `if`, early returns, `require`, `assert`, `revert` | loops |
-| locals, also assigned in branches; compound assignments; named returns | tuple returns, modifiers |
-| addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
-| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
-| `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |
-| storage writes with `=`, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage |
-| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
+Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
+calls, and `Math.min` and `Math.mulDiv`. The extractor refuses loops, `unchecked`, signed integers, `**`, `%`,
+assembly, modifiers and tuple returns, and names the place in the source. A view or pure call that does not fit can go
+in the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
 
-To get past a view or pure call that does not fit, name it in the read map: its result becomes an input.
+## Proof performance
+
+The split takes a property's multiplication, division and rounding off the bytecode: the solvers prove the property
+over exact integers, and Halmos checks that two programs of the same shape return and revert alike. Nonlinear
+arithmetic on bytecode is what symbolic tools find slow. Halmos's documentation says that with it "the SMT solvers
+might become very slow", and Halmos turns nonlinear reasoning off by default
+([warnings](https://github.com/a16z/halmos/wiki/warnings#counterexample-invalid)). hevm's worked examples need several
+minutes per query on wrapping price arithmetic ([Truebit](https://hevm.dev/exploit-tutorial.html)), and meet roundings
+between shares and debt that the solver "cannot always decide quickly"
+([Abracadabra](https://hevm.dev/exploit-tutorial2.html)). `Math.mulDiv` still meets the bytecode in the lemmas, which
+a run proves once for each spec, not for each theorem.
+
+In the Resupply example above, the solver queries of the two theorems take 0.03s and 0.01s, and the link check takes
+0.74s. These are single checks, without the build and the vectors. No direct proof of the same theorem on the bytecode
+is measured here.
 
 ## How it compares
 

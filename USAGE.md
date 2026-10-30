@@ -21,7 +21,7 @@ It stops at the first construct the extractor refuses, with its place in the sou
 function must be loop-free and use checked `uint` arithmetic: the extractor refuses loops, `unchecked`, signed
 integers, narrowing casts, tuple returns, `**`, `%` and assembly. A function can write storage when nothing after the
 write reads what it changed. To cut out a call that does not fit, add its source text to the read map: its result
-becomes an input.
+becomes an input. [What the extractor takes](#what-the-extractor-takes) has the full list.
 
 ## 2. Write a harness
 
@@ -147,6 +147,19 @@ pin a commit: `pip install 'git+https://github.com/vezenovm/solift@<commit>'`. I
 The README says what a run proves and what it trusts.
 
 ## Reference
+
+### What the extractor takes
+
+| Takes | Refuses, with the place in the source |
+|---|---|
+| checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
+| `if`, early returns, `require`, `assert`, `revert` | loops |
+| locals, also assigned in branches; compound assignments; named returns | tuple returns, modifiers |
+| addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
+| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
+| `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |
+| storage writes with `=`, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage |
+| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
 
 ### Read map keys
 
