@@ -2,10 +2,10 @@
 
 `terms` runs the function's statements in order. `reached` is the condition under which a statement runs. An expression
 gives (value, reverts, outside), and a statement's reverts and outside count only where it is reached. Each return adds
-(reached, value). After an `if`, each local that a branch assigned takes the value of the branch that ran. A function
-that ends without a return returns its named return variable, or 0 or false, as Solidity does. An internal call runs the
-callee's statements on the argument values, and gives the callee's value, reverts and outside. An address or an enum
-member is its integer value.
+(reached, value), and a revert statement reverts where it is reached. After an `if`, each local that a branch assigned
+takes the value of the branch that ran. A function that ends without a return returns its named return variable, or 0
+or false, as Solidity does. An internal call runs the callee's statements on the argument values, and gives the callee's
+value, reverts and outside. An address or an enum member is its integer value.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import z3
 
-from z3sol.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var
+from z3sol.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var
 from z3sol.ops import TABLE
 
 FALSE = z3.BoolVal(False)
@@ -121,6 +121,9 @@ class _Run:
         if not z3.is_false(reached):
             end = env[function.result.name] if function.result is not None else _zero(Var("", function.returns))
             returns = returns + [(reached, end, env)]
+        if not returns:
+            # Every path reverts.
+            return _zero(Var("", function.returns)), body.reverts, body.outside
         if top:
             names = {name for _, _, scope in returns for name in scope}
             for name in sorted(names):
@@ -148,6 +151,9 @@ class _Run:
                 v, r, o = self.expr(stmt.expr, env)
                 body.runs(reached, r, o)
                 body.returns.append((reached, v, env))
+                reached = FALSE
+            elif isinstance(stmt, Revert):
+                body.runs(reached, TRUE, FALSE)
                 reached = FALSE
             elif isinstance(stmt, If):
                 c, r, o = self.expr(stmt.cond, env)

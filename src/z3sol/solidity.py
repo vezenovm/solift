@@ -8,7 +8,7 @@ to prove this code equal to the contract stays small. Named constants keep their
 
 from __future__ import annotations
 
-from z3sol.ir import Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var, walk
+from z3sol.ir import Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var, walk
 from z3sol.ops import TABLE
 
 
@@ -85,6 +85,8 @@ def _block(stmts: tuple[Stmt, ...], indent: str) -> list[str]:
             lines.append(f"{indent}{stmt.var.name} = {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, Return):
             lines.append(f"{indent}return {expr(stmt.expr, top=True)};")
+        elif isinstance(stmt, Revert):
+            lines.append(f"{indent}revert();")
         elif isinstance(stmt, If):
             lines.append(f"{indent}if ({expr(stmt.cond, top=True)}) {{")
             lines += _block(stmt.then, indent + "  ")
@@ -109,7 +111,7 @@ def expr(e: Expr, top: bool = False) -> str:
     if isinstance(e, Op):
         operator = TABLE[e.op]
         text = operator.solidity.format(*(expr(arg) for arg in e.args))
-        return text if top or operator.kind == "library" else f"({text})"
+        return text if top or operator.kind in ("library", "convert") else f"({text})"
     raise TypeError(f"no expression {e!r}")
 
 

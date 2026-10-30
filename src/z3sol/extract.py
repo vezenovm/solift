@@ -1,7 +1,8 @@
 """The extractor: reads the solc AST of one function and builds its model.
 
-A target names a function as `path:Contract.function`. The read map names each value that the function reads from
-outside itself, and gives it an input name. A key is one of:
+A target names a function as `path:Contract.function`, or as `path:Contract.function(MarketParams,Id,address)` with the
+types of its parameters, for one of several functions of one name. The read map names each value that the function
+reads from outside itself, and gives it an input name. A key is one of:
 
 - a storage variable or immutable by its name (`$floor`, `TOKEN`), or a field of a storage struct (`$config.cap`),
   whether the function reads it directly or through a memory copy (`Config memory cfg = $config;` then `cfg.cap`);
@@ -15,11 +16,13 @@ outside itself, and gives it an input name. A key is one of:
 A read map entry that the function does not read is an error, except a field of `tx`, `block` or `msg`: every
 transaction has it, so it is an input even where the function ignores it, and a theorem can name it.
 
-Internal calls are inlined: each callee becomes a function of the model. OpenZeppelin's `Math.min` and `Math.mulDiv`
-become operators of the table in ops.py. A constant becomes its value, with its name and declared type, and an enum
-member its index. A contract or interface value is its address, and `address(x)` of one is the same value. Locals can
-be assigned, also in branches, and a named return starts at zero. Anything else stops the extraction with an error that
-names the construct and its place in the source.
+Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`): each callee becomes a function of
+the model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
+value, with its name and declared type, and an enum member its index. A contract or interface value is its address, and
+`address(x)` of one is the same value. `uint256(x)` of a narrower unsigned x is x. Locals can be assigned, also in
+branches, and a named return starts at zero. `require`, `assert` and `revert` revert. A parameter of a user-defined
+value type, such as Morpho's `Id`, that the function uses only inside read map keys is not an input. Anything else stops
+the extraction with an error that names the construct and its place in the source.
 
 The model assumes that each read succeeds: an external view call that reverts has no input in the model.
 """
@@ -48,6 +51,7 @@ from z3sol.ir import (
     Model,
     Read,
     Return,
+    Revert,
     Src,
     Stmt,
     Type,
@@ -186,7 +190,12 @@ class _Extractor:
 
     def extract(self, target: str) -> Extraction:
         path, _, qualified = target.rpartition(":")
-        contract_name, _, function_name = qualified.partition(".")
+        contract_name, _, function_part = qualified.partition(".")
+        signature = re.fullmatch(r"(\w+)(?:\(([^()]*)\))?", function_part)
+        if signature is None:
+            raise ExtractionError(f"{target} names no function as Contract.function or Contract.function(types)")
+        function_name, types = signature.groups()
+        wanted = None if types is None else [t.strip() for t in types.split(",") if t.strip()]
         unit = self.sources[path]["ast"]
         contracts = [n for n in unit["nodes"] if n["nodeType"] == "ContractDefinition" and n["name"] == contract_name]
         if len(contracts) != 1:
@@ -195,12 +204,16 @@ class _Extractor:
         for base_id in contracts[0]["linearizedBaseContracts"]:
             base = self.nodes[base_id]
             candidates = [
-                n for n in base["nodes"] if n["nodeType"] == "FunctionDefinition" and n["name"] == function_name
+                n
+                for n in base["nodes"]
+                if n["nodeType"] == "FunctionDefinition"
+                and n["name"] == function_name
+                and (wanted is None or [_parameter_type(p) for p in n["parameters"]["parameters"]] == wanted)
             ]
             if candidates:
                 break
         if len(candidates) != 1:
-            raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_name}, not one")
+            raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_part}, not one")
         node = candidates[0]
         function = self._function(node, top=True)
         for key, (written, name) in self.read_map.items():
@@ -291,6 +304,9 @@ class _Extractor:
                     self.fail(p, f"the struct parameter {p['name']} of a called function")
                 scope[p["id"]] = ("param", p["name"])
                 continue
+            if top and self._user_value_type(p):
+                scope[p["id"]] = ("opaque", p["name"])
+                continue
             var = Var(p["name"], self._type(p), input=top, src=self.src(p))
             scope[p["id"]] = var
             params.append(var)
@@ -298,6 +314,13 @@ class _Extractor:
         if node["stateMutability"] not in ("pure", "view"):
             self.fail(node, f"{name} is {node['stateMutability']}: it can change state")
         return Function(name, tuple(params), return_type, body, self.src(node), result)
+
+    def _user_value_type(self, param) -> bool:
+        name = param.get("typeName") or {}
+        if name.get("nodeType") != "UserDefinedTypeName":
+            return False
+        decl = self.nodes.get(name.get("referencedDeclaration"))
+        return decl is not None and decl["nodeType"] == "UserDefinedValueTypeDefinition"
 
     def _block(self, statements, scope: dict, return_type: Type) -> tuple[Stmt, ...]:
         scope = dict(scope)
@@ -327,7 +350,11 @@ class _Extractor:
                 self._assignable(node["expression"], value.type, return_type)
                 out.append(Return(value, self.src(node)))
             elif kind == "ExpressionStatement":
-                out.append(self._expression_statement(node["expression"], scope))
+                stmt = self._expression_statement(node["expression"], scope)
+                if stmt is not None:
+                    out.append(stmt)
+            elif kind == "RevertStatement":
+                out.append(Revert(self.src(node)))
             else:
                 self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
         return tuple(out)
@@ -377,15 +404,38 @@ class _Extractor:
                 return f"{state['name']}[{key.name}]"
         return None
 
-    def _expression_statement(self, expression, scope: dict) -> Assign:
+    def _expression_statement(self, expression, scope: dict) -> Stmt:
         kind = expression["nodeType"]
         if kind == "Assignment":
             return self._assignment(expression, scope)
-        if kind == "FunctionCall" and expression["expression"].get("name") in ("require", "assert", "revert"):
-            self.fail(expression, f"{expression['expression']['name']} is not supported")
+        callee = expression.get("expression") or {}
+        if kind == "FunctionCall" and callee.get("name") in ("require", "assert", "revert"):
+            if callee.get("referencedDeclaration", 0) < 0:
+                return self._require(expression, scope)
         if kind == "UnaryOperation" and expression["operator"] in ("++", "--", "delete"):
             self.fail(expression, f"{expression['operator']} is not supported")
         self.fail(expression, "an expression statement")
+
+    def _require(self, call, scope: dict) -> Stmt:
+        """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require
+        must be a string literal or an error whose arguments cannot revert, so that it reverts only where c is false."""
+        name = call["expression"]["name"]
+        if name == "revert":
+            return Revert(self.src(call))
+        args = call["arguments"]
+        cond = self._expr(args[0], scope)
+        if cond.type != BOOL:
+            self.fail(args[0], "the condition is not a bool")
+        if len(args) == 2:
+            message = args[1]
+            error = self.nodes.get((message.get("expression") or {}).get("referencedDeclaration"))
+            if message["nodeType"] == "FunctionCall" and error is not None and error["nodeType"] == "ErrorDefinition":
+                for arg in message["arguments"]:
+                    self._cannot_revert(arg, scope)
+            elif message["nodeType"] != "Literal" or message["kind"] not in ("string", "unicodeString"):
+                self.fail(message, f"the message of {name} is not a string literal or an error")
+        negated = dataclasses.replace(ops.make("not", cond), src=self.src(call))
+        return If(negated, (Revert(self.src(call)),), (), self.src(call))
 
     def _assignment(self, expression, scope: dict) -> Assign:
         lhs = expression["leftHandSide"]
@@ -409,6 +459,28 @@ class _Extractor:
             value = self._op(expression, ASSIGNMENTS[operator], var, value)
         self._assignable(rhs, value.type, var.type)
         return Assign(var, value, self.src(expression))
+
+    def _cannot_revert(self, node, scope: dict) -> None:
+        """Refuses an argument of an error that could revert: the model leaves it out."""
+        kind = node["nodeType"]
+        type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+        if type_string.startswith("function"):
+            pass
+        elif kind in ("Identifier", "Literal"):
+            return
+        elif kind == "MemberAccess":
+            return self._cannot_revert(node["expression"], scope)
+        elif kind == "IndexAccess":
+            base = node["baseExpression"]
+            if base["typeDescriptions"]["typeString"].startswith("mapping(") and node.get("indexExpression"):
+                self._cannot_revert(base, scope)
+                return self._cannot_revert(node["indexExpression"], scope)
+        elif kind == "TupleExpression" and len(node["components"]) == 1 and not node.get("isInlineArray"):
+            return self._cannot_revert(node["components"][0], scope)
+        elif kind == "FunctionCall" and node["kind"] == "typeConversion" and len(node["arguments"]) == 1:
+            if re.fullmatch(r"uint\d+|address", type_string):
+                return self._cannot_revert(node["arguments"][0], scope)
+        self.fail(node, f"{self.text(node)} in an error: the model leaves it out, so it must not revert")
 
     def _assignable(self, node, source: Type, target: Type) -> None:
         if source == target or (source.kind == "literal" and target.kind == "uint"):
@@ -577,8 +649,12 @@ class _Extractor:
         return int(number)
 
     def _conversion(self, node, scope: dict) -> Expr:
-        """`address(x)` of a contract, an interface or an address is x, and of a number literal is that address. Any
-        other type conversion is an error."""
+        """`address(x)` of a contract, an interface or an address is x, and of a number literal is that address.
+        `uint256(x)` of an unsigned x or a number literal widens it. Any other type conversion is an error."""
+        if node["typeDescriptions"]["typeString"] == "uint256" and len(node["arguments"]) == 1:
+            value = self._expr(node["arguments"][0], scope)
+            if value.type.is_number:
+                return self._op(node, "widen", value)
         if self._type(node) == ADDRESS and len(node["arguments"]) == 1:
             arg = node["arguments"][0]
             if arg["nodeType"] == "Literal" and arg["kind"] == "number":
@@ -602,7 +678,15 @@ class _Extractor:
         if decl["nodeType"] != "FunctionDefinition":
             self.fail(node, f"a call to {self.text(callee)}")
         owner = self.nodes[decl["scope"]]
-        arguments = self._arguments(node, decl)
+        # A library call on a value, as `x.mulDivDown(y, d)` under `using MathLib for uint256`, passes the value first.
+        bound = (
+            callee["nodeType"] == "MemberAccess"
+            and owner.get("contractKind") == "library"
+            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
+        )
+        arguments = self._arguments(node, decl, bound)
+        if bound:
+            arguments = [callee["expression"], *arguments]
         if owner.get("contractKind") == "library" and owner["name"] == "Math":
             path = self._place(owner)[0]
             if path.endswith(MATH_PATH):
@@ -625,12 +709,12 @@ class _Extractor:
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
 
-    def _arguments(self, node, decl) -> list:
+    def _arguments(self, node, decl, bound: bool = False) -> list:
         """The argument nodes of a call in the order of the callee's parameters, also for named arguments such as
-        `f({b: x, a: y})`."""
+        `f({b: x, a: y})`. A bound call's value is not among them."""
         if not node.get("names"):
             return node["arguments"]
-        params = [p["name"] for p in decl["parameters"]["parameters"]]
+        params = [p["name"] for p in decl["parameters"]["parameters"]][1 if bound else 0 :]
         by_name = dict(zip(node["names"], node["arguments"], strict=True))
         if sorted(by_name) != sorted(params):
             self.fail(node, f"the named arguments {', '.join(node['names'])} are not the parameters of {decl['name']}")
@@ -693,13 +777,19 @@ _STATEMENT_ERRORS = {
     "InlineAssembly": "inline assembly",
     "Block": "a nested block",
     "EmitStatement": "an event",
-    "RevertStatement": "a revert",
     "TryStatement": "a try statement",
 }
 
 
 def _statements(node) -> list:
     return node["statements"] if node["nodeType"] == "Block" else [node]
+
+
+def _parameter_type(param) -> str:
+    """A parameter's type as a target names it: `uint256`, `address`, or the last part of the name of a struct, an enum,
+    a contract or a user-defined value type, such as `MarketParams`."""
+    text = re.sub(r" (memory|storage|calldata)( pointer| ref)?$", "", param["typeDescriptions"]["typeString"])
+    return re.sub(r"^(struct|enum|contract) ", "", text).rpartition(".")[2]
 
 
 def _root(node):

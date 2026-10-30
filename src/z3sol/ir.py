@@ -148,6 +148,13 @@ class Return:
 
 
 @dataclass(frozen=True)
+class Revert:
+    """A revert, as of `revert(...)`, `revert E(...)`, or a `require` or `assert` whose condition is false."""
+
+    src: Src | None = None
+
+
+@dataclass(frozen=True)
 class If:
     cond: Expr
     then: tuple[Stmt, ...]
@@ -155,7 +162,7 @@ class If:
     src: Src | None = None
 
 
-Stmt = Let | Assign | Return | If
+Stmt = Let | Assign | Return | Revert | If
 
 
 @dataclass(frozen=True)
@@ -212,6 +219,8 @@ def walk(node):
             yield from walk(stmt)
     elif isinstance(node, Let | Assign | Return):
         yield from walk(node.expr)
+    elif isinstance(node, Revert):
+        return
     elif isinstance(node, If):
         yield from walk(node.cond)
         for stmt in node.then + node.orelse:

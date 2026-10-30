@@ -11,14 +11,16 @@
     not      !a                     Not(a)              never
     and, or  a && b, a || b         And(a, b), Or(a, b) never
     ite      c ? a : b              If(c, a, b)         never
+    widen    uint256(a)             a                   never
 
 An expression also reverts when an operand that runs reverts, and is outside when such an operand is outside. `and`
 and `or` skip their second operand, and `ite` the branch not taken (smt.py).
 
 Arithmetic is at uint256: `make` refuses an addition, subtraction, multiplication or division at a narrower type, so
-the overflow bound is always 2**256. Comparisons and library calls take operands of any unsigned width. `eq` and `ne`
-also compare two bools, two addresses, or two members of one enum, and `ite` selects between two values of one such
-type. z3 sees an address or an enum member as its integer value.
+the overflow bound is always 2**256. `widen` converts a narrower unsigned value to uint256, as in `uint256(a) * b` for
+two uint128 operands. Comparisons and library calls take operands of any unsigned width. `eq` and `ne` also compare two
+bools, two addresses, or two members of one enum, and `ite` selects between two values of one such type. z3 sees an
+address or an enum member as its integer value.
 
 Halmos proves on the bytecode each row that can revert, and the two OpenZeppelin facts that the min and mulDiv rows rest
 on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, and `Math.mulDiv(x, y, d)` is `x * y / d` when `x` and `y` are below
@@ -41,7 +43,7 @@ HALF = 2**128
 @dataclass(frozen=True)
 class Operator:
     """`solidity` formats the operand texts. `kind` sets how `make` types the operation: arithmetic, library (a call
-    to OpenZeppelin's Math), compare, logic or select."""
+    to OpenZeppelin's Math), compare, logic, select or convert."""
 
     name: str
     arity: int
@@ -124,6 +126,7 @@ TABLE = {
         Operator("and", 2, "{0} && {1}", "logic", z3.And),
         Operator("or", 2, "{0} || {1}", "logic", z3.Or),
         Operator("ite", 3, "{0} ? {1} : {2}", "select", z3.If),
+        Operator("widen", 1, "uint256({0})", "convert", lambda a: a),
     ]
 }
 
@@ -170,6 +173,9 @@ def make(op: str, *args: Expr, src: Src | None = None) -> Op:
             if common_type(*types) is None:
                 raise TypeError(f"{op}{where} of two literals: solc folds it, and the extractor does not")
             result = BOOL
+    elif operator.kind == "convert":
+        _numbers(op, types, where)
+        result = UINT256
     elif operator.kind == "logic":
         if any(t != BOOL for t in types):
             raise TypeError(f"{op}{where} takes bool operands")

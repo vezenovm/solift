@@ -85,7 +85,7 @@ contract OutOfScope {
   }
 
   function requireCall(uint256 _a) internal pure returns (uint256) {
-    require(_a > 0, "zero");
+    require(_a > 0, string(abi.encodePacked(_a)));
     return _a;
   }
 

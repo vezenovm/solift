@@ -171,7 +171,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("mathMax", {}, r"Math.max with 2 arguments has no lemma"),
         ("recursion", {}, r"recursion calls itself"),
         ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
-        ("requireCall", {}, r"require is not supported"),
+        ("requireCall", {}, r"OutOfScope.sol:88:21: the message of require is not a string literal or an error"),
         ("structParameterOfACallee", {}, r"the struct parameter _pair of a called function"),
         ("moduloAssignment", {}, r"mod is not in the operator table"),
         ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
@@ -319,3 +319,50 @@ def test_a_bool_constant_and_an_address_literal_keep_their_types(build):
     one = extract(build, f"{PRICER}._isOne", {}).model
     assert evaluate(one, {"_a": 1})[1] is True and evaluate(one, {"_a": 2})[1] is False
     assert "return i._a == 0x0000000000000000000000000000000000000001;" in source(one)
+
+
+REVERTS = "tests/fixtures/contracts/Reverts.sol:Reverts"
+
+
+def reverts(model, values) -> bool:
+    inputs = symbols(model)
+    pairs = [(inputs[v.name], z3.IntVal(values[v.name])) for v in model.inputs]
+    return z3.is_true(z3.simplify(z3.substitute(terms(model, inputs).reverts, *pairs)))
+
+
+LIBRARIES = "tests/fixtures/contracts/Libraries.sol:Libraries"
+
+
+def test_require_assert_and_revert_revert_where_they_run(build):
+    model = extract(build, f"{REVERTS}.checked", {}).model
+    assert [reverts(model, {"_x": x}) for x in range(5)] == [True, True, True, True, False]
+    assert evaluate(model, {"_x": 4}) == (False, 4, False)
+    assert "      revert();\n" in source(model)
+    always = extract(build, f"{REVERTS}.alwaysReverts", {}).model
+    assert reverts(always, {v.name: 0 for v in always.inputs})
+
+
+def test_a_library_call_on_a_value_widened_storage_and_a_user_defined_key(build):
+    reads = {"$positions[key][who].collateral": "collateral"}
+    model = extract(build, f"{LIBRARIES}.value(Key,address,uint256)", reads).model
+    assert [v.name for v in model.inputs] == ["who", "price", "collateral"]
+    assert [v.type.solidity for v in model.inputs] == ["address", "uint256", "uint128"]
+    assert [f.name for f in model.callees] == ["mulDivDown"]
+    assert evaluate(model, {"who": 1, "price": 3 * 10**18, "collateral": 2**128 - 1})[1] == 3 * (2**128 - 1)
+    assert "return mulDivDown(i, uint256(i.collateral), i.price, 1e18);" in source(model)
+    shares = extract(build, f"{LIBRARIES}.shares", {}).model
+    assert [f.name for f in shares.callees] == ["mulDivDown", "toSharesDown"]
+    values = {"assets": 10, "totalAssets": 99, "totalShares": 0}
+    assert evaluate(shares, values)[1] == 10 * 10**6 // 100 + 5
+    product = extract(build, f"{LIBRARIES}.product", {}).model
+    assert evaluate(product, {"a": 2**64 - 1, "b": 2**64 - 1})[1] == (2**64 - 1) ** 2
+
+
+def test_a_target_of_several_functions_of_one_name_gives_its_parameter_types(build):
+    with pytest.raises(ExtractionError, match="Libraries has 2 functions named value, not one"):
+        extract(build, f"{LIBRARIES}.value", {})
+    with pytest.raises(ExtractionError, match=r"Libraries has 0 functions named value\(Key\), not one"):
+        extract(build, f"{LIBRARIES}.value(Key)", {})
+    # Its callee, the other value, has a parameter of the user-defined type, which only the modeled function can have.
+    with pytest.raises(ExtractionError, match=r"Libraries.sol:33:18: the type Key is not supported"):
+        extract(build, f"{LIBRARIES}.value(Key,address)", {"$positions[key][who].collateral": "c"})
