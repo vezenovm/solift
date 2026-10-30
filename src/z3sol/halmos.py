@@ -130,12 +130,14 @@ class HalmosEngine:
         log = _plain(result.stdout + result.stderr)
         (workspace.path / "halmos.log").write_text(log)
         data = json.loads(report.read_text()) if report.exists() else None
-        return judge(checks, data, log)
+        return judge(checks, data, log, result.returncode)
 
 
-def judge(checks: tuple[Check, ...], data: dict | None, log: str) -> LinkRun:
-    """The verdict of each declared check, from Halmos's JSON output and its log."""
+def judge(checks: tuple[Check, ...], data: dict | None, log: str, returncode: int = 0) -> LinkRun:
+    """The verdict of each declared check, from Halmos's JSON output, its log and the exit status of its process."""
     problems = []
+    if returncode and returncode != (data or {}).get("exitcode"):
+        problems.append(f"the Halmos process exited with {returncode}")
     if data is None:
         problems.append("Halmos wrote no results")
         data = {"test_results": {}}

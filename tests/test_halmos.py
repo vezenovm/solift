@@ -162,3 +162,13 @@ def test_a_check_from_another_file_does_not_stand_in_for_the_generated_one():
     assert not run.ok
     here = {"exitcode": 0, "test_results": {"gen/C.t.sol:C": [result("check_link")]}}
     assert judge(declared, here, "").ok
+
+
+def test_a_halmos_process_that_fails_after_a_passing_report_fails_the_run():
+    checks = (Check("C", "check_a"),)
+    run = judge(checks, report(result("check_a")), "", returncode=137)
+    assert run.problems == ("the Halmos process exited with 137",)
+    assert not run.ok
+    assert judge(checks, {**report(result("check_a", 1)), "exitcode": 1}, "", returncode=1).problems == (
+        "Halmos exited with 1",
+    )
