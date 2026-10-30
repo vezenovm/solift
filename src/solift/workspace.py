@@ -97,21 +97,26 @@ class Project:
         return cls(root, profile, link, copy, add or {}, generated)
 
     def resolve(self) -> Project:
-        """The project with each inferred field set from `forge config --json` under its profile. A field that names a
-        path the project does not have is left out of `link`, and `copy` holds the source directory if it exists."""
+        """The project with each inferred field set from `forge config --json` under its profile. `link` holds
+        foundry.toml, remappings.txt, the library directories and the top directory of each remapping's target, such as
+        `.deps` for `@lib/=.deps/lib/src/`, each that the project has and that holds no copied or generated path.
+        `copy` holds the source directory if it exists."""
         if self.link is not None and self.copy is not None and self.generated is not None:
             return self
         config = forge.config(self.root, self.profile)
-        exists = [p for p in ("foundry.toml", "remappings.txt", *config["libs"]) if (self.root / p).exists()]
         src, test = str(pathlib.PurePosixPath(config["src"])), pathlib.PurePosixPath(config["test"])
-        return Project(
-            root=self.root,
-            profile=self.profile,
-            link=self.link if self.link is not None else tuple(dict.fromkeys(exists)),
-            copy=self.copy if self.copy is not None else ((src,) if (self.root / src).is_dir() else ()),
-            add=self.add,
-            generated=self.generated if self.generated is not None else f"{test}/solift",
-        )
+        copy = self.copy if self.copy is not None else ((src,) if (self.root / src).is_dir() else ())
+        generated = self.generated if self.generated is not None else f"{test}/solift"
+        link = self.link
+        if link is None:
+            kept = [pathlib.PurePosixPath(p) for p in (*copy, generated)]
+            remapped = [_remapped_top(r) for r in config.get("remappings", [])]
+            link = tuple(
+                p
+                for p in dict.fromkeys(("foundry.toml", "remappings.txt", *config["libs"], *filter(None, remapped)))
+                if (self.root / p).exists() and not any(_overlap(pathlib.PurePosixPath(p), k) for k in kept)
+            )
+        return Project(root=self.root, profile=self.profile, link=link, copy=copy, add=self.add, generated=generated)
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
         """Builds the overlay root, with `replace` (a project path to new content) applied to the copies. An entry under
@@ -202,6 +207,19 @@ class Guard:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         found += [f"{line} changed during the run" for line in result.stdout.splitlines() if line]
         return found
+
+
+def _remapped_top(remapping: str) -> str | None:
+    """The first part of a remapping's target, `.deps` for `@lib/=.deps/lib/src/` or `ctx:@lib/=.deps/lib/src/`, when
+    it is a relative path inside the project."""
+    target = pathlib.PurePosixPath(remapping.partition("=")[2])
+    if not target.parts or target.is_absolute() or target.parts[0] in (".", ".."):
+        return None
+    return target.parts[0]
+
+
+def _overlap(a: pathlib.PurePosixPath, b: pathlib.PurePosixPath) -> bool:
+    return a == b or a in b.parents or b in a.parents
 
 
 def _lock(path: pathlib.Path) -> None:
