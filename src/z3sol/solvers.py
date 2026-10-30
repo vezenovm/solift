@@ -5,7 +5,9 @@ parallel, each in its own process, on the same query as SMT-LIB, until the first
 timeout ends. The other solvers then stop. Each answer records the solver that gave it.
 
 yices runs its MCSAT solver for QF_NIA, the logic of these queries: integers and booleans, with products and division
-of variables. cvc5 has no binary in its Python package, so a Python process runs its SMT-LIB parser.
+of variables. cvc5 has no binary in its Python package, so a Python process runs its SMT-LIB parser. The SMT-LIB query
+names each constant v0, v1, and so on: z3 writes a name as it is, and SMT-LIB reserves names that Solidity and Python
+allow, such as `as`, `let` and `div`.
 """
 
 from __future__ import annotations
@@ -73,7 +75,10 @@ def check(assertions: list, show: dict[str, z3.ExprRef] | None = None, timeout_m
     first = s.reason_unknown()
     if timeout_ms <= FIRST_MS:
         return Answer("unknown", "z3", time.time() - start, detail=first, answers={"z3": f"unknown ({first})"})
-    answer = _portfolio(s.to_smt2(), show, timeout_ms)
+    renamed, shown = _renamed(assertions, show)
+    query = z3.Solver()
+    query.add(*renamed)
+    answer = _portfolio(query.to_smt2(), shown, timeout_ms)
     answer.time = time.time() - start
     answer.answers = {"z3 (first)": f"unknown ({first})", **answer.answers}
     return answer
@@ -107,6 +112,23 @@ def _command(solver: str, timeout_ms: int) -> tuple[list[str], str]:
     if solver == "yices":
         return [_binary("yices-smt2"), f"--timeout={max(1, timeout_ms // 1000)}"], "(set-logic QF_NIA)\n"
     return [sys.executable, "-c", CVC5, str(timeout_ms)], "(set-logic QF_NIA)\n"
+
+
+def _renamed(assertions: list, show: dict[str, z3.ExprRef]) -> tuple[list, dict[str, z3.ExprRef]]:
+    """The assertions and the shown terms with their constants named v0, v1, and so on."""
+    constants, stack, seen = [], [*assertions, *show.values()], set()
+    while stack:
+        t = stack.pop()
+        if t.get_id() in seen:
+            continue
+        seen.add(t.get_id())
+        if z3.is_const(t) and t.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+            constants.append(t)
+        stack.extend(t.children())
+    pairs = [(c, z3.Const(f"v{k}", c.sort())) for k, c in enumerate(constants)]
+    if not pairs:
+        return list(assertions), dict(show)
+    return [z3.substitute(a, *pairs) for a in assertions], {name: z3.substitute(t, *pairs) for name, t in show.items()}
 
 
 def _declarations(smt2: str, show: dict[str, z3.ExprRef]) -> str:

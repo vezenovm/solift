@@ -64,7 +64,8 @@ class Terms:
         return self.__getattr__(name)
 
     def free(self, name: str, kind: str = "int") -> z3.ExprRef:
-        """A variable named by an identifier, like the inputs, so that every solver reads its SMT-LIB name as it is."""
+        """A variable named by an identifier, like the inputs, so that `show` and a counterexample name it as the
+        theorem does."""
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise TheoremError(f"{name} is not an identifier")
         if name in self.inputs or name in self.locals:

@@ -42,3 +42,26 @@ def test_a_shown_term_that_no_assertion_names_still_gets_its_value(monkeypatch, 
     s.add(x > 1)
     answer = solvers._portfolio(s.to_smt2(), {"x": x, "b": b, "y": y}, 20_000)
     assert answer.verdict == "sat" and set(answer.values) == {"x", "b", "y"}, answer
+
+
+@pytest.mark.parametrize("solver", solvers.SOLVERS)
+def test_a_name_that_smt_lib_reserves_reaches_each_solver_of_the_portfolio(monkeypatch, solver):
+    """z3 writes a constant named `as`, `let` or `div` as it is, and the SMT-LIB parsers of the portfolio refuse those
+    names. The portfolio gets the query with names of its own."""
+
+    class Unknown(z3.Solver):
+        def check(self, *args):
+            return z3.unknown
+
+        def reason_unknown(self):
+            return "forced"
+
+    monkeypatch.setattr(solvers.z3, "Solver", Unknown)
+    monkeypatch.setattr(solvers, "SOLVERS", (solver,))
+    a, let, div = z3.Int("as"), z3.Int("let"), z3.Bool("div")
+    show = {"as": a, "let": let, "div": div, "sum": a + let}
+    answer = solvers.check([a > 2, let == a * a, let < 20, div == (a > 3)], show, timeout_ms=20_000)
+    assert (answer.verdict, answer.solver) == ("sat", solver), answer.answers
+    assert answer.values["let"] == answer.values["as"] ** 2 < 20 and answer.values["as"] > 2
+    assert answer.values["div"] == (answer.values["as"] > 3)
+    assert answer.values["sum"] == answer.values["as"] + answer.values["let"]
