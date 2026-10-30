@@ -59,12 +59,14 @@ def test(
     root: pathlib.Path,
     out: pathlib.Path,
     cache: pathlib.Path,
-    contract: str,
+    contracts: tuple[str, ...],
     profile: str | None = None,
     allow_paths=(),
-) -> dict[str, str]:
-    """Runs the forge tests of one contract and returns the status of each test function."""
-    command = [binary(), "test", "--root", str(root), "--match-contract", f"^{contract}$", "--json"]
+) -> dict[tuple[str, str], str]:
+    """Runs the forge tests of the named contracts and returns the status of each test function, by contract and
+    function name."""
+    pattern = "^(" + "|".join(contracts) + ")$"
+    command = [binary(), "test", "--root", str(root), "--match-contract", pattern, "--json"]
     result = subprocess.run(
         command, env=environment(out, cache, profile, allow_paths), capture_output=True, text=True, check=False
     )
@@ -73,9 +75,10 @@ def test(
         if not line.startswith("{"):
             continue
         for path, suite in json.loads(line).items():
-            if path.rpartition(":")[2] == contract:
+            contract = path.rpartition(":")[2]
+            if contract in contracts:
                 for name, test_result in suite["test_results"].items():
-                    statuses[name.partition("(")[0]] = test_result["status"]
+                    statuses[(contract, name.partition("(")[0])] = test_result["status"]
     if not statuses and result.returncode:
         raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
     return statuses

@@ -23,7 +23,9 @@ def quoter(tmp_path_factory):
 def run_vectors(workspace, project, root, model, vectors, name):
     (root / project.generated / "QuoterQuote.sol").write_text(source(model))
     (root / project.generated / "QuoterQuoteVectors.t.sol").write_text(vectors_source(model, vectors))
-    return forge.test(root, workspace.fresh(f"{name}-out"), workspace.fresh(f"{name}-cache"), "QuoterQuoteVectors")
+    out, cache = workspace.fresh(f"{name}-out"), workspace.fresh(f"{name}-cache")
+    statuses = forge.test(root, out, cache, ("QuoterQuoteVectors",))
+    return {test: status for (_, test), status in statuses.items()}
 
 
 def test_the_vectors_reach_each_outcome_and_the_solidity_gives_the_z3_result_on_each(quoter):
