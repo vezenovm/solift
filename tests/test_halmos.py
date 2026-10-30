@@ -71,6 +71,16 @@ def test_halmos_gives_each_guard_its_verdict(workspace):
     assert run.problems == ("a path stopped at the loop bound, so the proof is not complete", "Halmos exited with 1")
 
 
+@pytest.mark.parametrize("limit", [("--depth", "80"), ("--width", "1")])
+def test_a_pass_cut_at_the_depth_or_width_limit_fails_the_run(workspace, limit):
+    """Halmos reports PASS for a check that it stopped at --depth or --width, with only a warning."""
+    root = fixtures().overlay(workspace)
+    run = HalmosEngine(extra_args=limit).run(root, workspace, (Check("Limits", "check_branches"),))
+    assert [r.verdict for r in run.results] == ["PASS"]
+    assert run.problems == ("a path stopped at the --depth or --width limit, so the proof is not complete",)
+    assert not run.ok
+
+
 def test_a_cached_build_without_the_ast_fails_the_run(workspace):
     """Halmos skips, with only a warning, a contract whose cached build has no AST. The engine builds from empty
     directories, so the test keeps a build and removes the AST of one artifact, which forge then leaves as it is."""

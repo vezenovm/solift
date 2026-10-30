@@ -6,10 +6,10 @@ Halmos skips, with only a warning, a contract whose cached build has no AST. So 
 from the directories of a build with Halmos's own flags (forge.FLAGS), where every artifact has its AST. Halmos's own
 default solver may change, so the run names yices.
 
-A check passes only with a PASS result and no path stopped at the loop bound: Halmos reports such a check as a pass,
-with a warning. The run fails when a declared check has no result or two (two contracts of one name, or an overloaded
-check), when the run has a check that it did not declare, when Halmos exits with a failure, and when the log shows a
-skipped contract or a path at the loop bound.
+A check passes only with a PASS result and no path stopped at the loop bound, the --depth limit or the --width limit:
+Halmos reports such a check as a pass, with a warning. The run fails when a declared check has no result or two (two
+contracts of one name, or an overloaded check), when the run has a check that it did not declare, when Halmos exits with
+a failure, and when the log shows a skipped contract or a path stopped at a limit.
 """
 
 from __future__ import annotations
@@ -32,6 +32,9 @@ EXITCODES = {0: "PASS", 1: "COUNTEREXAMPLE", 2: "TIMEOUT", 3: "STUCK", 4: "REVER
 LOG_FAILURES = {
     "parsing failure": "Halmos skipped a contract, so its checks did not run",
     "loop unrolling bound": "a path stopped at the loop bound, so the proof is not complete",
+    "incomplete execution due to the specified limit": (
+        "a path stopped at the --depth or --width limit, so the proof is not complete"
+    ),
 }
 
 

@@ -64,10 +64,11 @@ To pin z3sol from another project, install it by commit: `pip install git+https:
   is inside the lemma domain. A theorem expected to prove needs a witness that its hypotheses hold. An expected
   counterexample names its issue or reason.
 
-A link check fails on anything but PASS, on a path at the loop bound, on a missing or undeclared check, on a result
-from a file other than the generated one, on two results for one check, when Halmos exits with a failure, and when
-Halmos skips a contract. A theorem runs on z3 first. When z3 says "unknown", z3, yices and cvc5 run in parallel on the same
-query, and the first sat or unsat answer counts. "Unknown" from every solver fails the theorem.
+A link check fails on anything but PASS, on a path stopped at the loop bound or at Halmos's `--depth` or `--width`
+limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
+check, when Halmos exits with a failure, and when Halmos skips a contract. A theorem runs on z3 first. When z3 says
+"unknown", z3, yices and cvc5 run in parallel on the same query, and the first sat or unsat answer counts. "Unknown"
+from every solver fails the theorem.
 
 A cut point, such as `_tokenWeiPerEth()`, is an input of the model. The link sets it through the harness, such as a
 price feed with a symbolic answer, so it proves the model equal to the contract only for the values the harness can

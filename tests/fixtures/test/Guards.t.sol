@@ -21,3 +21,14 @@ contract Guards is Test {
     assert(sum <= 255);
   }
 }
+
+// A check of two paths, for the tests of the --depth and --width limits.
+contract Limits is Test {
+  function check_branches(uint256 _a) public pure {
+    if (_a > 10) {
+      assert(_a > 5);
+    } else {
+      assert(_a <= 10);
+    }
+  }
+}
