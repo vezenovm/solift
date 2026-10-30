@@ -6,6 +6,7 @@ import pytest
 from tests.projects import QUOTER, QUOTER_LINK, QUOTER_READS, fixtures
 from z3sol import forge
 from z3sol.extract import extract
+from z3sol.forge import BuildError, statuses
 from z3sol.halmos import HalmosEngine, judge
 from z3sol.link import Check, generate
 from z3sol.workspace import Workspace
@@ -67,7 +68,7 @@ def test_halmos_gives_each_guard_its_verdict(workspace):
     )
     run = HalmosEngine().run(root, workspace, checks)
     assert [r.verdict for r in run.results] == ["PASS", "COUNTEREXAMPLE", "BOUNDED", "MISSING"]
-    assert run.problems == ("a path stopped at the loop bound, so the proof is not complete",)
+    assert run.problems == ("a path stopped at the loop bound, so the proof is not complete", "Halmos exited with 1")
 
 
 def test_a_cached_build_without_the_ast_fails_the_run(workspace):
@@ -115,3 +116,34 @@ def test_the_link_finds_a_contract_that_no_longer_matches_its_model(workspace):
     run = quoter_link(workspace, mutated)
     verdicts = {r.check.function: r.verdict for r in run.results}
     assert verdicts["check_link"] == "COUNTEREXAMPLE"
+
+
+def test_two_results_for_one_check_fail_the_run_even_when_one_passes():
+    checks = (Check("C", "check_link"),)
+    two_paths = {
+        "exitcode": 1,
+        "test_results": {
+            "gen/C.t.sol:C": [result("check_link", 1)],
+            "other/C.t.sol:C": [{**result("check_link"), "name": "check_link()"}],
+        },
+    }
+    run = judge(checks, two_paths, "")
+    assert not run.ok
+    assert any(p.startswith("two results for C.check_link") for p in run.problems)
+    overloaded = report(result("check_link"), {**result("check_link", 1), "name": "check_link(uint8)"})
+    assert not judge(checks, overloaded, "").ok
+
+
+def test_a_failed_halmos_exit_fails_the_run_even_when_each_declared_check_passes():
+    data = {**report(result("check_a")), "exitcode": 1}
+    run = judge((Check("C", "check_a"),), data, "")
+    assert run.problems == ("Halmos exited with 1",)
+    assert not run.ok
+
+
+def test_two_forge_results_for_one_test_are_refused():
+    line = '{"a/V.t.sol:V": {"test_results": {"test_vector_000()": {"status": "Success"}}}, '
+    line += '"b/V.t.sol:V": {"test_results": {"test_vector_000()": {"status": "Failure"}}}}'
+    with pytest.raises(BuildError, match="two results for V.test_vector_000"):
+        statuses(line, ("V",))
+    assert statuses(line.replace("b/V.t.sol:V", "b/W.t.sol:W"), ("V",)) == {("V", "test_vector_000"): "Success"}

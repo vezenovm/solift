@@ -7,8 +7,9 @@ from the directories of a build with Halmos's own flags (forge.FLAGS), where eve
 default solver may change, so the run names yices.
 
 A check passes only with a PASS result and no path stopped at the loop bound: Halmos reports such a check as a pass,
-with a warning. The run fails when a declared check has no result, when the run has a check that it did not declare,
-and when the log shows a skipped contract or a path at the loop bound.
+with a warning. The run fails when a declared check has no result or two (two contracts of one name, or an overloaded
+check), when the run has a check that it did not declare, when Halmos exits with a failure, and when the log shows a
+skipped contract or a path at the loop bound.
 """
 
 from __future__ import annotations
@@ -142,11 +143,16 @@ def judge(checks: tuple[Check, ...], data: dict | None, log: str) -> LinkRun:
     for needle, problem in LOG_FAILURES.items():
         if needle in folded:
             problems.append(problem)
+    if data.get("exitcode"):
+        problems.append(f"Halmos exited with {data['exitcode']}")
     found = {}
     for path, results in data["test_results"].items():
         contract = path.rpartition(":")[2]
         for r in results:
-            found[Check(contract, r["name"].partition("(")[0])] = r
+            check = Check(contract, r["name"].partition("(")[0])
+            if check in found:
+                problems.append(f"two results for {check.contract}.{check.function}: {path} and another")
+            found[check] = r
     results = []
     for check in checks:
         r = found.pop(check, None)

@@ -74,15 +74,26 @@ def test(
     result = subprocess.run(
         command, env=environment(out, cache, profile, allow_paths), capture_output=True, text=True, check=False
     )
-    statuses = {}
-    for line in result.stdout.splitlines():
+    found = statuses(result.stdout, contracts)
+    if not found and result.returncode:
+        raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
+    return found
+
+
+def statuses(stdout: str, contracts: tuple[str, ...]) -> dict[tuple[str, str], str]:
+    """The status of each test of the named contracts in `forge test --json` output. Two results for one test, from two
+    contracts of one name or an overloaded test, are an error."""
+    found = {}
+    for line in stdout.splitlines():
         if not line.startswith("{"):
             continue
         for path, suite in json.loads(line).items():
             contract = path.rpartition(":")[2]
-            if contract in contracts:
-                for name, test_result in suite["test_results"].items():
-                    statuses[(contract, name.partition("(")[0])] = test_result["status"]
-    if not statuses and result.returncode:
-        raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
-    return statuses
+            if contract not in contracts:
+                continue
+            for name, test_result in suite["test_results"].items():
+                key = (contract, name.partition("(")[0])
+                if key in found:
+                    raise BuildError(f"two results for {contract}.{key[1]}, one from {path}")
+                found[key] = test_result["status"]
+    return found
