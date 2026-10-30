@@ -228,7 +228,7 @@ class _Extractor:
             pragma=self._pragma(unit),
             spdx=unit.get("license") or "UNLICENSED",
         )
-        self.used.add(path)
+        self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}
         return Extraction(model, sources)
 

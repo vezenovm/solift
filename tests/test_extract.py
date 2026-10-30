@@ -115,6 +115,14 @@ def test_the_quoter_model_is_the_function_with_its_reads_as_inputs(build):
     }
 
 
+def test_the_sources_of_an_inherited_function_hold_the_file_that_defines_it(build):
+    extraction = extract(build, "tests/fixtures/contracts/Inherited.sol:Inherited._plusOne", {})
+    assert set(extraction.sources) == {
+        "tests/fixtures/contracts/Inherited.sol",
+        "tests/fixtures/contracts/Base.sol",
+    }
+
+
 def test_the_quoter_terms_give_the_reference_result(build):
     model = extract(build, f"{QUOTER}._quote", READS).model
     rng = random.Random(1)
