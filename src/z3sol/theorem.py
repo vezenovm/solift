@@ -7,7 +7,8 @@ it proves:
 - `assume`: "no-revert" (the model does not revert) and "inside" (no mulDiv operand reaches 2**128, where the lemma is
   not proved). A theorem that must prove these, such as liveness, puts them in its goal instead.
 - `given`: a function of the terms that gives more hypotheses. It must not mention the model's reverts or outside:
-  those go in `assume`, so that each result lists them.
+  those go in `assume`, so that each result lists them. It sees the terms without `reverts`, `outside` and `at`, and
+  a called function gives it only its value.
 
 A theorem expected to prove needs a `witness`: a condition that, together with the hypotheses, z3 must satisfy, so a
 proof from hypotheses that never hold fails. A theorem can instead expect a counterexample, with the `issue` of the
@@ -166,6 +167,30 @@ def _mentions(term: z3.ExprRef, sub: z3.ExprRef) -> bool:
     return False
 
 
+class _Hypotheses:
+    """The terms as `given` sees them: everything but the model's reverts and outside, and the ways to reach them."""
+
+    HIDDEN = ("reverts", "outside", "at")
+
+    def __init__(self, q: Terms):
+        self._q = q
+
+    def __getattr__(self, name: str):
+        if name in self.HIDDEN:
+            raise TheoremError(f"given mentions the model's {name}; state it with assume")
+        if name == "call":
+            return lambda function, *args: _Value(self._q.call(function, *args).value)
+        return getattr(self._q, name)
+
+    def __getitem__(self, name: str):
+        return self.__getattr__(name)
+
+
+@dataclass(frozen=True)
+class _Value:
+    value: z3.ExprRef
+
+
 def _const(term: z3.ExprRef, value) -> z3.ExprRef:
     return z3.BoolVal(bool(value)) if term.sort() == z3.BoolSort() else z3.IntVal(value)
 
@@ -180,7 +205,7 @@ def prove(t: Theorem, q: Terms) -> Result:
         hypotheses.append(z3.Not(q.outside))
         assumed.append(ASSUMPTIONS["inside"])
     if t.given is not None:
-        given = t.given(q)
+        given = t.given(_Hypotheses(q))
         for name, term in (("reverts", q.reverts), ("outside", q.outside)):
             if _mentions(given, term):
                 raise TheoremError(f"{t.id}: given mentions the model's {name}; state it with assume")

@@ -98,6 +98,24 @@ def test_a_hypothesis_that_mentions_reverts_is_refused(q):
         prove(no_revert_in_given, q)
 
 
+@pytest.mark.parametrize(
+    "given, name",
+    [
+        (lambda q: z3.Not(z3.simplify(q.reverts)), "reverts"),
+        (lambda q: z3.Not(q["outside"]), "outside"),
+        (lambda q: z3.Not(q.at(_fee=0).reverts), "at"),
+    ],
+)
+def test_given_cannot_reach_the_reverts_or_the_outside_in_any_form(q, given, name):
+    @theorem(given=given, witness=lambda q: q.result > 0)
+    def never_reverts(q):
+        """the quote does not revert"""
+        return z3.Not(q.reverts)
+
+    with pytest.raises(TheoremError, match=f"given mentions the model's {name}; state it with assume"):
+        prove(never_reverts, q)
+
+
 def test_a_proof_from_hypotheses_that_never_hold_fails(q):
     def impossible(q):
         """a fee below zero"""
