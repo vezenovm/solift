@@ -76,7 +76,13 @@ def test_the_given_reads_stay_in_the_read_map_and_a_reserved_word_is_never_a_nam
     assert found.complete and found.reads == []
     assert found.read_map == QUOTER_READS
     assert [r["what"] for r in as_json(found)["reads"]] == ["given"] * 6
+    assert "'margin': '/* set margin, which the target reads as $config.margin */'," in skeleton(found, "_quote")
+    assert "'txGasPrice': 'tx.gasprice'," in skeleton(found, "_quote")
     assert _propose("__type", set()) == "type_"
     assert _propose("$config.uint", set()) == "uint_"
+    assert _propose("$config.block", set()) == "block_"
+    assert _propose("__1234", set()) == "v1234"
+    assert _propose("$config.error", set()) == "error"
+    assert extract(build, QUOTE, {**QUOTER_READS, "$floor": "error"}).model.reads[2].var.name == "error"
     with pytest.raises(ExtractionError, match="the input name type of \\$floor is a word that Solidity reserves"):
         extract(build, QUOTE, {**QUOTER_READS, "$floor": "type"})

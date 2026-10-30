@@ -326,6 +326,8 @@ def test_a_local_on_a_path_that_skips_its_mulDiv_does_not_establish_the_lemma_do
         "attribute": lambda q: q.v >= 0,
         "locals": lambda q: q.locals["v"] >= 0,
         "at locals": lambda q: q.at(a=q.free("b")).locals["v"] >= 0,
+        "copied locals": lambda q: dict(q.locals)["v"] >= 0,
+        "copied at locals": lambda q: {**q.at(a=2**129).locals}["v"] >= 0,
     }
     found = {}
     for name, goal in goals.items():
@@ -337,6 +339,8 @@ def test_a_local_on_a_path_that_skips_its_mulDiv_does_not_establish_the_lemma_do
         "attribute": "not-established",
         "locals": "not-established",
         "at locals": "not-established",
+        "copied locals": "not-established",
+        "copied at locals": "not-established",
     }
 
 
@@ -347,3 +351,24 @@ def test_given_reads_the_locals_as_a_mapping(q):
         return q.result <= q.cap
 
     assert prove(capped, q).verdict == "PROVED"
+
+
+def test_a_mulDiv_operand_below_zero_on_a_path_that_reverted_is_outside_the_lemma_domain():
+    """if (a < 5) return 0; uint256 b = a - 5; uint256 v = Math.mulDiv(b, 1, 2); return v: at a < 5, the term of v
+    gives mulDiv the operand a - 5, below zero."""
+    a, b, v = Var("a", input=True), Var("b"), Var("v")
+    body = (
+        If(ops.make("lt", a, Const(5)), (Return(Const(0)),)),
+        Let(b, ops.make("sub", a, Const(5))),
+        Let(v, ops.make("mulDiv", b, Const(1), Const(2))),
+        Return(v),
+    )
+    q = Terms(Model("C", Function("f", (a,), UINT256, body)))
+
+    @theorem(given=lambda h: h.a < 5, witness=lambda q: True)
+    def negative(q):
+        """below 5, v is below zero"""
+        return q.v < 0
+
+    result = prove(negative, q)
+    assert (result.verdict, result.lemma_domain) == ("PROVED", "not-established")

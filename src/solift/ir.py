@@ -11,19 +11,23 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# The keywords and reserved words of Solidity, its global names, and the elementary type names, none of which an input
-# of the emitted Solidity can take.
+# The keywords and reserved words of Solidity, which are no identifier, and the elementary type names. A contextual word
+# such as `error` or `global` is an identifier.
 KEYWORDS = frozenset(
-    """abstract after alias anonymous apply assembly auto break byte case catch constant constructor continue contract
-    copyof default define delete do else emit enum error event external fallback false final for function global
-    immutable implements import in indexed inline interface internal is let library macro mapping match memory modifier
-    mutable new null of override partial payable pragma private promise public pure receive reference relocatable
-    return returns revert sealed sizeof static storage struct supports switch this true try type typedef typeof
-    unchecked unicode using var view virtual while if bool string address abi block msg tx now super gasleft blockhash
-    blobhash keccak256 sha256 ripemd160 ecrecover addmod mulmod selfdestruct require assert wei gwei ether seconds
-    minutes hours days weeks years""".split()
+    """abstract after alias anonymous apply as assembly auto break byte calldata case catch constant constructor
+    continue contract copyof days default define delete do else emit enum ether event external fallback false final
+    for function gwei hex hours if immutable implements import in indexed inline interface internal is let library
+    macro mapping match memory minutes modifier mutable new null of override partial payable pragma private promise
+    public pure receive reference relocatable return returns sealed seconds sizeof static storage struct supports
+    switch throw true try type typedef typeof unchecked unicode using var view virtual weeks wei while years address
+    bool string""".split()
 )
 ELEMENTARY = re.compile(r"(u?int|bytes|u?fixed)(\d+(x\d+)?)?")
+# Global names that a declaration can shadow, with a warning: an input name avoids them, and the extractor allows them.
+BUILTINS = frozenset(
+    """abi block msg tx now this super gasleft blockhash blobhash keccak256 sha256 ripemd160 ecrecover addmod mulmod
+    selfdestruct require assert revert""".split()
+)
 
 
 def reserved(name: str) -> bool:

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 
 from solift.extract import ExtractionError, Missing, declared, extract
-from solift.ir import Effect, Model, reserved
+from solift.ir import BUILTINS, Effect, Model, reserved
 from solift.link import RESERVED
 
 LIMIT = 200
@@ -98,7 +98,7 @@ def _propose(key: str, taken: set[str]) -> str:
         names = [n.lstrip("$_") for n in re.findall(r"[A-Za-z_$][\w$]*", text)]
         names = [n.lower() if n.isupper() else n for n in names if n] or ["value"]
         candidates = [names[-1], *([_camel(names[-2:])] if len(names) > 1 else [])]
-    candidates = [f"{c}_" if reserved(c) else c for c in candidates]
+    candidates = [_identifier(c) for c in candidates]
     for name in candidates:
         if name not in taken:
             return name
@@ -106,6 +106,15 @@ def _propose(key: str, taken: set[str]) -> str:
     while f"{candidates[-1]}{n}" in taken:
         n += 1
     return f"{candidates[-1]}{n}"
+
+
+def _identifier(name: str) -> str:
+    """The name as an input name: only letters, digits and underscores, not starting with a digit, and no word that
+    Solidity reserves or a global that it would shadow."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", name) or "value"
+    if name[0].isdigit():
+        name = f"v{name}"
+    return f"{name}_" if reserved(name) or name in BUILTINS else name
 
 
 def _camel(names: list[str]) -> str:
@@ -120,13 +129,13 @@ def skeleton(found: Discovery, function: str) -> str:
         lines.append(f"    {missing.key!r}: {name!r},  # {missing.what}, {missing.src}")
     lines.append("},")
     adapters, observed = [], []
-    for missing, name in found.reads:
-        if missing.key in OBSERVED:
-            observed.append(f"    {name!r}: {OBSERVED[missing.key]!r},")
-        elif missing.key in CHEATCODES:
-            adapters.append(f"    {name!r}: {CHEATCODES[missing.key].format(name=name)!r},")
+    for key, name in found.read_map.items():
+        if key in OBSERVED:
+            observed.append(f"    {name!r}: {OBSERVED[key]!r},")
+        elif key in CHEATCODES:
+            adapters.append(f"    {name!r}: {CHEATCODES[key].format(name=name)!r},")
         else:
-            adapters.append(f"    {name!r}: '/* set {name}, which the target reads as {missing.key} */',")
+            adapters.append(f"    {name!r}: '/* set {name}, which the target reads as {key} */',")
     params = ", ".join(v.name for v in found.model.function.params) if found.model is not None else "..."
     lines += [
         "link=Link(",
@@ -146,7 +155,7 @@ def report(found: Discovery) -> str:
     """The discovery as lines for a terminal: the reads, the cut candidates, the effects and the spec skeleton."""
     function = found.target.rpartition(":")[2].partition(".")[2].partition("(")[0]
     state = "complete" if found.complete else f"incomplete: {found.diagnostic}"
-    lines = [f"== {found.target}: {len(found.reads)} reads, {state}", "", skeleton(found, function)]
+    lines = [f"== {found.target}: {len(found.read_map)} reads, {state}", "", skeleton(found, function)]
     if found.cuts:
         lines += ["", "internal calls that a read map entry can cut (by the call's source text):"]
         lines += [f"  {name}" for name in found.cuts]

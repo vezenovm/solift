@@ -101,6 +101,7 @@ def test_a_foundry_project_infers_its_overlay_from_the_profile(tmp_path):
     kept = Project.foundry(root=tmp_path, copy=("src", "contracts"), link=()).resolve()
     assert (kept.link, kept.copy) == ((), ("src", "contracts"))
     assert Project(root=tmp_path).resolve() == Project(root=tmp_path)
+    assert Project.foundry(root=pathlib.Path(".")).root == pathlib.Path(".").resolve()
 
 
 def test_a_harness_goes_into_the_overlay_once_and_two_harnesses_at_one_place_fail(tmp_path):

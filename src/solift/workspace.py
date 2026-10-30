@@ -77,6 +77,11 @@ class Project:
     add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
     generated: str | None = "test/solift"
 
+    def __post_init__(self):
+        # The overlay links into the root, so a relative root would give links to themselves.
+        if self.root is not None:
+            object.__setattr__(self, "root", pathlib.Path(self.root).resolve())
+
     @classmethod
     def foundry(
         cls,

@@ -123,7 +123,8 @@ class Terms:
 
     @property
     def locals(self) -> dict[str, z3.ExprRef]:
-        return _Locals(self._locals, self._model_locals)
+        self._model_locals()
+        return dict(self._locals)
 
     def __getattr__(self, name: str) -> z3.ExprRef:
         names = self.__dict__
@@ -182,7 +183,7 @@ class Terms:
         self._evaluated(f"call {name}", _uses_lemma(self.model, function), z3.Or(called.outside, *outside))
         return called
 
-    def at(self, **values) -> ModelTerms:
+    def at(self, **values) -> _Fixed:
         """The value, reverts, outside and locals with the named inputs replaced by the given terms or numbers."""
         pairs, outside = [], []
         for name, value in values.items():
@@ -199,33 +200,23 @@ class Terms:
 
         value, reverts, out, anywhere = (fixed(x) for x in (self._value, self._reverts, self._outside, self._anywhere))
         values = {k: fixed(v) for k, v in self._locals.items()}
-        locals_ = _Locals(values, lambda: self._evaluated("at locals", self._lemma, z3.Or(anywhere, *outside)))
         self._evaluated("at", self._lemma, z3.Or(out, *outside))
-        return ModelTerms(value, reverts, out, locals_)
+        obligation = z3.Or(anywhere, *outside)
+        return _Fixed(value, reverts, out, values, lambda: self._evaluated("at locals", self._lemma, obligation))
 
 
-class _Locals(dict):
-    """The locals of a run of the model, which record the run's obligation when the theorem reads one."""
+class _Fixed:
+    """The model with inputs replaced: `value`, `reverts` and `outside`, and `locals`, which records the obligation of
+    the run's locals when the theorem takes them."""
 
-    def __init__(self, values: dict, record: Callable[[], None]):
-        super().__init__(values)
-        self._record = record
+    def __init__(self, value, reverts, outside, values: dict, record: Callable[[], None]):
+        self.value, self.reverts, self.outside = value, reverts, outside
+        self._values, self._record = values, record
 
-    def __getitem__(self, name):
+    @property
+    def locals(self) -> dict[str, z3.ExprRef]:
         self._record()
-        return super().__getitem__(name)
-
-    def get(self, name, default=None):
-        self._record()
-        return super().get(name, default)
-
-    def values(self):
-        self._record()
-        return super().values()
-
-    def items(self):
-        self._record()
-        return super().items()
+        return dict(self._values)
 
 
 def _uses_lemma(model: Model, function: Function) -> bool:

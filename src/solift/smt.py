@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import z3
 
 from solift.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var
-from solift.ops import TABLE
+from solift.ops import TABLE, U256
 
 FALSE = z3.BoolVal(False)
 TRUE = z3.BoolVal(True)
@@ -223,11 +223,18 @@ class _Run:
         operator = TABLE[e.op]
         if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
             self.comparisons.append((self.guard, values[0], values[1]))
-        if operator.outside:
-            self.anywhere.append(operator.outside(*values))
+        lemma = _outside(operator, values) if operator.outside else None
+        if lemma is not None:
+            self.anywhere.append(lemma)
         reverts = [p[1] for p in parts] + ([operator.reverts(*values)] if operator.reverts else [])
-        outside = [p[2] for p in parts] + ([operator.outside(*values)] if operator.outside else [])
+        outside = [p[2] for p in parts] + ([lemma] if lemma is not None else [])
         return operator.value(*values), _any(reverts), _any(outside)
+
+
+def _outside(operator, values: list) -> z3.BoolRef:
+    """Where an operation leaves its lemma's domain: the table's outside, or an operand out of the uint256 range, which
+    only an operand on a path that already reverted, or that does not run, can be."""
+    return z3.Or(operator.outside(*values), *(z3.Not(z3.And(v >= 0, v < U256)) for v in values))
 
 
 def _any(terms: list) -> z3.BoolRef:
