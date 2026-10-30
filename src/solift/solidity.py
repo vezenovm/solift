@@ -8,7 +8,25 @@ to prove this code equal to the contract stays small. Named constants keep their
 
 from __future__ import annotations
 
-from solift.ir import Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var, walk
+from solift.ir import (
+    Assign,
+    Call,
+    Const,
+    Expr,
+    Function,
+    If,
+    Let,
+    Model,
+    Op,
+    Return,
+    Revert,
+    Stmt,
+    Tuple,
+    Unpack,
+    Var,
+    parts,
+    walk,
+)
 from solift.ops import TABLE
 
 
@@ -71,7 +89,9 @@ def _constants(model: Model) -> dict[str, Const]:
 
 def _function(function: Function, top: bool) -> list[str]:
     params = ["Inputs memory i"] + ([] if top else [f"{p.type.solidity} {p.name}" for p in function.params])
-    returns = function.returns.solidity + (f" {function.result.name}" if function.result is not None else "")
+    names = function.results or (None,) * len(parts(function.returns))
+    pairs = zip(names, parts(function.returns), strict=True)
+    returns = ", ".join(t.solidity + (f" {v.name}" if v else "") for v, t in pairs)
     lines = [f"  function {function.name}({', '.join(params)}) internal pure returns ({returns}) {{"]
     lines += _block(function.body, "    ")
     lines.append("  }")
@@ -85,6 +105,9 @@ def _block(stmts: tuple[Stmt, ...], indent: str) -> list[str]:
             lines.append(f"{indent}{stmt.var.type.solidity} {stmt.var.name} = {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, Assign):
             lines.append(f"{indent}{stmt.var.name} = {expr(stmt.expr, top=True)};")
+        elif isinstance(stmt, Unpack):
+            names = ["" if v is None else f"{v.type.solidity} {v.name}" if stmt.declare else v.name for v in stmt.vars]
+            lines.append(f"{indent}({', '.join(names)}) = {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, Return):
             lines.append(f"{indent}return {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, Revert):
@@ -110,6 +133,8 @@ def expr(e: Expr, top: bool = False) -> str:
         return e.name if e.name is not None else _literal(e)
     if isinstance(e, Call):
         return f"{e.function}({', '.join(['i'] + [expr(arg) for arg in e.args])})"
+    if isinstance(e, Tuple):
+        return f"({', '.join(expr(arg, top=True) for arg in e.args)})"
     if isinstance(e, Op):
         operator = TABLE[e.op]
         text = operator.solidity.format(*(expr(arg) for arg in e.args))

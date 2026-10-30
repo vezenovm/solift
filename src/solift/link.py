@@ -7,9 +7,10 @@ never gets an input from the environment otherwise. An adapter is the harness co
 inputs, such as `vm.fee(baseFee);` for `block.basefee`. The parameters of the modeled function go to the contract
 through `call`.
 
-"Agree" means: both succeed with the same result, or both revert. Revert data, storage writes and events are not
-compared. The test reads the observed inputs before it calls the contract, so that each is the value that the contract
-reads, also when the call writes storage: the model reads nothing that the function wrote (extract.py).
+"Agree" means: both succeed with the same result, each of its values for a function of several returns, or both
+revert. Revert data, storage writes and events are not compared. The test reads the observed inputs before it calls the
+contract, so that each is the value that the contract reads, also when the call writes storage: the model reads nothing
+that the function wrote (extract.py).
 
 The generated files are the model library and host (solidity.py), the link test, and a test of each operator-table
 row and lemma that the model uses, which this build proves on its own bytecode and OpenZeppelin version.
@@ -22,7 +23,7 @@ import pathlib
 import re
 from dataclasses import dataclass, field
 
-from solift.ir import Model, Op, walk
+from solift.ir import Model, Op, parts, walk
 from solift.ops import PROOFS, TABLE
 from solift.solidity import names
 from solift.solidity import source as model_source
@@ -142,7 +143,7 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
         if name not in covered:
             raise LinkError(f"no call argument, adapter or observed value sets the input {name}")
     for name in [*inputs, *link.parameters]:
-        if name in RESERVED:
+        if name in RESERVED or re.fullmatch(r"(code|model)Result\d+", name):
             raise LinkError(f"{name} has a name that the generated test uses")
     for param in model.function.params:
         if covered[param.name] != "call":
@@ -156,7 +157,6 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     params = [f"    {v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
     params += [f"    {type_} {name}" for name, type_ in link.parameters.items()]
     fields = [f"      {v.name}: {link.observed.get(v.name, v.name)}" for v in model.inputs]
-    returns = model.function.returns.solidity
     adapters = [f"    {code.strip()}" for code in link.adapters.values()]
     lines = [
         f"// SPDX-License-Identifier: {model.spdx}",
@@ -183,13 +183,26 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         "    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));",
         "    assert(codeOk == modelOk);",
         "    if (codeOk) {",
-        f"      assert(abi.decode(codeOut, ({returns})) == abi.decode(modelOut, ({returns})));",
+        *_compare(model.function.returns),
         "    }",
         "  }",
         "}",
         "",
     ]
     return "\n".join(lines)
+
+
+def _compare(returns) -> list[str]:
+    """The asserts that the contract's result is the model's: the one value, or each value of several returns."""
+    if returns.kind != "tuple":
+        type_ = returns.solidity
+        return [f"      assert(abi.decode(codeOut, ({type_})) == abi.decode(modelOut, ({type_})));"]
+    lines = []
+    for side in ("code", "model"):
+        declared = ", ".join(f"{t.solidity} {side}Result{n}" for n, t in enumerate(parts(returns)))
+        lines.append(f"      ({declared}) = abi.decode({side}Out, ({returns.solidity}));")
+    lines += [f"      assert(codeResult{n} == modelResult{n});" for n in range(len(returns.parts))]
+    return lines
 
 
 def _proofs(models) -> list:

@@ -1,5 +1,7 @@
 """The IR: one loop-free Solidity function as typed expressions and statements.
 
+A function returns one value or several: a function of several returns a tuple, whose type has the type of each part.
+
 A model is a function whose reads from outside it (storage, external view calls, `tx` and `block` fields, and the fields
 of a struct parameter) are inputs, like its parameters. It has the function's value and its reverts, and none of its
 writes or events (`Model.effects` lists those). smt.py turns a model into z3 integer terms, and solidity.py into
@@ -49,23 +51,28 @@ class Src:
 
 @dataclass(frozen=True)
 class Type:
-    """`uint<bits>`, `bool`, `address`, `enum`, or `literal`: a number literal, which takes the type of the operand next
-    to it. An enum has its Solidity name, such as `Kinds.Kind`, and its number of members. A contract or interface
-    value is its address."""
+    """`uint<bits>`, `bool`, `address`, `enum`, `tuple`, or `literal`: a number literal, which takes the type of the
+    operand next to it. An enum has its Solidity name, such as `Kinds.Kind`, and its number of members. A contract or
+    interface value is its address. A tuple is the values of a function of several returns, with the type of each in
+    `parts`."""
 
     kind: str
     bits: int = 0
     name: str = ""
     members: int = 0
+    parts: tuple[Type, ...] = ()
 
     @property
     def solidity(self) -> str:
+        """The type as Solidity writes it, and a tuple as the list of its parts' types: `uint256, bool`."""
         if self.kind == "uint":
             return f"uint{self.bits}"
         if self.kind in ("bool", "address"):
             return self.kind
         if self.kind == "enum":
             return self.name
+        if self.kind == "tuple":
+            return ", ".join(part.solidity for part in self.parts)
         raise ValueError(f"a {self.kind} has no Solidity type of its own")
 
     @property
@@ -92,6 +99,18 @@ def uint(bits: int) -> Type:
 
 def enum(name: str, members: int) -> Type:
     return Type("enum", 8, name, members)
+
+
+def tuple_of(parts: tuple[Type, ...]) -> Type:
+    """The type of a function's returns: the one type, or the tuple of several."""
+    if not parts:
+        raise ValueError("a function returns at least one value")
+    return parts[0] if len(parts) == 1 else Type("tuple", parts=tuple(parts))
+
+
+def parts(type_: Type) -> tuple[Type, ...]:
+    """The types of the values of a function's returns: one, or each part of a tuple."""
+    return type_.parts if type_.kind == "tuple" else (type_,)
 
 
 UINT256 = uint(256)
@@ -140,9 +159,19 @@ class Op(Expr):
 
 @dataclass(frozen=True, eq=False)
 class Call(Expr):
-    """A call to an internal function of the model, by name."""
+    """A call to an internal function of the model, by name. A call to a function of several returns is a tuple: it is
+    the whole value of a return or an unpack."""
 
     function: str
+    args: tuple[Expr, ...]
+    type: Type
+    src: Src | None = None
+
+
+@dataclass(frozen=True, eq=False)
+class Tuple(Expr):
+    """Several values, as `(a, b)` in a return or on the right of an unpack."""
+
     args: tuple[Expr, ...]
     type: Type
     src: Src | None = None
@@ -167,7 +196,21 @@ class Assign:
 
 
 @dataclass(frozen=True)
+class Unpack:
+    """The parts of a tuple into locals, as `(, uint256 y) = f(a);` (`declare`, a declaration) or `(x, y) = (y, x);`
+    (an assignment to declared locals). `vars` has a local or None for each part. The tuple is evaluated whole before
+    any local changes."""
+
+    vars: tuple[Var | None, ...]
+    expr: Expr
+    declare: bool
+    src: Src | None = None
+
+
+@dataclass(frozen=True)
 class Return:
+    """The value of the function: one expression, or a tuple for a function of several returns."""
+
     expr: Expr
     src: Src | None = None
 
@@ -187,20 +230,30 @@ class If:
     src: Src | None = None
 
 
-Stmt = Let | Assign | Return | Revert | If
+Stmt = Let | Assign | Unpack | Return | Revert | If
 
 
 @dataclass(frozen=True)
 class Function:
-    """`result` is the named return variable, if the function has one: it starts at zero, and the function returns it
-    when it ends without a return."""
+    """`returns` is the type of the value, a tuple for several returns. `results` are the named return variables, one
+    for each value or None for a value without a name, or empty when no value has a name: each starts at zero, and the
+    function returns them when it ends without a return."""
 
     name: str
     params: tuple[Var, ...]
     returns: Type
     body: tuple[Stmt, ...]
     src: Src | None = None
-    result: Var | None = None
+    results: tuple[Var | None, ...] = ()
+
+    @property
+    def result(self) -> Var | None:
+        """The named return variable of a function of one return."""
+        return self.results[0] if len(self.results) == 1 else None
+
+    @property
+    def named(self) -> tuple[Var, ...]:
+        return tuple(v for v in self.results if v is not None)
 
 
 @dataclass(frozen=True)
@@ -254,12 +307,24 @@ class Model:
         return self.function.params + tuple(read.var for read in self.reads)
 
 
+def declared_locals(stmts):
+    """Each local that the statements declare, in its branches too."""
+    for stmt in stmts:
+        if isinstance(stmt, Let):
+            yield stmt.var
+        elif isinstance(stmt, Unpack) and stmt.declare:
+            yield from (v for v in stmt.vars if v is not None)
+        elif isinstance(stmt, If):
+            yield from declared_locals(stmt.then)
+            yield from declared_locals(stmt.orelse)
+
+
 def walk(node):
     """Every expression in a statement, a function or an expression, depth first."""
     if isinstance(node, Function):
         for stmt in node.body:
             yield from walk(stmt)
-    elif isinstance(node, Let | Assign | Return):
+    elif isinstance(node, Let | Assign | Unpack | Return):
         yield from walk(node.expr)
     elif isinstance(node, Revert):
         return
