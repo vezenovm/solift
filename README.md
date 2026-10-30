@@ -11,10 +11,12 @@ Solidity Arithmetic Prover (working name). For each Solidity function of a spec,
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
-Status: milestone M2. It covers the functions of Oxide's `formulas/subsidies.py`: `DepositSubsidy._quoteSubsidy`,
-`DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`, and
-`PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). Wiring it into Oxide's proof check, and deleting
-`subsidies.py` there, happens from an Oxide session.
+Status: milestone M3. The acceptance run against Oxide covers the functions of Oxide's `formulas/subsidies.py`:
+`DepositSubsidy._quoteSubsidy`, `DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`,
+and `PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). It also covers two contracts that Oxide does not
+prove, with their own theorems and with harnesses in `acceptance/oxide/harness/`: `Caps.getCurrentAvailable`, the
+portal's deposit capacity, and `MigrationSubsidy._pricedGas` and `_quoteSubsidy`, which Oxide's registry exempts.
+Wiring the tool into Oxide's proof check, and deleting `subsidies.py` there, happens from an Oxide session.
 
 The extractor takes loop-free pure and view functions with checked `uint` arithmetic, comparisons, boolean logic,
 ternaries, `if` and early returns, locals assigned also in branches, compound assignments, named returns, addresses,
