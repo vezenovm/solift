@@ -19,10 +19,15 @@ Status: two acceptance runs cover public contracts, each at a pinned commit, wit
 - Resupply's lending pair, at the commit that the exploit of 2025-06-26 drained: the check that `borrow` makes,
   `_updateExchangeRate` and then `_isSolvent`. The theorem that a solvent borrower's debt is within twice the
   loan-to-value limit fails with the exploit as its counterexample, an oracle price above 1e36, and proves on the
-  fixed source.
+  fixed source. This reproduces the arithmetic failure behind the exploit, not the transaction: that the solvency
+  check reads the rate that `_updateExchangeRate` stored is a hypothesis of the harness, and the borrower's debt is a
+  cut point.
 - Morpho Blue v1.0.0: `_isHealthy`, with the same theorem, which proves, and a supply then a withdraw in its share math.
-  Three of the theorems are rules of Morpho's Certora specs: `supplyWithdraw`, `checkSummaryMulDivUp` and
-  `checkSummaryMulDivDown`.
+  Three of the theorems state rules of Morpho's Certora specs. `supplyWithdraw` is stated on a supply then a withdraw
+  that the harness composes from SharesMathLib, not on `Morpho.supply` and `Morpho.withdraw`.
+  `checkSummaryMulDivUp` and `checkSummaryMulDivDown` are theorems of the integer model of MathLib's `mulDivUp` and
+  `mulDivDown` on any operands: the link proves those functions equal to the bytecode only where `_isHealthy` calls
+  them.
 
 The extractor takes loop-free functions with checked `uint` arithmetic, comparisons, boolean logic, ternaries, `if` and
 early returns, `require`, `assert` and `revert`, locals assigned also in branches, compound assignments, named returns,
@@ -56,9 +61,11 @@ A spec (`examples/quoter/spec.py`) names the target function, its read map, its 
 A run takes one spec or several specs of one project. It builds the project once, extracts each model, and then runs
 every stage, even when one fails: the theorems, the vectors (one forge test for every model), and the links (one Halmos
 run for every model, with one test of the operator rows and lemmas they use). It prints one line for each result, and
-writes a JSON record (`schema` 2) with each result, the sources each model comes from with their hashes, and the
-versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and solift (with its commit). The run fails when
-any result is not the expected one.
+writes a JSON record (`schema` 3) with each result, the sources each model comes from with their hashes, and the
+versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and solift (with its commit). It also holds the
+sha256 of each solc input of the build, of each theorem's query, of the spec's Python files and of each file that the
+overlay adds, the profile, and the options of the link engine. The run fails when any result is not the expected one.
+An error in a stage, such as an exception in a theorem, fails that stage and the run goes on.
 
 Code on top of the models, such as a check of each deployed configuration, uses `solift.run.load(specs, workspace)`: the
 terms of each model from one build. `q.at(name=value, ...)` gives the terms with inputs fixed, `q.call(function, *args)`
@@ -77,9 +84,19 @@ To pin solift from another project, install it by commit: `pip install git+https
 - The operator rows and lemmas that the model uses, proved in the same build: each checked operator reverts exactly
   when the table says, `Math.min` is the smaller value, and `Math.mulDiv` is the floor of the product when both
   operands are below 2**128.
-- The theorems, each with its assumptions listed: the input types, and, when stated, that the model does not revert or
-  is inside the lemma domain. A theorem expected to prove needs a witness that its hypotheses hold. An expected
-  counterexample names its issue or reason.
+- The theorems, each with its assumptions listed: the input types, the range of each free variable of a bounded kind,
+  and, when stated, that the model does not revert or is inside the lemma domain. A theorem expected to prove needs a
+  witness that its hypotheses hold. An expected counterexample names its issue or reason. A counterexample and a
+  witness give a value for every input and every free variable.
+
+Each theorem's record also says how far its result reaches:
+
+- `lemma_domain`: whether the proof rests on `Math.mulDiv` where an operand reaches 2**128, which the build does not
+  prove. It is `established` when the hypotheses keep every run that the proof makes inside the domain, with each
+  argument in the range of its type, `not-established` or `unknown` when they do not, and `not-used` without mulDiv.
+- `callees`: the functions that the theorem runs on its own arguments with `q.call`. Such a theorem is a theorem of the
+  integer model: the link covers those functions only where the modeled function calls them.
+- `link`: whether the spec's link passed, failed, or did not run.
 
 A link check fails on anything but PASS, on a path stopped at the loop bound or at Halmos's `--depth` or `--width`
 limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
@@ -108,7 +125,8 @@ and `FOUNDRY_CACHE_PATH` in the workspace: Halmos runs `forge build` without `--
 directories, with Halmos's own build flags, and the vectors and Halmos extend that build: every artifact has its AST,
 and a skipped contract still fails the run. Each write into the overlay refuses a link and a path outside it. A process
 locks each workspace it uses, so two runs never share one, and a run does not delete a workspace that another process
-holds. A guard compares the project's git status and file times before and after the run.
+holds. A guard compares the project's git status and file times before and after the run, and fails the run on a
+change. It detects a write that changes the status or a file time; it does not prove that nothing was written.
 
 ## Develop
 

@@ -75,7 +75,8 @@ The docstring is the statement. A theorem returns a z3 condition on `q`, which h
 
 - `result` and `reverts`;
 - each input, parameter and local, by name;
-- `free(name)`, a variable that the theorem quantifies over;
+- `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
+  `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
 - `call(function, *args)`, with `.value` and `.reverts`;
 - `at(**inputs)`, which fixes inputs.
 
@@ -87,7 +88,7 @@ Options:
 | `given` | More hypotheses, as a function of `q`. |
 | `witness` | Required to prove. The hypotheses and the witness must hold together, or the theorem fails as VACUOUS. |
 | `expect="counterexample"` | Pins a known failure, with `reason=` or `issue=`. |
-| `show` | More names to print with a counterexample. |
+| `show` | Locals to print with a counterexample, next to every input and free variable. |
 
 ## 5. Run
 
@@ -116,7 +117,11 @@ exit code is 0 only when every result is the expected one.
 - **"the read map names X, which ... does not read"**: remove X from the read map.
 - **The link fails**: an adapter does not set what the contract reads, or the read map misses a read.
 - **The vectors disagree**: this is a solift bug.
-- **COUNTEREXAMPLE**: the output prints the input values. `show` adds more.
+- **COUNTEREXAMPLE**: the output prints every input and free variable. `show` adds locals.
+- **A note under a theorem**: it rests on `Math.mulDiv` outside the domain this build proves (add `assume=("inside",)`
+  or hypotheses that keep the operands below 2**128), or it is a theorem of the integer model of a callee.
+- **"no input reaches it"** after the vectors: z3 proved that no input pays, returns zero or reverts. It is not a
+  failure. `impossible=("zero",)` on the spec turns it into an assertion.
 - **VACUOUS**: the hypotheses contradict each other, or the witness cannot hold with them.
 
 The README says what a run proves and what it trusts.
