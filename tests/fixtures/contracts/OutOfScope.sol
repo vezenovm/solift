@@ -141,4 +141,16 @@ contract OutOfScope {
     }
     return _x;
   }
+
+  function inputsName(uint256 _a) internal pure returns (uint256) {
+    return _named(_a);
+  }
+
+  function _named(uint256 i) internal pure returns (uint256) {
+    return i;
+  }
+
+  function noInputs() internal pure returns (uint256) {
+    return 1;
+  }
 }

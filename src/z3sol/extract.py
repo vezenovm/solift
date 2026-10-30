@@ -209,6 +209,8 @@ class _Extractor:
                 raise ExtractionError(f"the read map names {written}, which {qualified} does not read")
             self.reads[key] = Read(Var(name, ENVIRONMENT[key], input=True), written)
         reads = tuple(self.reads[key] for key in self.read_map)
+        if not function.params and not reads:
+            raise ExtractionError(f"{qualified} has no inputs: its result is a constant")
         self._check_names(node, function, reads)
         imports = []
         if self.math_path is not None:
@@ -272,6 +274,8 @@ class _Extractor:
         if len(returns) != 1:
             self.fail(node["returnParameters"], f"{name} returns {len(returns)} values, not one")
         return_type = self._type(returns[0])
+        for p in (*node["parameters"]["parameters"], *returns):
+            self._not_inputs_name(p)
         scope = {}
         result = None
         if returns[0]["name"]:
@@ -339,6 +343,7 @@ class _Extractor:
                 self.fail(init or node, "a memory struct that is not a copy of a storage struct")
             scope[decl["id"]] = ("copy", prefix)
             return None
+        self._not_inputs_name(decl)
         var = Var(decl["name"], self._type(decl), src=self.src(decl))
         if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
             self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
@@ -351,6 +356,10 @@ class _Extractor:
             self._assignable(init, value.type, var.type)
         scope[decl["id"]] = var
         return Let(var, value, self.src(node))
+
+    def _not_inputs_name(self, decl) -> None:
+        if decl["name"] == "i":
+            self.fail(decl, "i names the inputs struct of the emitted Solidity")
 
     def _struct_copy(self, init, scope: dict) -> str | None:
         """The read map prefix of a memory copy of a storage struct: `$config`, or `$pricing[_flow]` for an entry of a
