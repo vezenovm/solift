@@ -11,6 +11,8 @@ Solidity Arithmetic Prover (working name). For each Solidity function of a spec,
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
+To use it on a new contract, see [USAGE.md](USAGE.md).
+
 Status: milestone M4. The acceptance run against Oxide covers the functions of Oxide's `formulas/subsidies.py`:
 `DepositSubsidy._quoteSubsidy`, `DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`,
 and `PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). It also covers two contracts that Oxide does not
