@@ -26,7 +26,7 @@ def run_vectors(workspace, project, root, model, vectors, name):
     (root / project.generated / "QuoterQuoteVectors.t.sol").write_text(vectors_source(model, vectors))
     out, cache = workspace.fresh(f"{name}-out"), workspace.fresh(f"{name}-cache")
     statuses = forge.test(root, out, cache, ("QuoterQuoteVectors",))
-    return {test: status for (_, test), status in statuses.items()}
+    return {test: status for (_, _, test), status in statuses.items()}
 
 
 def test_the_vectors_reach_each_outcome_and_the_solidity_gives_the_z3_result_on_each(quoter):
@@ -94,5 +94,5 @@ def test_the_vectors_compare_an_address_or_an_enum_result(quoter):
         (root / project.generated / f"{stem}Vectors.t.sol").write_text(vectors_source(model, vectors))
         contracts.append(f"{stem}Vectors")
     statuses = forge.test(root, workspace.fresh("typed-out"), workspace.fresh("typed-cache"), tuple(contracts))
-    assert {c for c, _ in statuses} == set(contracts)
+    assert {c for _, c, _ in statuses} == set(contracts)
     assert set(statuses.values()) == {"Success"}

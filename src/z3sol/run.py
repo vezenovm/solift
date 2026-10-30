@@ -29,7 +29,7 @@ import z3
 from z3sol import forge, solvers
 from z3sol.extract import ExtractionError, extract
 from z3sol.halmos import HalmosEngine
-from z3sol.link import Link, LinkError, generate, operators_test
+from z3sol.link import Link, LinkError, generate, operators_test, placed
 from z3sol.solidity import names
 from z3sol.theorem import Terms, TheoremError, prove, theorem
 from z3sol.vectors import VectorError, sample, vectors_source
@@ -168,9 +168,11 @@ def run(
         checks = [check for c in models for check in c.generated.checks]
         if shared is not None:
             checks += shared.checks
-        linked = engine.run(root, workspace, tuple(checks), project.profile, allow, build=build)
+        here = dict(zip(checks, placed(checks, project.generated), strict=True))
+        linked = engine.run(root, workspace, tuple(here.values()), project.profile, allow, build=build)
         clock.stage("link (Halmos)")
-        results = {r.check: r for r in linked.results}
+        unplaced = {v: k for k, v in here.items()}
+        results = {unplaced.get(r.check, r.check): r for r in linked.results}
         record["link"] = {"engine": engine.name, "problems": list(linked.problems)}
         record["failures"] += [f"link: {p}" for p in linked.problems]
         for c in models:
@@ -266,11 +268,25 @@ def _vectors(checked: list[_Checked], root, build, project: Project, allow) -> N
     contracts = tuple(names(c.model)[0].removesuffix("Model") + "Vectors" for c in sampled)
     statuses = forge.test(root, *build, contracts, project.profile, allow)
     for c, contract in zip(sampled, contracts, strict=True):
-        mine = [status for (name, _), status in statuses.items() if name == contract]
-        agree = sum(status == "Success" for status in mine)
-        c.record["vectors"] = {"count": len(c.vectors), "agree": agree}
-        if agree != len(c.vectors) or len(mine) != len(c.vectors):
-            c.record["failures"].append(f"vectors: {agree} of {len(c.vectors)} agree with the emitted Solidity")
+        mine = {key: status for key, status in statuses.items() if key[1] == contract}
+        failures = vector_failures(contract, f"{project.generated}/{contract}.t.sol", len(c.vectors), mine)
+        agree = sum(status == "Success" for (_, _, name), status in mine.items() if name.startswith("test_vector_"))
+        c.record["vectors"] = {"count": len(c.vectors), "agree": agree if not failures else 0}
+        c.record["failures"] += failures
+
+
+def vector_failures(contract: str, path: str, count: int, statuses: dict) -> list[str]:
+    """Why the forge results of a vectors contract do not show that every vector agrees: each result must come from
+    the generated file, and the tests must be exactly test_vector_000 up to the count, each a success."""
+    failures = []
+    paths = sorted({p for p, c, _ in statuses if c == contract} - {path})
+    if paths:
+        failures.append(f"vectors: the results come from {', '.join(paths)}, not {path}")
+    expected = {f"test_vector_{n:03d}" for n in range(count)}
+    passed = {name for (p, c, name), status in statuses.items() if (p, c) == (path, contract) and status == "Success"}
+    if passed != expected or len(statuses) != count:
+        failures.append(f"vectors: {len(passed & expected)} of {count} agree with the emitted Solidity")
+    return failures
 
 
 def _check_record(r) -> dict:

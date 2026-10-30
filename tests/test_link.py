@@ -85,7 +85,8 @@ def test_the_run_declares_the_link_and_each_row_and_lemma_that_the_model_uses():
         "check_lemma_mulDivOfHalfWidthOperandsIsTheFloor",
         "check_row_subRevertsExactlyBelowZero",
     }
-    assert Check("DepositSubsidyQuoteSubsidyLink", "check_link") in generated.checks
+    link = Check("DepositSubsidyQuoteSubsidyLink", "check_link", "DepositSubsidyQuoteSubsidyLink.t.sol")
+    assert link in generated.checks
     operators = generated.files["DepositSubsidyQuoteSubsidyOperators.t.sol"]
     assert 'import {Math} from "@oz/utils/math/Math.sol";' in operators
     assert "function check_row_divRevertsExactlyOnZero" not in operators

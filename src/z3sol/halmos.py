@@ -146,19 +146,21 @@ def judge(checks: tuple[Check, ...], data: dict | None, log: str) -> LinkRun:
     if data.get("exitcode"):
         problems.append(f"Halmos exited with {data['exitcode']}")
     found = {}
-    for path, results in data["test_results"].items():
-        contract = path.rpartition(":")[2]
+    for key, results in data["test_results"].items():
+        path, _, contract = key.rpartition(":")
         for r in results:
-            check = Check(contract, r["name"].partition("(")[0])
-            if check in found:
-                problems.append(f"two results for {check.contract}.{check.function}: {path} and another")
+            check = Check(contract, r["name"].partition("(")[0], path)
+            if any((c.contract, c.function) == (check.contract, check.function) for c in found):
+                problems.append(f"two results for {check.contract}.{check.function}: {key} and another")
             found[check] = r
     results = []
     for check in checks:
-        r = found.pop(check, None)
-        if r is None:
+        match = [c for c in found if (c.contract, c.function) == (check.contract, check.function)]
+        match = [c for c in match if not check.path or c.path == check.path]
+        if not match:
             results.append(CheckResult(check, "MISSING"))
             continue
+        r = found.pop(match[0])
         verdict = EXITCODES.get(r["exitcode"], f"EXIT {r['exitcode']}")
         if verdict == "PASS" and r.get("num_bounded_loops"):
             verdict = "BOUNDED"

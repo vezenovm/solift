@@ -8,7 +8,7 @@ from z3sol import forge
 from z3sol.extract import extract
 from z3sol.forge import BuildError, statuses
 from z3sol.halmos import HalmosEngine, judge
-from z3sol.link import Check, generate
+from z3sol.link import Check, generate, placed
 from z3sol.workspace import Workspace
 
 GUARDS = "Guards"
@@ -100,7 +100,7 @@ def quoter_link(workspace: Workspace, contract: str | None = None):
     root = project.overlay(workspace, replace=replace)
     for name, text in generated.files.items():
         (root / project.generated / name).write_text(text)
-    return HalmosEngine().run(root, workspace, generated.checks)
+    return HalmosEngine().run(root, workspace, placed(generated.checks, project.generated))
 
 
 def test_the_quoter_link_passes(workspace):
@@ -146,4 +146,19 @@ def test_two_forge_results_for_one_test_are_refused():
     line += '"b/V.t.sol:V": {"test_results": {"test_vector_000()": {"status": "Failure"}}}}'
     with pytest.raises(BuildError, match="two results for V.test_vector_000"):
         statuses(line, ("V",))
-    assert statuses(line.replace("b/V.t.sol:V", "b/W.t.sol:W"), ("V",)) == {("V", "test_vector_000"): "Success"}
+    assert statuses(line.replace("b/V.t.sol:V", "b/W.t.sol:W"), ("V",)) == {
+        ("a/V.t.sol", "V", "test_vector_000"): "Success"
+    }
+
+
+def test_a_check_from_another_file_does_not_stand_in_for_the_generated_one():
+    declared = (Check("C", "check_link", path="gen/C.t.sol"),)
+    elsewhere = {"exitcode": 0, "test_results": {"other/C.t.sol:C": [result("check_link")]}}
+    run = judge(declared, elsewhere, "")
+    assert [(r.check.path, r.verdict) for r in run.results] == [
+        ("gen/C.t.sol", "MISSING"),
+        ("other/C.t.sol", "UNDECLARED"),
+    ]
+    assert not run.ok
+    here = {"exitcode": 0, "test_results": {"gen/C.t.sol:C": [result("check_link")]}}
+    assert judge(declared, here, "").ok

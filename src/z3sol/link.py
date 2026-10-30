@@ -16,6 +16,7 @@ row and lemma that the model uses, which this build proves on its own bytecode a
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass, field
 
@@ -52,10 +53,18 @@ class Link:
 
 @dataclass(frozen=True)
 class Check:
-    """A Halmos check that the run declares, by test contract and function name."""
+    """A Halmos check that the run declares, by test contract and function name, and by the path of its source file
+    when the run knows it: a result from another file does not count for it."""
 
     contract: str
     function: str
+    path: str = ""
+
+
+def placed(checks, directory: str) -> tuple[Check, ...]:
+    """The checks with the path of their file under `directory`, the generated directory relative to the root that
+    Halmos runs in. The generator names each check's file, relative to that directory."""
+    return tuple(dataclasses.replace(c, path=f"{directory}/{c.path}") for c in checks)
 
 
 @dataclass(frozen=True)
@@ -77,7 +86,7 @@ def generate(model: Model, link: Link, operators: bool = True) -> Generated:
         f"{stem}.sol": model_source(model),
         f"{stem}Link.t.sol": _link_test(model, link, stem, target, function, arguments, covered),
     }
-    generated = Generated(files, (Check(f"{stem}Link", "check_link"),))
+    generated = Generated(files, (Check(f"{stem}Link", "check_link", f"{stem}Link.t.sol"),))
     if not operators:
         return generated
     shared = operators_test((model,), stem, link.test_import)
@@ -210,5 +219,5 @@ def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -
         "}",
         "",
     ]
-    checks = tuple(Check(f"{stem}Operators", proof.name) for proof in proofs)
+    checks = tuple(Check(f"{stem}Operators", proof.name, f"{stem}Operators.t.sol") for proof in proofs)
     return Generated({f"{stem}Operators.t.sol": "\n".join(lines)}, checks)

@@ -66,9 +66,9 @@ def test(
     contracts: tuple[str, ...],
     profile: str | None = None,
     allow_paths=(),
-) -> dict[tuple[str, str], str]:
-    """Runs the forge tests of the named contracts and returns the status of each test function, by contract and
-    function name."""
+) -> dict[tuple[str, str, str], str]:
+    """Runs the forge tests of the named contracts and returns the status of each test function, by source path,
+    contract and function name."""
     pattern = "^(" + "|".join(contracts) + ")$"
     command = [binary(), "test", "--root", str(root), *FLAGS, "--match-contract", pattern, "--json"]
     result = subprocess.run(
@@ -80,20 +80,20 @@ def test(
     return found
 
 
-def statuses(stdout: str, contracts: tuple[str, ...]) -> dict[tuple[str, str], str]:
+def statuses(stdout: str, contracts: tuple[str, ...]) -> dict[tuple[str, str, str], str]:
     """The status of each test of the named contracts in `forge test --json` output. Two results for one test, from two
     contracts of one name or an overloaded test, are an error."""
     found = {}
     for line in stdout.splitlines():
         if not line.startswith("{"):
             continue
-        for path, suite in json.loads(line).items():
-            contract = path.rpartition(":")[2]
+        for key, suite in json.loads(line).items():
+            path, _, contract = key.rpartition(":")
             if contract not in contracts:
                 continue
             for name, test_result in suite["test_results"].items():
-                key = (contract, name.partition("(")[0])
-                if key in found:
-                    raise BuildError(f"two results for {contract}.{key[1]}, one from {path}")
-                found[key] = test_result["status"]
+                test = name.partition("(")[0]
+                if any((c, t) == (contract, test) for _, c, t in found):
+                    raise BuildError(f"two results for {contract}.{test}, one from {path}")
+                found[(path, contract, test)] = test_result["status"]
     return found

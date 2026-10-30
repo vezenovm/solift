@@ -5,7 +5,7 @@ from examples.quoter.spec import QUOTER, SPEC
 from z3sol import forge
 from z3sol.extract import extract
 from z3sol.link import generate
-from z3sol.run import run, summary
+from z3sol.run import run, summary, vector_failures
 from z3sol.workspace import Workspace
 
 
@@ -77,3 +77,14 @@ def test_two_specs_whose_generated_contracts_have_the_same_names_fail_the_run(tm
     record = run([SPEC, twin], Workspace(tmp_path / "work"), link=False, vectors=False)
     assert record["failures"] == ["quoter-twin: extract: QuoterQuote names the generated contracts of quoter too"]
     assert dataclasses.replace(twin, stem="QuoterTwin").stem == "QuoterTwin"
+
+
+def test_the_vectors_of_a_model_are_exactly_its_own_tests_in_its_own_file():
+    path = "test/z3sol/QVectors.t.sol"
+    mine = {(path, "QVectors", f"test_vector_{n:03d}"): "Success" for n in range(2)}
+    assert vector_failures("QVectors", path, 2, mine) == []
+    old = {("old/QVectors.t.sol", "QVectors", f"test_old_{n}"): "Success" for n in range(2)}
+    assert vector_failures("QVectors", path, 2, old) == [
+        "vectors: the results come from old/QVectors.t.sol, not test/z3sol/QVectors.t.sol",
+        "vectors: 0 of 2 agree with the emitted Solidity",
+    ]
