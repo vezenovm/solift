@@ -392,3 +392,94 @@ def evaluate_vector(model, values):
 
     found = vector(model, values)
     return found.reverts, found.result
+
+
+POINTERS = "tests/fixtures/contracts/Pointers.sol:Pointers"
+SPENDER = {
+    "$spenders[_who].config.activeUntil": "activeUntil",
+    "block.timestamp": "now",
+    "$spenders[_who].last": "last",
+    "$spenders[_who].config.perPeriod": "perPeriod",
+    "$spenders[_who].left": "left",
+    "$main.left": "mainLeft",
+}
+
+
+def test_a_storage_pointer_reads_the_fields_of_its_struct_also_in_the_callees_it_is_passed_to(build):
+    model = extract(build, f"{POINTERS}.available", SPENDER).model
+    assert [(r.source, r.var.type.solidity) for r in model.reads] == [
+        ("$spenders[_who].config.activeUntil", "uint64"),
+        ("block.timestamp", "uint256"),
+        ("$spenders[_who].last", "uint64"),
+        ("$spenders[_who].config.perPeriod", "uint128"),
+        ("$spenders[_who].left", "uint192"),
+        ("$main.left", "uint192"),
+    ]
+    assert [(f.name, [p.name for p in f.params]) for f in model.callees] == [("_isLive", []), ("_limits", [])]
+    values = {"_who": 1, "activeUntil": 100, "now": 50, "last": 40, "perPeriod": 30, "left": 5, "mainLeft": 99}
+    assert evaluate_vector(model, values) == (False, 15)
+    assert evaluate_vector(model, {**values, "now": 101}) == (False, 0)
+    assert evaluate_vector(model, {**values, "mainLeft": 7}) == (False, 7)
+    assert "    (, uint256 pullable) = _limits(i);\n" in source(model)
+
+
+def test_a_storage_pointer_at_msg_sender_to_a_nested_struct_or_as_a_parameter_names_its_fields(build):
+    mine = extract(build, f"{POINTERS}.mine", {"$spenders[msg.sender].left": "left"}).model
+    assert [r.source for r in mine.reads] == ["$spenders[msg.sender].left"]
+    twice = extract(build, f"{POINTERS}.mineTwice", {"$spenders[msg.sender].left": "left"}).model
+    assert [r.source for r in twice.reads] == ["$spenders[msg.sender].left"]
+    nested = extract(build, f"{POINTERS}.perPeriod", {"$spenders[_who].config.perPeriod": "perPeriod"}).model
+    assert [r.source for r in nested.reads] == ["$spenders[_who].config.perPeriod"]
+    reads = {"block.timestamp": "now", "_spender.last": "last", "_spender.config.perPeriod": "perPeriod"}
+    limits = extract(build, f"{POINTERS}._limits", {**reads, "_spender.left": "left", "$main.left": "mainLeft"}).model
+    assert [p.name for p in limits.function.params] == []
+    assert "_spender.config.perPeriod" in [r.source for r in limits.reads]
+    copy = {"$spenders[_who].config.perPeriod": "perPeriod", "$spenders[_who].left": "left"}
+    assert extract(build, f"{POINTERS}.wholeConfig", copy).model.reads[0].source == "$spenders[_who].config.perPeriod"
+
+
+def test_a_write_through_a_storage_pointer_is_an_effect_and_a_later_read_of_it_is_refused(build):
+    model = extract(build, f"{POINTERS}.touch", {"$spenders[_who].left": "stored"}).model
+    assert [(e.kind, e.place) for e in model.effects] == [("write", "$spenders[_who].last")]
+    with pytest.raises(ExtractionError, match=r"Pointers.sol:\d+:12: reads \$spenders after a write to it"):
+        extract(build, f"{POINTERS}.readAfterWrite", {"$spenders[_who].left": "left"})
+    with pytest.raises(ExtractionError, match="a write through the storage parameter _spender: it could be any"):
+        extract(build, f"{POINTERS}._writeThrough", {})
+
+
+def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointers_is_refused(build):
+    with pytest.raises(ExtractionError, match=r"Pointers.sol:\d+:31: a storage pointer to \$spenders\[who\]: a"):
+        extract(build, f"{POINTERS}.atALocalKey", {})
+    with pytest.raises(ExtractionError, match=r"Pointers.sol:\d+:31: a storage pointer to \$list\[_n\]: a"):
+        extract(build, f"{POINTERS}.inAnArray", {})
+    with pytest.raises(ExtractionError, match=r"calls _left on other storage than its first call \(_spender = "):
+        extract(build, f"{POINTERS}.twoSpenders", {"$spenders[_a].left": "a", "$spenders[_b].left": "b"})
+    # A read map key names one value for the call: it changes nothing, and it is not at a local that changes, below a
+    # pointer or in a callee too, nor at other declarations of the same names, nor in a callee that runs twice, also
+    # through another callee, though it can be at the parameter of a callee that runs once.
+    for function, key, message in [
+        ("owedTwice", "$book.owed[who]", r"Pointers.sol:\d+:31: the read \$book.owed\[who\] names who, which an"),
+        ("owedReset", "$book.owed[_who]", r"the read \$book.owed\[_who\] names _who, which an assignment changes"),
+        ("slotsIncremented", "$book.slots[n++]", r"Pointers.sol:\d+:33: the read \$book.slots\[n\+\+\] changes n\+\+"),
+        ("slotsAssigned", "$book.slots[_n = _m]", r"the read \$book.slots\[_n = _m\] changes _n = _m: a read map"),
+        ("owedInBranches", "$book.owed[who]", r"the read \$book.owed\[who\] names other things than at its"),
+        ("slotsOfTwoLibraries", "$book.slots[K]", r"the read \$book.slots\[K\] names other things than at its"),
+        ("sameValue", "level", r"the read level names other things than at its first read"),
+        ("samePick", "picks[c.key]", r"the read picks\[c.key\] names other things than at its first read"),
+        ("sameSpenders", "_valueOf(_p)", r"the read _valueOf\(_p\) names other things than at its first read"),
+        ("sameScores", '$scores["ab"]', r'the read \$scores\["ab"\] names other things than at its first read'),
+        ("sameSender", "msg.sender", r"the read msg.sender names other things than at its first read"),
+        ("samePair", "picks[p.key]", r"the read picks\[p.key\] names other things than at its first read"),
+        ("flipTwice", "_flip(c)", r"the read _flip\(c\) passes memory to _flip, which can change it"),
+        ("gasTwice", "gasleft()", r"the read gasleft\(\) calls gasleft, whose value changes during the call"),
+        ("sameChoice", "choice.key", r"calls keyOf on other storage than its first call \(_choice = choice\)"),
+        ("owedNested", "$book.owed[_who]", r"Pointers.sol:\d+:3: _owedThrough runs 2 times in the call: a read map"),
+    ]:
+        with pytest.raises(ExtractionError, match=message):
+            extract(build, f"{POINTERS}.{function}", {key: "owed"})
+    assert [r.source for r in extract(build, f"{POINTERS}.owedOnce", {"$book.owed[_who]": "owed"}).model.reads] == [
+        "$book.owed[_who]"
+    ]
+    # A parameter with the name of a storage variable in the read map is the parameter.
+    shadowed = extract(build, f"{POINTERS}.valueIs", {"level": "owed"}).model
+    assert [v.name for v in shadowed.inputs] == ["level", "owed"]

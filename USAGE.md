@@ -160,7 +160,8 @@ The README says what a run proves and what it trusts.
 | addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
 | `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |
-| storage writes with `=`, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage |
+| storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
+| storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
 | one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
 
 ### Read map keys
@@ -171,15 +172,16 @@ A key names a value that the function reads from outside itself, and maps it to 
 |---|---|
 | `$floor`, `TOKEN` | a storage variable or an immutable, by its name |
 | `$config.cap` | a field of a storage struct, read directly or through a memory copy (`Config memory cfg = $config;`) |
-| `$rates[_kind].cap` | a field of a struct in a mapping, through a memory copy, at a key that is a parameter |
+| `$rates[_kind].cap`, `$spenders[msg.sender].config.cap` | a field of a struct in a mapping, also nested, through a memory copy or a storage pointer (`Spender storage s = $spenders[msg.sender];`), at a key that is a parameter or a field of `tx`, `block` or `msg`; also in a callee that the pointer is passed to |
 | `$balances[_who]`, `position[id][borrower].collateral` | any other storage read, by its source text |
-| `_meter.used` | a field of a memory struct parameter of the target |
+| `_meter.used`, `_spender.left` | a field of a memory or storage struct parameter of the target |
 | `tx.gasprice`, `block.timestamp`, `msg.sender` | a field of `tx`, `block` or `msg` |
 | `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
 | `_price()` | an internal call: a cut point, whose result becomes an input |
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
-has. The model assumes that each read succeeds: an external call that reverts has no input in the model.
+has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, the same
+one at each read of the key, in the target or in a callee that runs once. The model assumes that each read succeeds: an external call that reverts has no input in the model.
 `solift reads` prints the keys that a function needs.
 
 ### Adapters

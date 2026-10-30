@@ -123,12 +123,23 @@ def test_the_quoter_link_passes(workspace):
 QUOTE = (QUOTER_READS, None, QUOTER_LINK)
 TUPLES = "tests/fixtures/contracts/Tuples.sol"
 LIMITS = ({}, None, Link(setup="tests/fixtures/test/TuplesSetup.sol:TuplesSetup", call="tuples.limits(_a, _b)"))
+POINTERS = "tests/fixtures/contracts/Pointers.sol"
+PER_PERIOD = (
+    {"$spenders[_who].config.perPeriod": "perPeriod"},
+    None,
+    Link(
+        setup="tests/fixtures/test/PointersSetup.sol:PointersSetup",
+        call="pointers.perPeriod(_who)",
+        adapters={"perPeriod": "pointers.set(_who, 0, perPeriod, 0, 0);"},
+    ),
+)
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
-# the contract reverts: a result, and each value of several returns.
+# the contract reverts: a result, each value of several returns, and the key of a storage pointer.
 CHANGES = {
     "result": (f"{QUOTER}:Quoter._quote", QUOTE, "_cost + _margin;", "(_cost + _margin) / 2;"),
     "first-value": (f"{TUPLES}:Tuples.limits", LIMITS, "sum = _a + _b;", "sum = (_a + _b) / 2;"),
     "second-value": (f"{TUPLES}:Tuples.limits", LIMITS, "_a < _b ? _a : _b;", "_a < _b ? _b : _a;"),
+    "pointer-key": (f"{POINTERS}:Pointers.perPeriod", PER_PERIOD, "[_who].config;", "[msg.sender].config;"),
 }
 
 

@@ -184,3 +184,39 @@ def test_a_function_of_several_returns_links_value_by_value_and_a_theorem_reads_
         assert {r["verdict"] for r in result["link"]} == {"PASS"}
         assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
     assert record["specs"][0]["theorems"][0]["verdict"] == "PROVED"
+
+
+def test_a_storage_pointer_passed_to_callees_links_to_its_model(tmp_path):
+    spec = Spec(
+        name="pointers-available",
+        target="tests/fixtures/contracts/Pointers.sol:Pointers.available",
+        reads={
+            "$spenders[_who].config.activeUntil": "activeUntil",
+            "block.timestamp": "now",
+            "$spenders[_who].last": "last",
+            "$spenders[_who].config.perPeriod": "perPeriod",
+            "$spenders[_who].left": "left",
+            "$main.left": "mainLeft",
+        },
+        link=Link(
+            setup="tests/fixtures/test/PointersSetup.sol:PointersSetup",
+            call="pointers.available(_who)",
+            adapters={
+                ("activeUntil", "perPeriod", "left", "last"): "pointers.set(_who, activeUntil, perPeriod, left, last);",
+                "mainLeft": "pointers.setMain(mainLeft);",
+                "now": "vm.warp(now);",
+            },
+        ),
+        project=SPEC.project,
+    )
+
+    @spec.theorem(witness=lambda q: q.result > 0)
+    def available_at_most_the_main_allowance(q):
+        """What a spender can pull is at most the main allowance that is left."""
+        return z3.Or(q.reverts, q.result <= q.mainLeft)
+
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
