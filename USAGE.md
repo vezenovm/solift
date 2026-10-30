@@ -185,12 +185,13 @@ The README says what a run proves and what it trusts.
 | Takes | Refuses, with the place in the source |
 |---|---|
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
+| a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
 | `if`, early returns, `require`, `assert`, `revert` | loops |
 | locals, also assigned in branches; compound assignments; named returns | modifiers |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
 | addresses, enums, constants, immutables, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
-| `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |
+| `Math.min`, `Math.max` and `Math.mulDiv`, also with `Math.Rounding.Floor`, backed by lemmas | other `Math` functions, `Math.mulDiv` rounded up (Halmos cannot prove its `mulmod` at a symbolic denominator) |
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
@@ -256,8 +257,8 @@ values that the harness can produce.
 A link check fails on anything but PASS, on a path stopped at the loop bound or at Halmos's `--depth` or `--width`
 limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
 check, when Halmos exits with a failure, and when Halmos skips a contract. The same build proves the operator rows and
-the lemmas that the models use: `Math.min` is the smaller value, and `Math.mulDiv(x, y, d)` is `x * y / d` rounded down
-when `x` and `y` are below 2**128 and `d` is not 0.
+the lemmas that the models use: `Math.min` is the smaller value, `Math.max` the larger, and `Math.mulDiv(x, y, d)` is
+`x * y / d` rounded down when `x` and `y` are below 2**128 and `d` is not 0.
 
 ### How far a theorem reaches
 

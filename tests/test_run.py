@@ -309,3 +309,41 @@ def test_writes_and_call_arguments_are_outputs_that_the_link_reads_after_the_cal
         "source": "$allowances[msg.sender].left",
         "argument": None,
     }
+
+
+def test_max_and_a_mulDiv_rounded_down_prove_their_lemmas_and_a_signed_parameter_reaches_the_call(tmp_path):
+    setup = "tests/fixtures/test/RoundedSetup.sol:RoundedSetup"
+    share = Spec(
+        name="rounded-share",
+        target="tests/fixtures/contracts/Rounded.sol:Rounded.share",
+        reads={},
+        link=Link(setup=setup, call="rounded.share(_x, _y, _d)"),
+        project=SPEC.project,
+    )
+
+    @share.theorem(assume=("no-revert", "inside"), witness=lambda q: q.result > 1)
+    def the_share_is_at_least_each_floor(q):
+        """The share is at least each of the two floors."""
+        return z3.And(q.result >= q._x * q._y / q._d, q.result >= q._y * q._y / q._d)
+
+    swap = Spec(
+        name="rounded-swap",
+        target="tests/fixtures/contracts/Rounded.sol:Rounded.swap",
+        reads={},
+        outputs={"POOL.exchange(0,_out,_dx,minDy)": (None, None, None, "minOut")},
+        link=Link(
+            setup=setup,
+            call="rounded.swap(_out, _dx)",
+            parameters={"_out": "int128"},
+            post={"minOut": "pool.lastMinDy()"},
+        ),
+        project=SPEC.project,
+    )
+    record = run([share, swap], Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    checks = {r["check"]: r["verdict"] for r in record["link"]["shared"]}
+    assert {"check_lemma_maxIsTheLargerValue", "check_lemma_mulDivOfHalfWidthOperandsIsTheFloor"} <= set(checks)
+    assert set(checks.values()) == {"PASS"}
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert record["specs"][0]["theorems"][0]["lemma_domain"] == "established"
