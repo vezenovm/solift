@@ -100,4 +100,12 @@ contract Pricer {
   function _price() internal view returns (uint256) {
     return TOKEN.balanceOf(address(0xFEE));
   }
+
+  function _named(uint256 _x, uint256 _y) internal pure returns (uint256) {
+    return _difference({_b: _x, _a: _y}) + Math.mulDiv({x: _x, denominator: 1, y: 2});
+  }
+
+  function _difference(uint256 _a, uint256 _b) internal pure returns (uint256) {
+    return _a - _b;
+  }
 }

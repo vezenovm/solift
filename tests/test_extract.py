@@ -273,3 +273,9 @@ def test_a_quote_reads_a_mapping_entry_through_a_copy_and_cuts_an_internal_call(
         assert evaluate(model, values)[1] == max(units * 10 - 5, 0)
     with pytest.raises(ExtractionError, match=r"reads a storage field \$rates\[_kind\].cap"):
         extract(build, f"{PRICER}.quoteFor", {"$rates[_kind].floor": "floor", "_price()": "price"})
+
+
+def test_named_arguments_bind_to_the_parameters_of_their_names(build):
+    model = extract(build, f"{PRICER}._named", {}).model
+    assert evaluate(model, {"_x": 3, "_y": 5}) == (False, 2 + 6, False)
+    assert evaluate(model, {"_x": 5, "_y": 3})[0]

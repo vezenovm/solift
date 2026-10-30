@@ -579,15 +579,16 @@ class _Extractor:
         if decl["nodeType"] != "FunctionDefinition":
             self.fail(node, f"a call to {self.text(callee)}")
         owner = self.nodes[decl["scope"]]
+        arguments = self._arguments(node, decl)
         if owner.get("contractKind") == "library" and owner["name"] == "Math":
             path = self._place(owner)[0]
             if path.endswith(MATH_PATH):
                 op = MATH_OPERATORS.get(decl["name"])
-                if op is None or len(node["arguments"]) != op[1]:
-                    self.fail(node, f"Math.{decl['name']} with {len(node['arguments'])} arguments has no lemma")
+                if op is None or len(arguments) != op[1]:
+                    self.fail(node, f"Math.{decl['name']} with {len(arguments)} arguments has no lemma")
                 self.math_path = path
                 self.used.add(path)
-                return self._make(node, op[0], *node["arguments"], scope=scope)
+                return self._make(node, op[0], *arguments, scope=scope)
         internal = (callee["nodeType"] == "Identifier" and decl["visibility"] != "external") or (
             callee["nodeType"] == "MemberAccess"
             and owner.get("contractKind") == "library"
@@ -596,10 +597,21 @@ class _Extractor:
         if not internal:
             self.fail(node, f"an external call that the read map does not name: {self.text(node)}")
         function = self._callee(decl, node)
-        args = tuple(self._expr(arg, scope) for arg in node["arguments"])
-        for arg, param, arg_node in zip(args, function.params, node["arguments"], strict=True):
+        args = tuple(self._expr(arg, scope) for arg in arguments)
+        for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
+
+    def _arguments(self, node, decl) -> list:
+        """The argument nodes of a call in the order of the callee's parameters, also for named arguments such as
+        `f({b: x, a: y})`."""
+        if not node.get("names"):
+            return node["arguments"]
+        params = [p["name"] for p in decl["parameters"]["parameters"]]
+        by_name = dict(zip(node["names"], node["arguments"], strict=True))
+        if sorted(by_name) != sorted(params):
+            self.fail(node, f"the named arguments {', '.join(node['names'])} are not the parameters of {decl['name']}")
+        return [by_name[name] for name in params]
 
     def _callee(self, decl, call) -> Function:
         if decl["id"] in self.stack:
