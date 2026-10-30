@@ -1,6 +1,6 @@
 import pytest
 
-from acceptance.oxide.mutants import MUTANTS, Mutant, apply
+from acceptance.oxide.mutants import MUTANTS, Mutant, apply, problems
 from acceptance.oxide.specs import SPECS
 
 SOURCE = """\
@@ -35,3 +35,29 @@ def test_each_mutant_names_a_theorem_of_its_spec_that_rejects_it():
         assert m.path == specs[m.spec].target.partition(":")[0], m.id
     assert {m.spec for m in MUTANTS} == {"deposit-quote", "deposit-priced-gas", "withdrawal-quote"}
     assert any(m.link for m in MUTANTS)
+
+
+def mutant_record(theorems, failures, link=None):
+    spec = {"spec": "deposit-quote", "theorems": theorems, "link": link, "failures": failures}
+    return {"specs": [spec], "link": {"problems": [], "shared": []} if link is not None else None, "failures": failures}
+
+
+def test_a_mutant_counts_as_rejected_only_when_its_one_expected_failure_is_the_only_failure():
+    mutant = Mutant("m", "a", "b", breaks="t-broken", holds=("t-held",))
+    broken = {"id": "t-broken", "verdict": "COUNTEREXAMPLE", "witness": None, "ok": False}
+    held = {"id": "t-held", "verdict": "PROVED", "witness": "WITNESS", "ok": True}
+    expected = "deposit-quote: theorem t-broken: COUNTEREXAMPLE, expected PROVED"
+    assert problems(mutant, mutant_record([broken, held], [expected])) == []
+    vacuous = {**held, "witness": "VACUOUS", "ok": False}
+    found = problems(
+        mutant,
+        mutant_record(
+            [broken, vacuous], [expected, "deposit-quote: theorem t-held: PROVED, witness VACUOUS, expected PROVED"]
+        ),
+    )
+    assert found == ["deposit-quote: theorem t-held: PROVED, witness VACUOUS, expected PROVED", "t-held is not ok"]
+    shared = "link: Z3solOperators.check_lemma_minIsTheSmallerValue COUNTEREXAMPLE"
+    assert problems(mutant, mutant_record([broken, held], [expected, shared])) == [shared]
+    assert problems(Mutant("m", "a", "b", breaks="t-broken", link=True), mutant_record([broken], [expected])) == [
+        "link: not run"
+    ]

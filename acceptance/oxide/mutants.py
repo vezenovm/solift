@@ -116,3 +116,21 @@ def apply(source: str, mutant: Mutant) -> str:
     if source.count(mutant.old) != 1 or body.count(mutant.old) != 1:
         raise ValueError(f"{mutant.id}: {mutant.old!r} does not occur exactly once, inside {mutant.function}")
     return source.replace(mutant.old, mutant.new)
+
+
+def problems(mutant: Mutant, record: dict) -> list[str]:
+    """Why the run of a mutant does not show that its theorem rejects it. The run must fail on `breaks` with a
+    counterexample and on nothing else: each theorem in `holds` proves with a witness, and every other check passes."""
+    (spec,) = record["specs"]
+    theorems = {t["id"]: t for t in spec.get("theorems", [])}
+    expected = f"{spec['spec']}: theorem {mutant.breaks}: "
+    found = [f for f in record["failures"] if not f.startswith(expected)]
+    verdict = theorems.get(mutant.breaks, {}).get("verdict")
+    if verdict != "COUNTEREXAMPLE":
+        found.append(f"{mutant.breaks} is {verdict}, not COUNTEREXAMPLE")
+    for held in mutant.holds:
+        if not theorems.get(held, {}).get("ok"):
+            found.append(f"{held} is not ok")
+    if mutant.link and spec.get("link") is None:
+        found.append("link: not run")
+    return found

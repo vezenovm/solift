@@ -81,7 +81,7 @@ def main(argv=None) -> int:
                 only=(mutant.breaks, *mutant.holds),
             )
             mutant_records[mutant.id] = m
-            problems = _mutant_problems(mutant, m)
+            problems = mutants.problems(mutant, m)
             failures += [f"mutant {mutant.id}: {p}" for p in problems]
             status = "REJECTED" if not problems else "NOT REJECTED"
             print(f"{status} {mutant.id}: {mutant.breaks} fails" + (", and its link passes" if mutant.link else ""))
@@ -103,24 +103,6 @@ def main(argv=None) -> int:
     print("\n" + ", ".join(f"{name} {seconds:.0f}s" for name, seconds in times.items()))
     print(f"{'ok' if not failures else f'{len(failures)} failure(s)'}; record: {path}")
     return 0 if not failures else 1
-
-
-def _mutant_problems(mutant: mutants.Mutant, record: dict) -> list[str]:
-    (spec,) = record["specs"]
-    verdicts = {t["id"]: t["verdict"] for t in spec.get("theorems", [])}
-    problems = [f for f in record["failures"] if f.startswith(("build:", "project:")) or ": extract:" in f]
-    if verdicts.get(mutant.breaks) != "COUNTEREXAMPLE":
-        problems.append(f"{mutant.breaks} is {verdicts.get(mutant.breaks)}, not COUNTEREXAMPLE")
-    for held in mutant.holds:
-        if verdicts.get(held) != "PROVED":
-            problems.append(f"{held} is {verdicts.get(held)}, not PROVED")
-    if mutant.link:
-        if spec.get("link") is None:
-            problems.append("link: not run")
-        else:
-            problems += [f"link: {p}" for p in record["link"]["problems"]]
-            problems += [f"link: {r['check']} {r['verdict']}" for r in spec["link"] if r["verdict"] != "PASS"]
-    return problems
 
 
 sys.exit(main())
