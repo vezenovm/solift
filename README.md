@@ -1,16 +1,26 @@
 # z3sol
 
-Solidity Arithmetic Prover (working name). For one Solidity function, it:
+Solidity Arithmetic Prover (working name). For each Solidity function of a spec, it:
 
-1. extracts an integer model from the solc AST. Each value that the function reads from outside itself (storage, an
-   external view call, `tx` and `block` fields) becomes a named input, through a read map;
+1. extracts an integer model from the solc AST. Each value that the function reads from outside itself (storage, a
+   mapping entry, an external view call, `tx` and `block` fields, the fields of a struct parameter, or the result of an
+   internal call that the spec cuts) becomes a named input, through a read map;
 2. emits the model as pure Solidity, and proves with Halmos that this Solidity and the contract's bytecode give the same
    result and revert on the same inputs;
 3. proves theorems on the model's z3 integer terms.
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
-Status: milestone M1, which covers one function: `DepositSubsidy._quoteSubsidy` from Oxide.
+Status: milestone M2. It covers the functions of Oxide's `formulas/subsidies.py`: `DepositSubsidy._quoteSubsidy`,
+`DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`, and
+`PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). Wiring it into Oxide's proof check, and deleting
+`subsidies.py` there, happens from an Oxide session.
+
+The extractor takes loop-free pure and view functions with checked `uint` arithmetic, comparisons, boolean logic,
+ternaries, `if` and early returns, locals assigned also in branches, compound assignments, named returns, addresses,
+enums, constants and immutables. Internal calls are inlined. `Math.min` and `Math.mulDiv` are operators backed by lemmas.
+It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple returns, exponentiation, `%`,
+`require`, and assembly, with the place in the source.
 
 ## Run
 
@@ -21,15 +31,24 @@ ships it as `aztec-forge`).
 python3.12 -m venv .venv
 .venv/bin/pip install -e . -r requirements-dev.txt
 git submodule update --init
-.venv/bin/python -m examples.quoter                     # the example on the test fixtures
+.venv/bin/python -m examples.quoter                     # one spec on the test fixtures
+.venv/bin/python -m examples.pricer                     # three specs in one run
 Z3SOL_FORGE=aztec-forge .venv/bin/python -m acceptance.oxide --root <oxide>/l1-contracts
 ```
 
 A spec (`examples/quoter/spec.py`) names the target function, its read map, its link to the harness, and its theorems.
-A run extracts the model and then runs every stage, even when one fails: the theorems (z3), the vectors (forge), and
-the link (Halmos). It prints one line for each result, and writes a record with each result, the sources the model
-comes from with their hashes, and the versions of solc, OpenZeppelin, Halmos, yices, z3, forge and Python. The run fails
-when any result is not the expected one.
+A run takes one spec or several specs of one project. It builds the project once, extracts each model, and then runs
+every stage, even when one fails: the theorems, the vectors (one forge test for every model), and the links (one Halmos
+run for every model, with one test of the operator rows and lemmas they use). It prints one line for each result, and
+writes a JSON record (`schema` 2) with each result, the sources each model comes from with their hashes, and the
+versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and z3sol (with its commit). The run fails when
+any result is not the expected one.
+
+Code on top of the models, such as a check of each deployed configuration, uses `z3sol.run.load(specs, workspace)`: the
+terms of each model from one build. `q.at(name=value, ...)` gives the terms with inputs fixed, `q.call(function, *args)`
+runs a function of the model, and `q.declared(local)` is a local's value where it is declared.
+
+To pin z3sol from another project, install it by commit: `pip install git+https://github.com/vezenovm/z3sol@<commit>`.
 
 ## What a run proves
 
@@ -44,12 +63,18 @@ when any result is not the expected one.
   counterexample names its issue or reason.
 
 A link check fails on anything but PASS, on a path at the loop bound, on a missing or undeclared check, and when Halmos
-skips a contract. z3's "unknown" fails a theorem.
+skips a contract. A theorem runs on z3 first. When z3 says "unknown", z3, yices and cvc5 run in parallel on the same
+query, and the first sat or unsat answer counts. "Unknown" from every solver fails the theorem.
+
+A cut point, such as `_tokenWeiPerEth()`, is an input of the model. The link sets it through the harness, such as a
+price feed with a symbolic answer, so it proves the model equal to the contract only for the values the harness can
+produce.
 
 ## What it trusts
 
 The integer translation in `smt.py` and the operator table (the vectors check them on samples), Halmos's EVM model, the
-solvers, the harness and its read adapters, and the compiler. A read of an external view call is assumed to succeed.
+solvers, the harness and its read adapters, and the compiler. A read of an external view call, and a cut point, is
+assumed to succeed.
 
 ## How it builds a project without writing to it
 
