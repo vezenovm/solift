@@ -151,19 +151,29 @@ class Extraction:
 
 
 def extract(build_infos: list[dict], target: str, reads: dict[str, str]) -> Extraction:
-    path = target.rpartition(":")[0]
-    infos = [info for info in build_infos if path in info["output"]["sources"]]
-    if len(infos) != 1:
-        raise ExtractionError(f"{len(infos)} compile jobs hold {path}, not one")
-    return _Extractor(infos[0], reads).extract(target)
+    return _Extractor(_job(build_infos, target), reads).extract(target)
 
 
 def declared(build_infos: list[dict], target: str) -> set[str]:
     """The names that the target function declares: its parameters, its returns and its locals."""
-    path = target.rpartition(":")[0]
-    info = next(info for info in build_infos if path in info["output"]["sources"])
-    node = _Extractor(info, {}).target(target)
+    node = _Extractor(_job(build_infos, target), {}).target(target)
     return {n["name"] for n in _subtree(node) if n.get("nodeType") == "VariableDeclaration" and n.get("name")}
+
+
+def _job(build_infos: list[dict], target: str) -> dict:
+    """The build info of the one compile job that holds the target's file."""
+    path = target.rpartition(":")[0]
+    if not path:
+        raise ExtractionError(f"{target} names no function as path:Contract.function")
+    infos = [info for info in build_infos if path in info["output"]["sources"]]
+    if not infos:
+        raise ExtractionError(
+            f"the build has no source {path}: check the path, and that the profile compiles the file or a file that "
+            "imports it"
+        )
+    if len(infos) != 1:
+        raise ExtractionError(f"{len(infos)} compile jobs hold {path}, not one")
+    return infos[0]
 
 
 def _normal(text: str) -> str:

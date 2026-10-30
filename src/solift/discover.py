@@ -63,7 +63,11 @@ class Discovery:
 def discover(build_infos: list[dict], target: str, reads: dict[str, str] | None = None) -> Discovery:
     """The reads of the target, starting from `reads`."""
     found = Discovery(target, given=dict(reads or {}))
-    taken = declared(build_infos, target) | RESERVED | set((reads or {}).values())
+    try:
+        taken = declared(build_infos, target) | RESERVED | set((reads or {}).values())
+    except ExtractionError as err:
+        found.diagnostic = str(err)
+        return found
     read_map = dict(reads or {})
     for _ in range(LIMIT):
         try:
@@ -152,10 +156,13 @@ def skeleton(found: Discovery, function: str) -> str:
 
 
 def report(found: Discovery) -> str:
-    """The discovery as lines for a terminal: the reads, the cut candidates, the effects and the spec skeleton."""
+    """The discovery as lines for a terminal: the reads, the cut candidates, the effects and the spec skeleton, which a
+    discovery that found nothing leaves out."""
     function = found.target.rpartition(":")[2].partition(".")[2].partition("(")[0]
     state = "complete" if found.complete else f"incomplete: {found.diagnostic}"
-    lines = [f"== {found.target}: {len(found.read_map)} reads, {state}", "", skeleton(found, function)]
+    lines = [f"== {found.target}: {len(found.read_map)} reads, {state}"]
+    if found.model is not None or found.read_map:
+        lines += ["", skeleton(found, function)]
     if found.cuts:
         lines += ["", "internal calls that a read map entry can cut (by the call's source text):"]
         lines += [f"  {name}" for name in found.cuts]
