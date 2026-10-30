@@ -24,6 +24,19 @@ branches, and a named return starts at zero. `require`, `assert` and `revert` re
 value type, such as Morpho's `Id`, that the function uses only inside read map keys is not an input. Anything else stops
 the extraction with an error that names the construct and its place in the source.
 
+The model is the function's value and whether it reverts, which is what the link compares. It leaves out the
+function's storage writes and events (`Model.effects`), so the extractor refuses one that could change either:
+
+- a written value, a written place or an event argument must not revert: it is a local, a parameter, a constant, a
+  field of `tx`, `block` or `msg`, storage, a memory copy, a mapping entry, a field of one of these, or a conversion of
+  one of these to an unsigned integer or an address. A compound assignment such as `+=` to storage is refused.
+- after a write, the function must not read what the write changed: the storage variable it wrote or the memory copy it
+  wrote a field of, also through a callee, and it must not make a call in the read map that is not to an internal pure
+  function, which could read the changed storage.
+- a call to a function that writes storage must be the whole value of its statement, as solc does not fix the order of
+  the parts of an expression.
+- a call in the read map must be to a view or pure function.
+
 The model assumes that each read succeeds: an external view call that reverts has no input in the model.
 """
 
@@ -153,6 +166,18 @@ class _Extractor:
         self.math_path: str | None = None
         # The symbol and source path that the emitted Solidity imports for each enum type it names.
         self.enum_imports: dict[str, str] = {}
+        # The storage variables, by declaration id, and the memory copies, by the id of their local, that a write has
+        # changed so far; the writes and events that the model leaves out; for each callee the storage variables it
+        # reads ("call" for a call in the read map that could read any) and those it writes; the open sets of the
+        # callees being extracted; and the expression that is the whole value of the statement being extracted.
+        self.written: set[int] = set()
+        self.written_copies: set[int] = set()
+        self.effects: list[str] = []
+        self.callee_reads: dict[int, set] = {}
+        self.callee_writes: dict[int, set] = {}
+        self.reading: list[set] = []
+        self.writing: list[set] = []
+        self.statement_value: int | None = None
 
     def _index(self, node) -> None:
         if isinstance(node, dict):
@@ -240,6 +265,7 @@ class _Extractor:
             imports=tuple(imports),
             pragma=self._pragma(unit),
             spdx=unit.get("license") or "UNLICENSED",
+            effects=tuple(self.effects),
         )
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}
@@ -311,8 +337,6 @@ class _Extractor:
             scope[p["id"]] = var
             params.append(var)
         body = self._block(node["body"]["statements"], scope, return_type)
-        if node["stateMutability"] not in ("pure", "view"):
-            self.fail(node, f"{name} is {node['stateMutability']}: it can change state")
         return Function(name, tuple(params), return_type, body, self.src(node), result)
 
     def _user_value_type(self, param) -> bool:
@@ -346,6 +370,7 @@ class _Extractor:
                         self.fail(node, "a return without a value")
                     out.append(Return(scope["return"], self.src(node)))
                     continue
+                self.statement_value = node["expression"]["id"]
                 value = self._expr(node["expression"], scope)
                 self._assignable(node["expression"], value.type, return_type)
                 out.append(Return(value, self.src(node)))
@@ -355,6 +380,10 @@ class _Extractor:
                     out.append(stmt)
             elif kind == "RevertStatement":
                 out.append(Revert(self.src(node)))
+            elif kind == "EmitStatement":
+                for arg in node["eventCall"]["arguments"]:
+                    self._cannot_revert(arg, scope)
+                self._effect(node)
             else:
                 self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
         return tuple(out)
@@ -370,6 +399,7 @@ class _Extractor:
             prefix = self._struct_copy(init, scope) if init is not None else None
             if prefix is None:
                 self.fail(init or node, "a memory struct that is not a copy of a storage struct")
+            self._state_read(self.nodes[_root(init)["referencedDeclaration"]], init)
             scope[decl["id"]] = ("copy", prefix)
             return None
         self._not_inputs_name(decl)
@@ -381,6 +411,7 @@ class _Extractor:
                 self.fail(node, f"a local of type {var.type.solidity} declared without a value")
             value = Const(False, BOOL, text="false") if var.type == BOOL else Const(0, var.type, text="0")
         else:
+            self.statement_value = init["id"]
             value = self._expr(init, scope)
             self._assignable(init, value.type, var.type)
         scope[decl["id"]] = var
@@ -404,7 +435,7 @@ class _Extractor:
                 return f"{state['name']}[{key.name}]"
         return None
 
-    def _expression_statement(self, expression, scope: dict) -> Stmt:
+    def _expression_statement(self, expression, scope: dict) -> Stmt | None:
         kind = expression["nodeType"]
         if kind == "Assignment":
             return self._assignment(expression, scope)
@@ -437,14 +468,23 @@ class _Extractor:
         negated = dataclasses.replace(ops.make("not", cond), src=self.src(call))
         return If(negated, (Revert(self.src(call)),), (), self.src(call))
 
-    def _assignment(self, expression, scope: dict) -> Assign:
+    def _assignment(self, expression, scope: dict) -> Assign | None:
         lhs = expression["leftHandSide"]
         root = _root(lhs)
         target = self.nodes.get(root.get("referencedDeclaration")) if root else None
         if target is not None and target.get("stateVariable"):
-            self.fail(expression, "a storage write")
-        if root and isinstance(scope.get(root.get("referencedDeclaration")), tuple):
-            self.fail(expression, "a write to a memory struct")
+            self._write(expression, scope)
+            self.written.add(target["id"])
+            for writes in self.writing:
+                writes.add(target["id"])
+            return None
+        local = scope.get(root.get("referencedDeclaration")) if root else None
+        if isinstance(local, tuple):
+            if local[0] != "copy" or root is lhs:
+                self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy")
+            self._write(expression, scope)
+            self.written_copies.add(root["referencedDeclaration"])
+            return None
         var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
         if not isinstance(var, Var):
             self.fail(expression, f"an assignment to {self.text(lhs)}")
@@ -460,8 +500,18 @@ class _Extractor:
         self._assignable(rhs, value.type, var.type)
         return Assign(var, value, self.src(expression))
 
+    def _write(self, expression, scope: dict) -> None:
+        if expression["operator"] != "=":
+            self.fail(expression, f"a write with {expression['operator']}: its value can revert")
+        self._cannot_revert(expression["leftHandSide"], scope)
+        self._cannot_revert(expression["rightHandSide"], scope)
+        self._effect(expression)
+
+    def _effect(self, node) -> None:
+        self.effects.append(f"{self.src(node)}: {' '.join(self.text(node).split())}")
+
     def _cannot_revert(self, node, scope: dict) -> None:
-        """Refuses an argument of an error that could revert: the model leaves it out."""
+        """Refuses a part of a write or an event that could revert: the model leaves it out."""
         kind = node["nodeType"]
         type_string = node.get("typeDescriptions", {}).get("typeString") or ""
         if type_string.startswith("function"):
@@ -480,7 +530,7 @@ class _Extractor:
         elif kind == "FunctionCall" and node["kind"] == "typeConversion" and len(node["arguments"]) == 1:
             if re.fullmatch(r"uint\d+|address", type_string):
                 return self._cannot_revert(node["arguments"][0], scope)
-        self.fail(node, f"{self.text(node)} in an error: the model leaves it out, so it must not revert")
+        self.fail(node, f"{self.text(node)} in a write or an event: the model leaves it out, so it must not revert")
 
     def _assignable(self, node, source: Type, target: Type) -> None:
         if source == target or (source.kind == "literal" and target.kind == "uint"):
@@ -564,34 +614,76 @@ class _Extractor:
         kind = node["nodeType"]
         key = None
         what = None
+        copy = state = None
         if kind == "MemberAccess" and node["expression"]["nodeType"] == "Identifier":
             base = node["expression"]
             target = scope.get(base.get("referencedDeclaration"))
-            state = self.nodes.get(base.get("referencedDeclaration"))
-            if isinstance(target, tuple):
+            declared = self.nodes.get(base.get("referencedDeclaration"))
+            if isinstance(target, tuple) and target[0] in ("copy", "param"):
                 what = "a storage field" if target[0] == "copy" else "a field of the struct parameter"
                 key = f"{target[1]}.{node['memberName']}"
-            elif state is not None and state.get("stateVariable") and state.get("mutability") != "constant":
-                key, what = f"{state['name']}.{node['memberName']}", "a storage field"
+                copy = base["referencedDeclaration"] if target[0] == "copy" else None
+            elif declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
+                key, what, state = f"{declared['name']}.{node['memberName']}", "a storage field", declared
             elif base["name"] in ("tx", "block", "msg") and base.get("referencedDeclaration", 0) < 0:
                 key, what = self.text(node), "an environment field"
         elif kind == "Identifier" and node.get("referencedDeclaration") not in scope:
-            state = self.nodes.get(node.get("referencedDeclaration"))
-            if state is not None and state.get("stateVariable") and state.get("mutability") != "constant":
-                if state["typeDescriptions"]["typeString"].startswith("struct "):
-                    self.fail(node, f"the storage struct {state['name']} is read other than by field")
-                key, what = state["name"], f"the {state['mutability']} variable"
-        if key is None:
+            declared = self.nodes.get(node.get("referencedDeclaration"))
+            if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
+                if declared["typeDescriptions"]["typeString"].startswith("struct "):
+                    self.fail(node, f"the storage struct {declared['name']} is read other than by field")
+                key, what, state = declared["name"], f"the {declared['mutability']} variable", declared
+        fallback = key is None
+        if fallback:
             key = self.text(node)
             if _normal(key) not in self.read_map:
                 return None
         entry = self.read_map.get(_normal(key))
         if entry is None:
             self.fail(node, f"reads {what} {key}, which the read map does not name")
+        if copy in self.written_copies:
+            self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
+        if state is not None:
+            self._state_read(state, node)
+        if fallback:
+            self._fallback_read(node, scope)
         if _normal(key) not in self.reads:
             var = Var(entry[1], self._type(node), input=True, src=self.src(node))
             self.reads[_normal(key)] = Read(var, entry[0])
         return self.reads[_normal(key)].var
+
+    def _state_read(self, decl, node) -> None:
+        """Records a read of the storage variable `decl`, which must not follow a write to it."""
+        if decl["id"] in self.written:
+            self.fail(node, f"reads {decl['name']} after a write to it: the model does not see the write")
+        for reads in self.reading:
+            reads.add(decl["id"])
+
+    def _fallback_read(self, node, scope: dict) -> None:
+        """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
+        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage."""
+        for n in _subtree(node):
+            ref = n.get("referencedDeclaration")
+            if n.get("nodeType") == "Identifier":
+                declared = self.nodes.get(ref)
+                if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
+                    self._state_read(declared, n)
+                if ref in self.written_copies:
+                    self.fail(n, f"reads {n['name']} after a write to it: the model does not see the write")
+            elif n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
+                callee = n["expression"]
+                decl = self.nodes.get(callee.get("referencedDeclaration"))
+                if decl is None and callee.get("referencedDeclaration", 0) < 0:
+                    continue
+                if decl is None or decl["nodeType"] != "FunctionDefinition":
+                    self.fail(n, f"the read {self.text(node)} makes a call that the extractor cannot resolve")
+                if decl["stateMutability"] not in ("view", "pure"):
+                    self.fail(n, f"the read {self.text(node)} calls {decl['name']}, which can change state")
+                if decl["stateMutability"] != "pure" or decl["visibility"] not in ("internal", "private"):
+                    if self.written:
+                        self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
+                    for reads in self.reading:
+                        reads.add("call")
 
     def _named(self, node) -> Const:
         """A constant, named by an identifier or a member access such as `OxideConstants.MAX_PRIORITY_FEE_WEI`, or an
@@ -703,8 +795,23 @@ class _Extractor:
         )
         if not internal:
             self.fail(node, f"an external call that the read map does not name: {self.text(node)}")
+        written, value = set(self.written), self.statement_value
         function = self._callee(decl, node)
+        # The arguments run before the call, so they see the writes made before it only.
+        self.written = set(written)
         args = tuple(self._expr(arg, scope) for arg in arguments)
+        reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
+        stale = sorted(self.nodes[r]["name"] for r in reads - {"call"} if r in written)
+        if stale or ("call" in reads and written):
+            what = ", ".join(stale) if stale else "storage through a call"
+            self.fail(node, f"calls {decl['name']}, which reads {what}, after a write: the model misses the write")
+        if writes and node["id"] != value:
+            self.fail(node, f"{decl['name']} writes storage, so its call must be the whole value of a statement")
+        self.written |= writes
+        for found in self.reading:
+            found |= reads
+        for found in self.writing:
+            found |= writes
         for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
@@ -728,7 +835,11 @@ class _Extractor:
                 self.fail(call, f"two callees are named {decl['name']}")
             self.stack.append(decl["id"])
             self.used.add(self._place(decl)[0])
+            self.reading.append(set())
+            self.writing.append(set())
             function = self._function(decl, top=False)
+            self.callee_reads[decl["id"]] = self.reading.pop()
+            self.callee_writes[decl["id"]] = self.writing.pop()
             self.stack.pop()
             self.callees[decl["id"]] = function
         return self.callees[decl["id"]]
@@ -776,13 +887,24 @@ _STATEMENT_ERRORS = {
     "UncheckedBlock": "an unchecked block",
     "InlineAssembly": "inline assembly",
     "Block": "a nested block",
-    "EmitStatement": "an event",
     "TryStatement": "a try statement",
 }
 
 
 def _statements(node) -> list:
     return node["statements"] if node["nodeType"] == "Block" else [node]
+
+
+def _subtree(node):
+    """Each AST node in `node`, `node` first."""
+    if isinstance(node, dict):
+        if "nodeType" in node:
+            yield node
+        for value in node.values():
+            yield from _subtree(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _subtree(value)
 
 
 def _parameter_type(param) -> str:

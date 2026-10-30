@@ -157,7 +157,7 @@ def test_a_public_function_calls_its_callee_inline(build):
     "function, reads, message",
     [
         ("loop", {}, r"OutOfScope.sol:12:5: a loop"),
-        ("storageWrite", {}, r"OutOfScope.sol:19:5: a storage write"),
+        ("storageWrite", {}, r"OutOfScope.sol:19:5: a write with \+=: its value can revert"),
         ("uncheckedBlock", {}, r"OutOfScope.sol:24:5: an unchecked block"),
         ("signedParameter", {}, r"OutOfScope.sol:29:28: a signed integer"),
         ("cast", {}, r"OutOfScope.sol:34:12: a type conversion: uint128\(_a\)"),
@@ -321,6 +321,7 @@ def test_a_bool_constant_and_an_address_literal_keep_their_types(build):
     assert "return i._a == 0x0000000000000000000000000000000000000001;" in source(one)
 
 
+WRITES = "tests/fixtures/contracts/Writes.sol:Writes"
 REVERTS = "tests/fixtures/contracts/Reverts.sol:Reverts"
 
 
@@ -333,6 +334,24 @@ def reverts(model, values) -> bool:
 LIBRARIES = "tests/fixtures/contracts/Libraries.sol:Libraries"
 
 
+def test_a_function_that_writes_storage_is_modeled_by_its_value_and_the_model_lists_the_writes(build):
+    reads = {"$info.rate": "stored", "$balances[_who]": "balance"}
+    model = extract(build, f"{WRITES}.updateThenRead", reads).model
+    assert [v.name for v in model.inputs] == ["_price", "_who", "stored", "balance"]
+    assert evaluate(model, {"_price": 10**18, "_who": 1, "stored": 0, "balance": 5}) == (False, 10**18 + 5, False)
+    assert reverts(model, {"_price": 0, "_who": 1, "stored": 0, "balance": 5})
+    assert [e.partition(": ")[2] for e in model.effects] == [
+        "info.lastTimestamp = uint96(block.timestamp)",
+        "info.rate = rate",
+        "$info = info",
+        "emit Updated(rate)",
+    ]
+    effect = "//   tests/fixtures/contracts/Writes.sol:32:7: info.lastTimestamp = uint96(block.timestamp)\n"
+    assert effect in source(model)
+    credit = extract(build, f"{WRITES}.credit", {}).model
+    assert evaluate(credit, {"_who": 1, "_x": 7}) == (False, 7, False)
+
+
 def test_require_assert_and_revert_revert_where_they_run(build):
     model = extract(build, f"{REVERTS}.checked", {}).model
     assert [reverts(model, {"_x": x}) for x in range(5)] == [True, True, True, True, False]
@@ -340,6 +359,31 @@ def test_require_assert_and_revert_revert_where_they_run(build):
     assert "      revert();\n" in source(model)
     always = extract(build, f"{REVERTS}.alwaysReverts", {}).model
     assert reverts(always, {v.name: 0 for v in always.inputs})
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("readAfterWrite", {"$count": "count"}, r"Writes.sol:\d+:12: reads \$count after a write to it"),
+        ("readCopyAfterWrite", {"$info.rate": "rate"}, r"reads \$info.rate after a write to its memory copy"),
+        ("copyAfterWrite", {"$info.rate": "rate"}, r"reads \$info after a write to it"),
+        ("writeThatCanRevert", {}, r"Writes.sol:\d+:14: _x \+ 1 in a write or an event: the model leaves it out"),
+        ("writeToAnArray", {}, r"\$list\[_x\] in a write or an event"),
+        ("eventThatCanRevert", {}, r"_x \* 2 in a write or an event"),
+        ("updateInsideAnExpression", {"$info.rate": "rate"}, r"update writes storage, so its call must be the whole"),
+        ("readsInfoAfterUpdate", {"$info.rate": "rate"}, r"reads \$info after a write to it"),
+        ("callsAReaderAfterUpdate", {"$info.rate": "rate"}, r"calls _rate, which reads \$info, after a write"),
+        (
+            "externalReadAfterWrite",
+            {"TOKEN.balanceOf(address(this))": "pot"},
+            r"the read TOKEN.balanceOf\(address\(this\)\) follows a write, and its call could read the change",
+        ),
+        ("stateChangingRead", {"TOKEN.transfer(address(1), 1)": "sent"}, r"calls transfer, which can change state"),
+    ],
+)
+def test_the_extractor_refuses_a_write_that_could_change_the_value_or_the_revert(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{WRITES}.{function}", reads)
 
 
 def test_a_library_call_on_a_value_widened_storage_and_a_user_defined_key(build):

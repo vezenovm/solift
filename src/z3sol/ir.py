@@ -1,7 +1,8 @@
 """The IR: one loop-free Solidity function as typed expressions and statements.
 
 A model is a function whose reads from outside it (storage, external view calls, `tx` and `block` fields, and the fields
-of a struct parameter) are inputs, like its parameters. smt.py turns a model into z3 integer terms, and solidity.py into
+of a struct parameter) are inputs, like its parameters. It has the function's value and its reverts, and none of its
+writes or events (`Model.effects` lists those). smt.py turns a model into z3 integer terms, and solidity.py into
 pure Solidity. ops.py holds the operator table that ties the two together and checks the types of each operation.
 """
 
@@ -192,7 +193,8 @@ class Model:
     """`function` is the modeled function. Its parameters and the reads are the inputs. `callees` are the internal
     functions that it calls. `imports` are the import directives that the emitted Solidity needs, `pragma` its version
     pragma and `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted
-    contracts instead of the contract and function names (solidity.names)."""
+    contracts instead of the contract and function names (solidity.names). `effects` are the writes and events of the
+    function and its callees, which the model leaves out, each as `path:line:column: source`."""
 
     contract: str
     function: Function
@@ -202,6 +204,7 @@ class Model:
     pragma: str = "^0.8.0"
     spdx: str = "UNLICENSED"
     stem: str = ""
+    effects: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:

@@ -16,7 +16,7 @@ contract OutOfScope {
   }
 
   function storageWrite(uint256 _x) internal returns (uint256) {
-    $total = _x;
+    $total += _x;
     return _x;
   }
 

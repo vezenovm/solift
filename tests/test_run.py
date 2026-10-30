@@ -4,8 +4,8 @@ from examples.pricer.spec import SPECS as PRICER_SPECS
 from examples.quoter.spec import QUOTER, SPEC
 from z3sol import forge
 from z3sol.extract import extract
-from z3sol.link import generate
-from z3sol.run import run, summary, vector_failures
+from z3sol.link import Link, generate
+from z3sol.run import Spec, run, summary, vector_failures
 from z3sol.workspace import Workspace
 
 
@@ -99,3 +99,23 @@ def test_a_vector_build_that_fails_is_a_failure_and_the_run_goes_on(tmp_path, mo
     assert record["failures"] == ["quoter: vectors: forge test failed: Compiler run failed"]
     assert record["specs"][0]["vectors"] is None
     assert "guard" in record["times"] and record["specs"][0]["theorems"]
+
+
+def test_a_function_that_writes_storage_links_to_its_model_and_its_vectors_agree(tmp_path):
+    spec = Spec(
+        name="writes",
+        target="tests/fixtures/contracts/Writes.sol:Writes.updateThenRead",
+        reads={"$info.rate": "stored", "$balances[_who]": "balance"},
+        link=Link(
+            setup="tests/fixtures/test/WritesSetup.sol:WritesSetup",
+            call="writes.updateThenRead(_price, _who)",
+            adapters={("stored", "balance"): "writes.set(stored, _who, balance);"},
+        ),
+        project=SPEC.project,
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+    assert len(result["model"]["effects"]) == 4

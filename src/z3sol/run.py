@@ -233,6 +233,7 @@ def _extract(c: _Checked, infos: list[dict], operators: bool) -> None:
         "inputs": [{"name": v.name, "type": v.type.solidity} for v in c.model.inputs],
         "reads": {r.var.name: r.source for r in c.model.reads},
         "callees": [f.name for f in c.model.callees],
+        "effects": list(c.model.effects),
     }
 
 
