@@ -3,9 +3,11 @@
 A function returns one value or several: a function of several returns a tuple, whose type has the type of each part.
 
 A model is a function whose reads from outside it (storage, external view calls, `tx` and `block` fields, and the fields
-of a struct parameter) are inputs, like its parameters. It has the function's value and its reverts, and none of its
-writes or events (`Model.effects` lists those). smt.py turns a model into z3 integer terms, and solidity.py into
-pure Solidity. ops.py holds the operator table that ties the two together and checks the types of each operation.
+of a struct parameter) are inputs, like its parameters. It has the function's value and its reverts, and its outputs:
+the storage writes and the arguments of external calls that the spec names. The other writes, calls and events are
+left out (`Model.effects` lists those). The modeled function returns its outputs after its own values. smt.py turns a
+model into z3 integer terms, and solidity.py into pure Solidity. ops.py holds the operator table that ties the two
+together and checks the types of each operation.
 """
 
 from __future__ import annotations
@@ -267,7 +269,8 @@ class Read:
 
 @dataclass(frozen=True)
 class Effect:
-    """A write or an event that the model leaves out. `kind` is "write" (to storage), "copy" (to a field of a memory
+    """A write, a call or an event that the model leaves out. `kind` is "write" (to storage), "call" (an external call,
+    with the source text of each argument in `arguments`), "copy" (to a field of a memory
     copy of storage) or "event". `place` names what it writes as a read map names a read, such as `$info.rate` or
     `$balances[_who]`, or the event by its signature, such as `Updated(uint256)`. `source` is its text."""
 
@@ -275,9 +278,24 @@ class Effect:
     place: str
     source: str
     src: Src | None = None
+    arguments: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         return f"{self.src}: {self.source}"
+
+
+@dataclass(frozen=True)
+class Output:
+    """A write or an external call argument that the model has as a value, a named return variable of the modeled
+    function after its own values. `source` names it as the output map does: a storage place such as
+    `$spenders[msg.sender].left`, or an external call such as `psm.buyGem(msg.sender,amt)` with `index` the argument.
+    `before` is the input of its value before the call, for a write whose place the read map names too."""
+
+    var: Var
+    source: str
+    kind: str
+    index: int | None = None
+    before: Var | None = None
 
 
 @dataclass(frozen=True)
@@ -285,8 +303,9 @@ class Model:
     """`function` is the modeled function. Its parameters and the reads are the inputs. `callees` are the internal
     functions that it calls. `imports` are the import directives that the emitted Solidity needs, `pragma` its version
     pragma and `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted
-    contracts instead of the contract and function names (solidity.names). `effects` are the writes and events of the
-    function and its callees, which the model leaves out."""
+    contracts instead of the contract and function names (solidity.names). `effects` are the writes, external calls
+    and events of the function and its callees, which the model leaves out. `outputs` are those it has as values, which
+    the modeled function returns after its own."""
 
     contract: str
     function: Function
@@ -297,10 +316,16 @@ class Model:
     spdx: str = "UNLICENSED"
     stem: str = ""
     effects: tuple[Effect, ...] = ()
+    outputs: tuple[Output, ...] = ()
 
     @property
     def name(self) -> str:
         return f"{self.contract}.{self.function.name}"
+
+    @property
+    def results(self) -> tuple[Type, ...]:
+        """The types of the function's own values, which come before the outputs."""
+        return parts(self.function.returns)[: len(parts(self.function.returns)) - len(self.outputs)]
 
     @property
     def inputs(self) -> tuple[Var, ...]:

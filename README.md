@@ -6,9 +6,10 @@ over exact integers, and proves with Halmos that the model it proves them on mat
 For each function of a spec, solift:
 
 1. extracts an integer model from the solc AST, with each outside read (storage, an external view call, a `block`
-   field, a cut internal call) as a named input;
-2. emits the model as pure Solidity, and proves with Halmos that it returns and reverts as the contract does. Both
-   sides share their structure, so Halmos checks an equivalence, not the property;
+   field, a cut internal call) as a named input, and each storage write or external call argument that you name as
+   an output;
+2. emits the model as pure Solidity, and proves with Halmos that it returns, reverts and sets its outputs as the
+   contract does. Both sides share their structure, so Halmos checks an equivalence, not the property;
 3. proves your theorems, written in Python, on the model with z3, and with yices and cvc5 when z3 cannot decide.
 
 You write the theorems, the read map and a test harness. Nobody writes the model.
@@ -87,7 +88,8 @@ rest of your project untouched ([docs/overlay.md](docs/overlay.md)).
 ## What a run proves
 
 - **The link**: on every input that the harness can produce, the contract and the emitted Solidity return the same
-  result, or both revert. Revert data, storage writes and events are not compared.
+  result and the same outputs, or both revert. Revert data, events, and the writes and calls that are not outputs are
+  not compared.
 - **The lemmas** that the model uses, in the same build: each checked operator reverts exactly when the table says,
   and `Math.mulDiv(x, y, d)` is `x * y / d` rounded down when `x` and `y` are below 2**128.
 - **The theorems**, each with its assumptions listed, starting with the input types. A theorem that is expected to
@@ -102,15 +104,17 @@ result is not the expected one. [USAGE.md](USAGE.md#reference) has the details.
 ## What it trusts
 
 The integer translation and the operator table (the vectors check them on samples), Halmos, the solvers, the compiler,
-and your harness. External view calls and cut points are assumed not to revert.
+and your harness. External view calls and cut points are assumed not to revert, and an external call that the
+function makes as a statement is assumed not to revert and not to call back into the contract.
 
 ## What it takes
 
 Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
-calls, several returns, storage pointers to structs, and `Math.min` and `Math.mulDiv`. The extractor refuses loops,
-`unchecked`, signed integers, `**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call
-that does not fit can go in the read map: its result becomes an input.
-[USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
+calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min` and
+`Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link compares
+after the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed integers,
+`**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call that does not fit can go in
+the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
 
 ## Proof performance
 
@@ -144,16 +148,22 @@ more power than these:
 ## Roadmap
 
 Coverage: generated names that never clash with the source's, constant expressions, arithmetic below `uint256`, `%`,
-and library summaries through the operator table. Then, as projects need them: `unchecked`, bounded loops.
+and library summaries through the operator table. Then, as projects need them: `unchecked`, modifiers, `**`, bounded
+loops.
 
 Past arithmetic:
 
-1. **State transitions.** Storage writes become outputs of the model, named like reads (`$totalAssets` gives
-   `q.post.totalAssets`), and the link compares them after the call. Theorems can then state conservation,
-   monotonicity or exact deltas. The extractor already records each write and its place.
+1. **The rest of state transitions.** A write and an external call argument are outputs already (`$totalAssets` gives
+   `q.post.totalAssets`), so a theorem can state an exact delta or conservation over one call. Still refused: an output
+   written in an internal call, a read after a write at another key of the same storage variable, and an external
+   call that only some paths make.
 2. **Invariants over a set of functions**: for each function of the set, the invariant before the call and no revert
    give the invariant after it. The hard part is two reads of one mapping at keys that may be equal.
-3. **Events**, as outputs that the link compares.
+3. **External calls in the model.** An external call that the function makes as a statement is assumed not to revert
+   and not to call back into the contract. In order: whether the call reverts, as an input, so that the link compares
+   both outcomes; the arithmetic of a callee whose source is in the build, inlined, with its storage as reads and
+   outputs at keys that name the contract; and callbacks, which need the invariants of item 2.
+4. **Events**, as outputs that the link compares.
 
 Trust: a one-time Lean proof that the integer terms of every model agree with its checked `uint256` execution, given
 the rows of the operator table that Halmos proves. It covers how the rows compose, through branches, short circuits,

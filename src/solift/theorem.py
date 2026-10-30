@@ -68,7 +68,8 @@ class Evaluation:
 class Terms:
     """A model's terms, by their Solidity names: `result`, `reverts`, `outside`, each input, and each local of the
     modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for each
-    value (`q.result[1]`). `declared(name)` is a local's value where it is declared, before any
+    value (`q.result[1]`). `post` holds each output by its name (`q.post.left`): the value that the function writes
+    there, or passes to an external call. `declared(name)` is a local's value where it is declared, before any
     assignment. `free(name, kind)` adds a variable that the theorem quantifies over, such as `shares`. `call(name,
     *args)` runs a function of the model on terms, and `at(**values)` gives the terms with inputs replaced, as for one
     configuration. Each theorem proves on its own `scoped()` view, which records its free variables and the runs of the
@@ -110,7 +111,12 @@ class Terms:
     @property
     def result(self) -> z3.ExprRef:
         self._model()
-        return self._value
+        return _own(self.model, self._value)
+
+    @property
+    def post(self) -> Post:
+        self._model()
+        return _post(self.model, self._value)
 
     @property
     def reverts(self) -> z3.BoolRef:
@@ -206,16 +212,64 @@ class Terms:
         leaves, anywhere = fixed(self._leaves), fixed(self._anywhere)
         self._evaluated("at", self._lemma, z3.Or(leaves, *outside))
         obligation = z3.Or(anywhere, *outside)
-        return _Fixed(value, reverts, out, values, lambda: self._evaluated("at locals", self._lemma, obligation))
+
+        def record() -> None:
+            self._evaluated("at locals", self._lemma, obligation)
+
+        return _Fixed(self.model, value, reverts, out, values, record)
+
+
+class Post:
+    """The outputs of a model by name, as attributes and items."""
+
+    def __init__(self, values: dict[str, z3.ExprRef]):
+        self._values = values
+
+    def __getattr__(self, name: str) -> z3.ExprRef:
+        if name.startswith("_") and name not in self.__dict__.get("_values", {}):
+            raise AttributeError(name)
+        try:
+            return self._values[name]
+        except KeyError:
+            raise AttributeError(f"the model has no output {name}: it has {', '.join(self._values)}") from None
+
+    def __getitem__(self, name: str) -> z3.ExprRef:
+        return self.__getattr__(name)
+
+
+def _own(model: Model, value):
+    """The function's own value, without the outputs that the modeled function returns after it."""
+    if not model.outputs:
+        return value
+    values = value if isinstance(value, tuple) else (value,)
+    own = values[: len(values) - len(model.outputs)]
+    if not own:
+        raise TheoremError(f"{model.name} returns no value: its outputs are in q.post")
+    return own[0] if len(own) == 1 else tuple(own)
+
+
+def _post(model: Model, value) -> Post:
+    values = value if isinstance(value, tuple) else (value,)
+    outputs = values[len(values) - len(model.outputs) :] if model.outputs else ()
+    return Post({o.var.name: v for o, v in zip(model.outputs, outputs, strict=True)})
 
 
 class _Fixed:
-    """The model with inputs replaced: `value`, `reverts` and `outside`, and `locals`, which records the obligation of
-    the run's locals when the theorem takes them."""
+    """The model with inputs replaced: `value`, `post`, `reverts` and `outside`, and `locals`, which records the
+    obligation of the run's locals when the theorem takes them."""
 
-    def __init__(self, value, reverts, outside, values: dict, record: Callable[[], None]):
-        self.value, self.reverts, self.outside = value, reverts, outside
+    def __init__(self, model: Model, value, reverts, outside, values: dict, record: Callable[[], None]):
+        self._model, self._value = model, value
+        self.reverts, self.outside = reverts, outside
         self._values, self._record = values, record
+
+    @property
+    def value(self):
+        return _own(self._model, self._value)
+
+    @property
+    def post(self) -> Post:
+        return _post(self._model, self._value)
 
     @property
     def locals(self) -> dict[str, z3.ExprRef]:
@@ -321,9 +375,10 @@ def _mentions(term: z3.ExprRef, sub: z3.ExprRef) -> bool:
 
 
 class _Hypotheses:
-    """The terms as `given` sees them: the result, the inputs, the locals, `declared`, `free`, and a called function's
-    value. None of its attributes or items is the model's reverts or outside, or the model or Terms. `h[name]` is an
-    input, a local or a free variable, as for Terms, and `h.name` too unless the view has an attribute of that name."""
+    """The terms as `given` sees them: the result, the outputs (`post`), the inputs, the locals, `declared`, `free`, and
+    a called function's value. None of its attributes or items is the model's reverts or outside, or the model or
+    Terms. `h[name]` is an input, a local or a free variable, as for Terms, and `h.name` too unless the view has an
+    attribute of that name."""
 
     HIDDEN = ("reverts", "outside", "at", "model")
 
@@ -335,12 +390,17 @@ class _Hypotheses:
         self.declared = lambda name: q.declared(name)
         self.call = lambda function, *args: _Value(q.call(function, *args).value)
         self._result = lambda: q.result
+        self._post = lambda: q.post
         self._locals = lambda: q.locals
         self._term = lambda name: q[name]
 
     @property
     def result(self) -> z3.ExprRef:
         return self._result()
+
+    @property
+    def post(self) -> Post:
+        return self._post()
 
     @property
     def locals(self) -> dict[str, z3.ExprRef]:

@@ -21,30 +21,40 @@ transaction has it, so it is an input even where the function ignores it, and a 
 value for the whole call, so a local in it, also below a pointer, must be one that only its declaration assigns, the
 same one at each read of the key, in the modeled function or in a callee that runs once.
 
-Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`): each callee becomes a function of
-the model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
+Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`): each callee becomes a function of the
+model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
 value, with its name and declared type, and an enum member its index. A contract or interface value is its address, and
-`address(x)` of one is the same value. `uint256(x)` of a narrower unsigned x is x. Locals can be assigned, also in
-branches, and a named return starts at zero. A function can return several values, and a tuple declaration or
-assignment (`(, uint256 y) = limits(a, b);`, `(x, y) = (y, x);`) takes them apart into locals. `require`, `assert` and
-`revert` revert. A parameter of a user-defined value type, such as Morpho's `Id`, that the function uses only inside
-read map keys is not an input. Anything else stops the extraction with an error that names the construct and its place
-in the source.
+`address(x)` of one is the same value. `uint<n>(x)` of an unsigned x widens it, or keeps its low n bits. Locals can be
+assigned, also in branches, and a named return starts at zero. A function can return several values, and a tuple
+declaration or assignment (`(, uint256 y) = limits(a, b);`, `(x, y) = (y, x);`) takes them apart into locals. `require`,
+`assert` and `revert` revert. A parameter of a user-defined value type, such as Morpho's `Id`, that the function uses
+only inside read map keys or as an argument of an effect, is not an input. Anything else stops the extraction with an
+error that names the construct and its place in the source.
 
-The model is the function's value and whether it reverts, which is what the link compares. It leaves out the
-function's storage writes and events (`Model.effects`), so the extractor refuses one that could change either:
+The model is the function's value and whether it reverts, which is what the link compares, and its outputs: the writes
+and the external call arguments that the output map names, as `{"$total": "total"}` or
+`{"psm.buyGem(msg.sender,amt)": (None, "amount")}`. An output's value can revert. A write of an output in some paths
+only needs its place in the read map, as its value before the call, and a read of its place after the write reads the
+output. The model leaves out the other writes, external calls and events (`Model.effects`), so the extractor refuses
+one that could change the value or an output:
 
-- a written value, a written place or an event argument must not revert: it is a local, a parameter, a constant, a
-  field of `tx`, `block` or `msg`, storage, a memory copy, a mapping entry, a field of one of these, or a conversion of
-  one of these to an unsigned integer or an address. A compound assignment such as `+=` to storage is refused.
+- a written value, a written place, an argument of an external call or an event argument that is no output must not
+  revert: it is a local, a parameter, a constant, a field of `tx`, `block` or `msg`, storage, a memory copy, a mapping
+  entry, a field of one of these, or a conversion of one of these to an unsigned integer or an address. A compound
+  assignment such as `+=` to storage is refused, unless it is to an output.
 - after a write, the function must not read what the write changed: the storage variable it wrote or the memory copy it
   wrote a field of, also through a callee, and it must not make a call in the read map that is not to an internal pure
-  function, which could read the changed storage.
+  function, which could read the changed storage. An external call that can change state can change any storage, so no
+  read of storage may follow it.
+- a write to the storage variable of an output that is not the output's place is refused, as it could change it, and so
+  is an output in a callee. Two outputs of one storage variable must differ at a field, as `$a[k].left` and
+  `$a[k].last`: at two keys, they are one place where the keys are equal.
 - a call to a function that writes storage must be the whole value of its statement, as solc does not fix the order of
   the parts of an expression.
 - a call in the read map must be to a view or pure function.
 
-The model assumes that each read succeeds: an external view call that reverts has no input in the model.
+The model assumes that each read succeeds, and that each external call succeeds and does not call back into the
+contract: an external view call that reverts has no input in the model.
 """
 
 from __future__ import annotations
@@ -70,6 +80,7 @@ from solift.ir import (
     If,
     Let,
     Model,
+    Output,
     Read,
     Return,
     Revert,
@@ -145,13 +156,27 @@ class Missing:
     src: Src
 
 
+@dataclass(frozen=True)
+class Wanted:
+    """An output that the extraction needs: the place of a write, or an argument of an external call by its index, with
+    the source text of each of the call's arguments."""
+
+    key: str
+    index: int | None = None
+    arguments: tuple[str, ...] = ()
+
+
 class ExtractionError(Exception):
     """An error with the place in the source. `missing` is the read, when the error is a read that the read map does not
-    name: discover.py adds it to the read map and extracts again."""
+    name: discover.py adds it to the read map and extracts again. `output` is the output, when the error is a write or
+    a call argument that the model can have only as an output, and `effects` the writes and calls found, when it is a
+    function without a value that names no output: discover.py adds them to the output map."""
 
-    def __init__(self, message: str, missing: Missing | None = None):
+    def __init__(self, message: str, missing: Missing | None = None, effects: tuple = (), output: Wanted | None = None):
         super().__init__(message)
         self.missing = missing
+        self.effects = effects
+        self.output = output
 
 
 @dataclass(frozen=True)
@@ -162,8 +187,8 @@ class Extraction:
     sources: dict[str, str]
 
 
-def extract(build_infos: list[dict], target: str, reads: dict[str, str]) -> Extraction:
-    return _Extractor(_job(build_infos, target), reads).extract(target)
+def extract(build_infos: list[dict], target: str, reads: dict[str, str], outputs: dict | None = None) -> Extraction:
+    return _Extractor(_job(build_infos, target), reads, outputs or {}).extract(target)
 
 
 def declared(build_infos: list[dict], target: str) -> set[str]:
@@ -193,7 +218,7 @@ def _normal(text: str) -> str:
 
 
 class _Extractor:
-    def __init__(self, info: dict, reads: dict[str, str]):
+    def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None):
         self.sources = info["output"]["sources"]
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
         self.paths = {s["id"]: path for path, s in self.sources.items()}
@@ -234,6 +259,14 @@ class _Extractor:
         self.reading: list[set] = []
         self.writing: list[set] = []
         self.statement_value: int | None = None
+        # The output map by normalized key; the output of each place and of each argument of each call, as it is met;
+        # the places of the outputs that each storage variable holds; and each other write, with its storage variable.
+        self.output_map = {_normal(key): (key, value) for key, value in (outputs or {}).items()}
+        if len(self.output_map) != len(outputs or {}):
+            raise ExtractionError("two output map keys differ only in whitespace")
+        self.outputs: dict[tuple[str, int | None], Output] = {}
+        self.output_states: dict[int, list[str]] = {}
+        self.other_writes: list[tuple[int, str, dict]] = []
 
     def _index(self, node) -> None:
         if isinstance(node, dict):
@@ -264,8 +297,8 @@ class _Extractor:
         path, start, length = self._place(node)
         return self.contents[path][start : start + length].decode()
 
-    def fail(self, node, message: str, missing: Missing | None = None):
-        raise ExtractionError(f"{self.src(node)}: {message}", missing)
+    def fail(self, node, message: str, missing: Missing | None = None, output: Wanted | None = None):
+        raise ExtractionError(f"{self.src(node)}: {message}", missing, output=output)
 
     # The target.
 
@@ -275,7 +308,7 @@ class _Extractor:
         contract_name = qualified.partition(".")[0]
         unit = self.sources[path]["ast"]
         self.assigned = _assigned(node)
-        function = self._function(node, top=True)
+        function = self._with_outputs(self._function(node, top=True), qualified)
         self._run_once()
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
@@ -302,6 +335,7 @@ class _Extractor:
             pragma=self._pragma(unit),
             spdx=unit.get("license") or "UNLICENSED",
             effects=tuple(self.effects),
+            outputs=tuple(self.outputs.values()),
         )
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}
@@ -335,6 +369,95 @@ class _Extractor:
         if len(candidates) != 1:
             raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_part}, not one")
         return candidates[0]
+
+    def _with_outputs(self, function: Function, qualified: str) -> Function:
+        """The modeled function with its outputs as named return variables after its own values: each return returns
+        them too, and an output with a value before the call starts at it. An output without one must be written on
+        every path that returns. Another write to the storage variable of an output is refused, as it could change the
+        output's place."""
+        for written, _ in self.output_map.values():
+            if not any(o.source == written for o in self.outputs.values()):
+                raise ExtractionError(f"the output map names {written}, which {qualified} does not write or call")
+        for state, place, node in self.other_writes:
+            if state in self.output_states:
+                message = f"writes {place}, which could change the output {self.output_states[state][0]}"
+                self.fail(node, message, output=Wanted(place))
+        outputs = list(self.outputs.values())
+        own = parts(function.returns)
+        if not outputs:
+            if not own:
+                message = f"{qualified} returns no value: name a write or an external call in the output map"
+                raise ExtractionError(message, effects=tuple(self.effects))
+            return function
+        for output in outputs:
+            name = output.var.name
+            if not IDENTIFIER.fullmatch(name) or name == "i" or reserved(name):
+                raise ExtractionError(f"{name} is not a valid output name for {output.source}")
+        needed = {o.var.name: o for o in outputs if o.before is None}
+        ends = self._written_outputs(function.body, set(needed), set())
+        if ends is not None and set(needed) - ends:
+            output = needed[sorted(set(needed) - ends)[0]]
+            message = f"{function.src}: {qualified} can end without a write of {_unwritten(output)}"
+            raise ExtractionError(message, _before(output))
+        returns = tuple_of((*own, *(o.var.type for o in outputs)))
+
+        def returned(stmt):
+            if isinstance(stmt, If):
+                return If(stmt.cond, tuple(map(returned, stmt.then)), tuple(map(returned, stmt.orelse)), stmt.src)
+            if not isinstance(stmt, Return):
+                return stmt
+            if len(own) > 1 and not isinstance(stmt.expr, Tuple):
+                raise ExtractionError(f"{stmt.src}: a return of a call of several values in a function with outputs")
+            values = () if not own else stmt.expr.args if len(own) > 1 else (stmt.expr,)
+            values = (*values, *(o.var for o in outputs))
+            return Return(values[0] if len(values) == 1 else Tuple(values, returns), stmt.src)
+
+        start = tuple(Assign(o.var, o.before, o.var.src) for o in outputs if o.before is not None)
+        body = start + tuple(returned(stmt) for stmt in function.body)
+        results = (*(function.results or (None,) * len(own)), *(o.var for o in outputs))
+        return Function(function.name, function.params, returns, body, function.src, results)
+
+    def _written_outputs(self, stmts, needed: set, written: set) -> set | None:
+        """The outputs in `needed` that are written where the statements end without a return, or None where they
+        always return or revert. Refuses a return that one of them may not reach written."""
+        written = set(written)
+        for stmt in stmts:
+            if isinstance(stmt, Assign) and stmt.var.name in needed:
+                written.add(stmt.var.name)
+            elif isinstance(stmt, Return):
+                missing = sorted(needed - written)
+                if missing:
+                    output = next(o for o in self.outputs.values() if o.var.name == missing[0])
+                    message = f"{stmt.src}: returns without a write of {_unwritten(output)}"
+                    raise ExtractionError(message, _before(output))
+                return None
+            elif isinstance(stmt, Revert):
+                return None
+            elif isinstance(stmt, If):
+                ends = [self._written_outputs(branch, needed, written) for branch in (stmt.then, stmt.orelse)]
+                ends = [end for end in ends if end is not None]
+                if not ends:
+                    return None
+                written = set.intersection(*ends)
+        return written
+
+    def _output(self, key: str, index: int | None, name: str, type_: Type, node, kind: str) -> Output:
+        """The output of a place or of a call's argument, made when the extractor first meets it. A place that the read
+        map names too has the read as its value before the call."""
+        if (key, index) in self.outputs:
+            return self.outputs[(key, index)]
+        before = None
+        if index is None and key in self.read_map:
+            if key not in self.reads:
+                var = Var(self.read_map[key][1], type_, input=True, src=self.src(node))
+                self.reads[key] = Read(var, self.read_map[key][0])
+            before = self.reads[key].var
+            if before.type != type_:
+                self.fail(node, f"the read {key} is a {before.type.solidity} and the output a {type_.solidity}")
+        written = self.output_map[key][0]
+        output = Output(Var(name, type_, src=self.src(node)), written, kind, index, before)
+        self.outputs[(key, index)] = output
+        return output
 
     def _check_names(self, node, function: Function, reads: tuple[Read, ...]) -> None:
         inputs = [v.name for v in function.params] + [r.var.name for r in reads]
@@ -379,9 +502,10 @@ class _Extractor:
         if node["modifiers"]:
             self.fail(node["modifiers"][0], f"{name} has a modifier")
         returns = node["returnParameters"]["parameters"]
-        if not returns:
+        if not returns and not top:
             self.fail(node["returnParameters"], f"{name} returns no value")
-        return_type = tuple_of(tuple(self._type(r) for r in returns))
+        # A modeled function without a value has its outputs only, which come after its own values (_with_outputs).
+        return_type = tuple_of(tuple(self._type(r) for r in returns)) if returns else Type("tuple")
         for p in (*node["parameters"]["parameters"], *returns):
             self._not_inputs_name(p)
         scope = {}
@@ -435,6 +559,9 @@ class _Extractor:
                     orelse = self._block(_statements(node["falseBody"]), scope, return_type)
                 out.append(If(cond, then, orelse, self.src(node)))
             elif kind == "Return":
+                if node.get("expression") is None and not parts(return_type):
+                    out.append(Return(Tuple((), return_type), self.src(node)))
+                    continue
                 if node.get("expression") is None:
                     if "return" not in scope:
                         self.fail(node, "a return without a value")
@@ -446,7 +573,9 @@ class _Extractor:
                 out.append(Return(value, self.src(node)))
             elif kind == "ExpressionStatement":
                 stmt = self._expression_statement(node["expression"], scope)
-                if stmt is not None:
+                if isinstance(stmt, tuple):
+                    out += stmt
+                elif stmt is not None:
                     out.append(stmt)
             elif kind == "RevertStatement":
                 out.append(Revert(self.src(node)))
@@ -578,7 +707,63 @@ class _Extractor:
                 return self._require(expression, scope)
         if kind == "UnaryOperation" and expression["operator"] in ("++", "--", "delete"):
             self.fail(expression, f"{expression['operator']} is not supported")
+        if kind == "FunctionCall" and expression["kind"] == "functionCall":
+            if self._external(expression):
+                return self._external_call(expression, scope)
+            name = callee.get("name") or callee.get("memberName")
+            self.fail(expression, f"a call to {name} as a statement: an internal call is taken only as a value")
         self.fail(expression, "an expression statement")
+
+    def _external(self, call) -> bool:
+        """Whether a call is to a function of another contract, or of this one through `this`, and not to a library
+        function bound to a contract value, as `token.forceApprove(...)` under `using SafeERC20 for IERC20`."""
+        callee = call["expression"]
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if callee["nodeType"] != "MemberAccess" or decl is None or decl["nodeType"] != "FunctionDefinition":
+            return False
+        if self.nodes.get(decl["scope"], {}).get("contractKind") == "library":
+            return False
+        return callee["expression"]["typeDescriptions"]["typeString"].startswith("contract ")
+
+    def _external_call(self, call, scope: dict) -> tuple[Stmt, ...]:
+        """An external call as a statement, as `psm.buyGem(msg.sender, amt);`. The model assumes that it does not revert
+        and does not call back into the contract. Its arguments are outputs where the output map names them, a tuple of
+        a name or None for each argument under the call's source text, and the others must not revert. A call that can
+        change state can change any storage, so no read of storage may follow it."""
+        callee = call["expression"]
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "FunctionDefinition":
+            self.fail(call, f"a call that the extractor cannot resolve: {self.text(call)}")
+        key = _normal(self.text(call))
+        arguments = self._arguments(call, decl)
+        self._cannot_revert(callee["expression"], scope)
+        names = self.output_map[key][1] if key in self.output_map else (None,) * len(arguments)
+        if not isinstance(names, tuple | list) or len(names) != len(arguments):
+            self.fail(call, f"the output map names {len(names)} values of {key}, which has {len(arguments)} arguments")
+        if key in self.output_map and self.stack:
+            self.fail(call, f"{key} is an output in the callee {self.nodes[self.stack[-1]]['name']}")
+        stmts = []
+        params = decl["parameters"]["parameters"]
+        texts = tuple(_normal(self.text(arg)) for arg in arguments)
+        for index, (arg, name, param) in enumerate(zip(arguments, names, params, strict=True)):
+            if name is None:
+                try:
+                    self._cannot_revert(arg, scope)
+                except ExtractionError as err:
+                    wanted = Wanted(key, index, texts)
+                    raise ExtractionError(f"{err}; name it in the output map to model it", output=wanted) from None
+                continue
+            value = self._expr(arg, scope)
+            output = self._output(key, index, name, self._type(param), arg, "call")
+            self._assignable(arg, value.type, output.var.type)
+            stmts.append(Assign(output.var, value, self.src(arg)))
+        if key not in self.output_map:
+            self._effect(call, "call", key, texts)
+        if decl["stateMutability"] not in ("view", "pure"):
+            self.written.add(EXTERNAL)
+            for writes in self.writing:
+                writes.add(EXTERNAL)
+        return tuple(stmts)
 
     def _require(self, call, scope: dict) -> Stmt:
         """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require
@@ -608,16 +793,12 @@ class _Extractor:
         root = _root(lhs)
         target = self.nodes.get(root.get("referencedDeclaration")) if root else None
         if target is not None and target.get("stateVariable"):
-            self._write(expression, scope, "write")
-            self._wrote(target)
-            return None
+            return self._storage_write(expression, scope, _normal(self.text(lhs)), target)
         local = scope.get(root.get("referencedDeclaration")) if root else None
         if isinstance(local, tuple) and local[0] == "pointer" and root is not lhs:
             if local[2] is None:
                 self.fail(expression, f"a write through the storage parameter {root['name']}: it could be any storage")
-            self._write(expression, scope, "write", self._through(local, root, lhs))
-            self._wrote(local[2])
-            return None
+            return self._storage_write(expression, scope, self._through(local, root, lhs), local[2])
         if isinstance(local, tuple):
             if local[0] != "copy" or root is lhs:
                 self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy or storage")
@@ -666,12 +847,59 @@ class _Extractor:
                 self._assignable(rhs, part, var.type)
         return Unpack(tuple(vars_), value, False, self.src(expression))
 
+    def _storage_write(self, expression, scope: dict, place: str, state) -> Assign | None:
+        """A write to storage: an output where the output map names its place, and an effect otherwise. The value of an
+        output can revert, and a compound assignment to one starts from its value before the call. The value runs
+        before the write, so it can read what the write changes."""
+        if place not in self.output_map:
+            self._write(expression, scope, "write", place)
+            self._wrote(state)
+            self.other_writes.append((state["id"], place, expression))
+            return None
+        if self.stack:
+            self.fail(expression, f"writes the output {place} in the callee {self.nodes[self.stack[-1]]['name']}")
+        name = self.output_map[place][1]
+        if not isinstance(name, str):
+            self.fail(expression, f"the output map names {place} with {name!r}, not a name")
+        lhs, rhs, operator = expression["leftHandSide"], expression["rightHandSide"], expression["operator"]
+        if self._storage_path(lhs, scope) is None:
+            self.fail(lhs, f"the output {place} is at a key that can change during the call: {_KEYS}")
+        self._cannot_revert(lhs, scope)
+        # The place is a read map key too where the output has its value before the call.
+        self._stable(place, lhs, scope)
+        output = self._output(place, None, name, self._type(lhs), lhs, "write")
+        places = self.output_states.setdefault(state["id"], [])
+        for other in places:
+            if other != place and not _distinct(other, place):
+                self.fail(lhs, f"the outputs {other} and {place} are one place where their keys are equal")
+        if place not in places:
+            places.append(place)
+        if operator not in ASSIGNMENTS:
+            self.fail(expression, f"the assignment operator {operator}")
+        value = self._expr(rhs, scope)
+        if ASSIGNMENTS[operator] is not None:
+            if output.before is None:
+                missing = Missing(output.source, "the value before the call of an output", self.src(lhs))
+                message = f"{operator} to the output {place} needs its value before the call: {_BEFORE}"
+                self.fail(expression, message, missing)
+            value = self._op(expression, ASSIGNMENTS[operator], output.var, value)
+        self._assignable(rhs, value.type, output.var.type)
+        self._wrote(state)
+        return Assign(output.var, value, self.src(expression))
+
     def _write(self, expression, scope: dict, kind: str, place: str | None = None) -> None:
+        place = place or _normal(self.text(expression["leftHandSide"]))
         if expression["operator"] != "=":
-            self.fail(expression, f"a write with {expression['operator']}: its value can revert")
+            wanted = Wanted(place) if kind == "write" else None
+            self.fail(expression, f"a write with {expression['operator']}: its value can revert", output=wanted)
         self._cannot_revert(expression["leftHandSide"], scope)
-        self._cannot_revert(expression["rightHandSide"], scope)
-        self._effect(expression, kind, place or _normal(self.text(expression["leftHandSide"])))
+        try:
+            self._cannot_revert(expression["rightHandSide"], scope)
+        except ExtractionError as err:
+            if kind != "write":
+                raise
+            raise ExtractionError(f"{err}; name {place} in the output map to model it", output=Wanted(place)) from None
+        self._effect(expression, kind, place)
 
     def _wrote(self, state) -> None:
         """Records a write to the storage variable `state`, here and in each callee being extracted."""
@@ -684,8 +912,8 @@ class _Extractor:
         `$spenders[_who].config.cap` for `spender.config.cap`."""
         return entry[1] + _normal(self.text(node))[len(root["name"]) :]
 
-    def _effect(self, node, kind: str, place: str) -> None:
-        self.effects.append(Effect(kind, place, " ".join(self.text(node).split()), self.src(node)))
+    def _effect(self, node, kind: str, place: str, arguments: tuple[str, ...] = ()) -> None:
+        self.effects.append(Effect(kind, place, " ".join(self.text(node).split()), self.src(node), arguments))
 
     def _event(self, call) -> str:
         """The signature of the event that an emit calls, such as `Updated(uint256)`."""
@@ -861,6 +1089,10 @@ class _Extractor:
         if node.get("typeDescriptions", {}).get("typeString", "").startswith("tuple("):
             self.fail(node, f"the read {key} gives several values, and a read map entry names one")
         self._stable(key, node, scope)
+        if copy is None and (_normal(key), None) in self.outputs and not self.stack:
+            # The place of an output that the function wrote: the output holds its value, which starts at the read. A
+            # memory copy keeps the value from before the write.
+            return self.outputs[(_normal(key), None)].var
         if copy in self.written_copies:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if state is not None:
@@ -927,6 +1159,8 @@ class _Extractor:
         """Records a read of the storage variable `decl`, which must not follow a write to it."""
         if decl["id"] in self.written:
             self.fail(node, f"reads {decl['name']} after a write to it: the model does not see the write")
+        if EXTERNAL in self.written and decl.get("mutability") == "mutable":
+            self.fail(node, f"reads {decl['name']} after an external call, which could change it")
         for reads in self.reading:
             reads.add(decl["id"])
 
@@ -1046,11 +1280,19 @@ class _Extractor:
 
     def _conversion(self, node, scope: dict) -> Expr:
         """`address(x)` of a contract, an interface or an address is x, and of a number literal is that address.
-        `uint256(x)` of an unsigned x or a number literal widens it. Any other type conversion is an error."""
-        if node["typeDescriptions"]["typeString"] == "uint256" and len(node["arguments"]) == 1:
+        `uint<n>(x)` of an unsigned x or a number literal widens it, or narrows it to its low n bits, as Solidity does.
+        Any other type conversion is an error."""
+        match = re.fullmatch(r"uint(\d+)", node["typeDescriptions"]["typeString"])
+        if match and len(node["arguments"]) == 1:
             value = self._expr(node["arguments"][0], scope)
             if value.type.is_number:
-                return self._op(node, "widen", value)
+                to = uint(int(match.group(1)))
+                op = "widen" if value.type.kind == "literal" or value.type.bits <= to.bits else "narrow"
+                try:
+                    made = ops.make(op, value, src=self.src(node), to=to)
+                except TypeError as err:
+                    self.fail(node, str(err))
+                return made
         if self._type(node) == ADDRESS and len(node["arguments"]) == 1:
             arg = node["arguments"][0]
             if arg["nodeType"] == "Literal" and arg["kind"] == "number":
@@ -1117,7 +1359,7 @@ class _Extractor:
         self.written = set(written)
         args = tuple(self._expr(arg, scope) for arg in arguments)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
-        stale = sorted(self.nodes[r]["name"] for r in reads - {"call", "any"} if r in written)
+        stale = sorted(self.nodes[r]["name"] for r in reads - {"call", "any"} if r in written or EXTERNAL in written)
         if stale or (reads & {"call", "any"} and written):
             what = ", ".join(stale) if stale else "storage through a call" if "call" in reads else "a storage parameter"
             self.fail(node, f"calls {decl['name']}, which reads {what}, after a write: the model misses the write")
@@ -1232,10 +1474,38 @@ def _subtree(node):
             yield from _subtree(value)
 
 
+EXTERNAL = "external call"
+_KEYS = "each key of an output must be an input or a field of tx, block or msg"
+_BEFORE = "name its place in the read map too"
+
+
+def _before(output: Output) -> Missing | None:
+    """The read of an output's value before the call, which a write that some paths make needs."""
+    if output.kind != "write":
+        return None
+    return Missing(output.source, "the value before the call of an output", output.var.src)
+
+
+def _unwritten(output: Output) -> str:
+    if output.kind == "call":
+        return f"the output {output.var.name} ({output.source}): make the call on every path that returns"
+    return (
+        f"the output {output.var.name} ({output.source}): write it on every path that returns, or {_BEFORE}, so that "
+        "the model has its value before the call"
+    )
+
+
 _STORAGE = (
     "a storage pointer must be to a storage struct, at mapping keys that name one entry for the whole call (inputs, or "
     "fields of tx, block or msg), or to a field of one"
 )
+
+
+def _distinct(a: str, b: str) -> bool:
+    """Whether two places of one storage variable differ for every key: they differ at two fields, as
+    `$spenders[_a].left` and `$spenders[_b].last`, and not only at keys, which can be equal."""
+    steps = zip(*(re.findall(r"\[[^\]]*\]|\.\w+|^[^.\[]+", place) for place in (a, b)), strict=False)
+    return any(x != y and x.startswith(".") and y.startswith(".") for x, y in steps)
 
 
 def _mapping(node) -> bool:

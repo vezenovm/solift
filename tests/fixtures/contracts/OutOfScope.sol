@@ -30,8 +30,8 @@ contract OutOfScope {
     return _a > 0 ? 1 : 0;
   }
 
-  function cast(uint256 _a) internal pure returns (uint256) {
-    return uint128(_a);
+  function cast() internal view returns (uint256) {
+    return uint160(msg.sender);
   }
 
   function tupleOfAnExternalCall(uint256 _a) internal view returns (uint256 x) {

@@ -7,10 +7,12 @@ never gets an input from the environment otherwise. An adapter is the harness co
 inputs, such as `vm.fee(baseFee);` for `block.basefee`. The parameters of the modeled function go to the contract
 through `call`.
 
-"Agree" means: both succeed with the same result, each of its values for a function of several returns, or both
-revert. Revert data, storage writes and events are not compared. The test reads the observed inputs before it calls the
-contract, so that each is the value that the contract reads, also when the call writes storage: the model reads nothing
-that the function wrote (extract.py).
+"Agree" means: both succeed with the same result, each of its values for a function of several returns, and the same
+outputs, or both revert. An output is a write or an external call argument that the model has as a value: the test
+reads it after the call through its `post` expression, such as a getter of the harness or what a stub recorded. Revert
+data, the other storage writes and calls, and events are not compared. The test reads the observed inputs before it
+calls the contract, so that each is the value that the contract reads, also when the call writes storage: the model
+reads nothing that the function wrote (extract.py).
 
 The generated files are the model library and host (solidity.py), the link test, and a test of each operator-table
 row and lemma that the model uses, which this build proves on its own bytecode and OpenZeppelin version.
@@ -59,7 +61,9 @@ class Link:
     inputs for its fields. `observed` maps an input name to the expression that the test reads it from. `parameters`
     maps more symbolic parameters of the check, which are not inputs, to their types: an adapter can use them to set
     what the contract reads, and an observed expression reads the input that results, as for a cut point such as a
-    price that the contract computes from a feed. `imports` are more import directives that the adapters need."""
+    price that the contract computes from a feed. `imports` are more import directives that the adapters need. `post`
+    maps each output of the model to the expression that the test reads it from after the call, such as
+    `pool.leftOf(address(this))` for a write or `psm.lastAmount()` for an argument that a stub records."""
 
     setup: str | Harness
     call: str
@@ -68,6 +72,7 @@ class Link:
     test_import: str = "forge-std/Test.sol"
     imports: tuple[str, ...] = ()
     parameters: dict = field(default_factory=dict)
+    post: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,13 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
     for param in model.function.params:
         if covered[param.name] != "call":
             raise LinkError(f"the parameter {param.name} must reach the contract through the call")
+    outputs = [o.var.name for o in model.outputs]
+    for name in link.post:
+        if name not in outputs:
+            raise LinkError(f"the link reads {name} after the call, which is not an output of {model.name}")
+    for name in outputs:
+        if name not in link.post:
+            raise LinkError(f"no post expression reads the output {name} after the call")
     return covered
 
 
@@ -183,7 +195,7 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         "    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));",
         "    assert(codeOk == modelOk);",
         "    if (codeOk) {",
-        *_compare(model.function.returns),
+        *_compare(model, link),
         "    }",
         "  }",
         "}",
@@ -192,16 +204,23 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     return "\n".join(lines)
 
 
-def _compare(returns) -> list[str]:
-    """The asserts that the contract's result is the model's: the one value, or each value of several returns."""
-    if returns.kind != "tuple":
+def _compare(model: Model, link: Link) -> list[str]:
+    """The asserts that the contract's result is the model's, each value of several returns, and that each output
+    that the test reads after the call is the model's value of it, which the model returns after its own values."""
+    returns = model.function.returns
+    if returns.kind != "tuple" and not model.outputs:
         type_ = returns.solidity
         return [f"      assert(abi.decode(codeOut, ({type_})) == abi.decode(modelOut, ({type_})));"]
     lines = []
-    for side in ("code", "model"):
-        declared = ", ".join(f"{t.solidity} {side}Result{n}" for n, t in enumerate(parts(returns)))
-        lines.append(f"      ({declared}) = abi.decode({side}Out, ({returns.solidity}));")
-    lines += [f"      assert(codeResult{n} == modelResult{n});" for n in range(len(returns.parts))]
+    for side, types in (("code", model.results), ("model", parts(returns))):
+        if types:
+            declared = ", ".join(f"{t.solidity} {side}Result{n}" for n, t in enumerate(types))
+            listed = ", ".join(t.solidity for t in types)
+            target = declared if len(types) == 1 else f"({declared})"
+            lines.append(f"      {target} = abi.decode({side}Out, ({listed}));")
+    lines += [f"      assert(codeResult{n} == modelResult{n});" for n in range(len(model.results))]
+    for n, output in enumerate(model.outputs, start=len(model.results)):
+        lines.append(f"      assert(({link.post[output.var.name].strip()}) == modelResult{n});")
     return lines
 
 

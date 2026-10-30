@@ -60,7 +60,9 @@ KNOWN_ERRORS = (
 
 @dataclass
 class Spec:
-    """What a run checks: the target function, its read map, its link, and its theorems. `impossible` names the
+    """What a run checks: the target function, its read map, its link, and its theorems. `outputs`, the output map,
+    names the writes and the external call arguments that the model has as values, as `{"$total": "total"}` or
+    `{"psm.buyGem(msg.sender,amt)": (None, "amount")}` with a name or None for each argument. `impossible` names the
     outcomes (pays, zero, reverts) that the spec asserts no input reaches: a vector that reaches one fails the run. An
     outcome that z3 proves no input reaches needs no entry; the record lists it as unreachable. `stem` names the
     generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and
@@ -74,6 +76,7 @@ class Spec:
     theorems: list = field(default_factory=list)
     impossible: tuple[str, ...] = ()
     stem: str = ""
+    outputs: dict = field(default_factory=dict)
 
     def theorem(self, **options):
         def wrap(goal):
@@ -303,7 +306,7 @@ def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     root = project.overlay(workspace)
     out, cache = workspace.fresh("ast-out"), workspace.fresh("ast-cache")
     infos = forge.build(root, out, cache, project.profile, (project.root,))
-    loaded = {spec.name: Terms(extract(infos, spec.target, spec.reads).model) for spec in specs}
+    loaded = {spec.name: Terms(extract(infos, spec.target, spec.reads, spec.outputs).model) for spec in specs}
     changes = guard.changes()
     if changes:
         raise RuntimeError(f"the project changed while solift read it: {'; '.join(changes)}")
@@ -312,7 +315,7 @@ def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
 
 def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict) -> None:
     try:
-        extraction = extract(infos, c.spec.target, c.spec.reads)
+        extraction = extract(infos, c.spec.target, c.spec.reads, c.spec.outputs)
         c.model = dataclasses.replace(extraction.model, stem=c.spec.stem)
         c.generated = generate(c.model, c.spec.link, operators=operators)
     except Exception as err:
@@ -327,6 +330,10 @@ def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict) -> N
         "reads": {r.var.name: r.source for r in c.model.reads},
         "callees": [f.name for f in c.model.callees],
         "effects": [{"kind": e.kind, "place": e.place, "source": e.source, "at": str(e.src)} for e in c.model.effects],
+        "outputs": [
+            {"name": o.var.name, "type": o.var.type.solidity, "kind": o.kind, "source": o.source, "argument": o.index}
+            for o in c.model.outputs
+        ],
     }
 
 
@@ -512,7 +519,8 @@ def summary(record: dict) -> str:
         if "model" in spec:
             model = spec["model"]
             reads = ", ".join(f"{name} = {source}" for name, source in model["reads"].items())
-            lines.append(f"model: {len(model['inputs'])} inputs; reads {reads}")
+            outputs = "".join(f"; output {o['name']} = {_output_source(o)}" for o in model.get("outputs", []))
+            lines.append(f"model: {len(model['inputs'])} inputs; reads {reads}{outputs}")
         for t in spec.get("theorems", []):
             mark = "" if t["ok"] else "   <-- unexpected" + (f": {t['detail']}" if t["detail"] else "")
             witness = f" {t['witness']}" if t["witness"] else ""
@@ -539,6 +547,10 @@ def summary(record: dict) -> str:
     lines += [f"FAILED {failure}" for failure in record["failures"]]
     lines.append("ok" if record["ok"] else f"{len(record['failures'])} failure(s)")
     return "\n".join(lines)
+
+
+def _output_source(output: dict) -> str:
+    return output["source"] + ("" if output["argument"] is None else f" argument {output['argument']}")
 
 
 def _scope(t: dict, target: str) -> list[str]:

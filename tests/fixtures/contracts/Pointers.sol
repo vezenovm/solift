@@ -198,6 +198,11 @@ contract Pointers is PointersBase {
     return picks[c.key] == _basePick();
   }
 
+  function setLevel(uint256 _x) external returns (uint256) {
+    level = _x;
+    return _baseValue();
+  }
+
   function sameChoice() external view returns (bool) {
     return ChoiceKeys.keyOf(choice) == _baseChoice();
   }

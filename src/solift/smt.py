@@ -280,6 +280,8 @@ class _Run:
         parts = [self.expr(arg, env) for arg in e.args]
         values = [p[0] for p in parts]
         operator = TABLE[e.op]
+        if e.op == "narrow":
+            return values[0] % e.type.bound, parts[0][1], parts[0][2]
         if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
             self.comparisons.append((self.guard, values[0], values[1]))
         if operator.outside:

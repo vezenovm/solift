@@ -220,3 +220,92 @@ def test_a_storage_pointer_passed_to_callees_links_to_its_model(tmp_path):
     (result,) = record["specs"]
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+
+
+def test_writes_and_call_arguments_are_outputs_that_the_link_reads_after_the_call(tmp_path):
+    setup = "tests/fixtures/test/EffectsSetup.sol:EffectsSetup"
+    target = "tests/fixtures/contracts/Effects.sol:Effects"
+    buy = Spec(
+        name="effects-buy",
+        target=f"{target}.buy",
+        reads={"SWAPPER.fee()": "fee"},
+        outputs={"SWAPPER.buy(msg.sender,amount)": (None, "bought")},
+        link=Link(
+            setup=setup,
+            call="effects.buy(_amountIn)",
+            adapters={"fee": "swapper.setFee(fee);"},
+            post={"bought": "swapper.lastAmount()"},
+        ),
+        project=SPEC.project,
+    )
+
+    @buy.theorem(assume=("no-revert",), witness=lambda q: q.post.bought > 0)
+    def buys_at_most_the_amount_in(q):
+        """The amount bought, at its price with the fee, is at most the amount in."""
+        return q.post.bought * (10**18 + q.fee) <= q._amountIn
+
+    pull = Spec(
+        name="effects-pull",
+        target=f"{target}.pull",
+        reads={"$allowances[msg.sender].left": "stored", "block.timestamp": "time"},
+        outputs={"$allowances[msg.sender].left": "remaining", "$allowances[msg.sender].last": "last"},
+        link=Link(
+            setup=setup,
+            call="effects.pull(_amount, _refill)",
+            adapters={"stored": "effects.setLeft(address(this), stored);", "time": "vm.warp(time);"},
+            post={"remaining": "effects.leftOf(address(this))", "last": "effects.lastOf(address(this))"},
+        ),
+        project=SPEC.project,
+    )
+
+    @pull.theorem(
+        assume=("no-revert",),
+        expect="counterexample",
+        reason="the refill is not capped, so the allowance left can pass 2**192 and its conversion truncates it",
+    )
+    def the_allowance_left_is_the_refilled_allowance_less_the_amount(q):
+        """The allowance left is the stored allowance with the refill, less the amount pulled."""
+        return q.post.remaining == q.stored + q._refill - q._amount
+
+    def capped(h):
+        """the stored allowance and the refill stay below 2**192"""
+        return h.stored + h._refill < 2**192
+
+    @pull.theorem(assume=("no-revert",), given=capped, witness=lambda q: q.post.remaining > 0)
+    def a_capped_refill_does_not_truncate(q):
+        """With the refill capped, the allowance left is the refilled allowance less the amount pulled."""
+        return q.post.remaining == q.stored + q._refill - q._amount
+
+    add = Spec(
+        name="effects-add",
+        target=f"{target}.add",
+        reads={"$total": "before"},
+        outputs={"$total": "total"},
+        link=Link(
+            setup=setup,
+            call="effects.add(_x, _y)",
+            adapters={"before": "effects.setTotal(before);"},
+            post={"total": "effects.total()"},
+        ),
+        project=SPEC.project,
+    )
+
+    @add.theorem(assume=("no-revert",), witness=lambda q: q.result)
+    def the_total_moves_by_the_difference(q):
+        """The total after the call is the total before it with x added and y taken away, when x is not zero."""
+        return q.post.total == z3.If(q._x == 0, q.before, q.before + q._x - q._y)
+
+    record = run([buy, pull, add], Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["spec"]
+        assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+    verdicts = [t["verdict"] for result in record["specs"] for t in result["theorems"]]
+    assert verdicts == ["PROVED", "COUNTEREXAMPLE", "PROVED", "PROVED"]
+    assert record["specs"][1]["model"]["outputs"][0] == {
+        "name": "remaining",
+        "type": "uint192",
+        "kind": "write",
+        "source": "$allowances[msg.sender].left",
+        "argument": None,
+    }
