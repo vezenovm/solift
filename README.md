@@ -155,6 +155,11 @@ Past arithmetic:
    give the invariant after it. The hard part is two reads of one mapping at keys that may be equal.
 3. **Events**, as outputs that the link compares.
 
+Trust: a one-time Lean proof that the integer terms of every model agree with its checked `uint256` execution, given
+the rows of the operator table that Halmos proves. It covers how the rows compose, through branches, short circuits,
+inlined calls and returns. What stays trusted is that `smt.py` follows the Lean definition, which the vectors keep
+checking on samples.
+
 ## Develop
 
 ```sh
