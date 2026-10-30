@@ -51,8 +51,9 @@ ships it under another name.
 python3.12 -m venv .venv
 .venv/bin/pip install -e . -r requirements-dev.txt
 git submodule update --init
-.venv/bin/python -m examples.quoter                     # one spec on the test fixtures
-.venv/bin/python -m examples.pricer                     # three specs in one run
+.venv/bin/solift reads tests/fixtures/contracts/Quoter.sol:Quoter._quote   # the read map that a function needs
+.venv/bin/solift run examples.quoter.spec                # one spec on the test fixtures
+.venv/bin/python -m examples.pricer                       # three specs in one run
 .venv/bin/python -m acceptance.resupply --root <resupply>    # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>   # setup in acceptance/morpho/__main__.py
 ```
@@ -67,7 +68,7 @@ sha256 of each solc input of the build, of each theorem's query, of the spec's P
 overlay adds, the profile, and the options of the link engine. The run fails when any result is not the expected one.
 An error in a stage, such as an exception in a theorem, fails that stage and the run goes on.
 
-Code on top of the models, such as a check of each deployed configuration, uses `solift.run.load(specs, workspace)`: the
+Code on top of the models, such as a check of each deployed configuration, uses `solift.load(specs, workspace)`: the
 terms of each model from one build. `q.at(name=value, ...)` gives the terms with inputs fixed, `q.call(function, *args)`
 runs a function of the model, and `q.declared(local)` is a local's value where it is declared.
 
