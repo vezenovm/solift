@@ -155,7 +155,7 @@ def run(
                 c.record["failures"].append(f"vectors: {err}")
     clock.stage("extract and sample the vectors")
     for name, text in files.items():
-        (root / project.generated / name).write_text(text)
+        project.write(root, name, text)
     record["generated"] = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()}
 
     for c in models:

@@ -6,8 +6,9 @@ made it, and `fresh` deletes only inside a marked workspace.
 A project is the foundry project that holds the target. z3sol never writes to it. It builds an overlay root in the
 workspace instead: symlinks to the project's configuration and dependencies (`link`), copies of the sources that forge
 compiles as project files or that a mutant changes (`copy`), and the generated files. Forge reads a symlinked project
-file under its real path and then finds no AST for it, so project files are copied, not linked. `guard` checks that
-nothing in the project changed during the run.
+file under its real path and then finds no AST for it, so project files are copied, not linked. A copy keeps the links
+inside it, so each write into the overlay refuses a link and a path that resolves outside the overlay. `guard` checks
+that nothing in the project changed during the run.
 """
 
 from __future__ import annotations
@@ -76,9 +77,14 @@ class Project:
         for rel, content in (replace or {}).items():
             if not any(rel == c or rel.startswith(c.rstrip("/") + "/") for c in self.copy):
                 raise WorkspaceError(f"{rel} is not under a copied path, so the overlay cannot replace it")
-            (root / rel).write_text(content)
+            _write(root, root / rel, content)
+        _inside(root, root / self.generated)
         (root / self.generated).mkdir(parents=True, exist_ok=True)
         return root
+
+    def write(self, root: pathlib.Path, name: str, text: str) -> None:
+        """Writes a generated file into the overlay's directory for them."""
+        _write(root, root / self.generated / name, text)
 
     def guard(self, workspace: Workspace, exclude=()) -> Guard:
         """A guard of the project, outside the workspace and the `exclude` paths that the run writes to on purpose."""
@@ -119,6 +125,19 @@ class Guard:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         found += [f"{line} changed during the run" for line in result.stdout.splitlines() if line]
         return found
+
+
+def _inside(root: pathlib.Path, path: pathlib.Path) -> None:
+    """Refuses a path that resolves outside the overlay, as one under a linked directory does."""
+    if path.resolve() != root.resolve() and root.resolve() not in path.resolve().parents:
+        raise WorkspaceError(f"{path.relative_to(root)} is outside the overlay: it resolves to {path.resolve()}")
+
+
+def _write(root: pathlib.Path, path: pathlib.Path, text: str) -> None:
+    if path.is_symlink():
+        raise WorkspaceError(f"{path.relative_to(root)} is a link, so writing it would write {path.resolve()}")
+    _inside(root, path)
+    path.write_text(text)
 
 
 def _top(root: pathlib.Path) -> pathlib.Path | None:

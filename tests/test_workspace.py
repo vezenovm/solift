@@ -64,3 +64,26 @@ def test_the_guard_finds_an_ignored_build_output(tmp_path):
     (root / "out").mkdir()
     (root / "out" / "A.json").write_text("{}")
     assert f"{root}/out/A.json changed during the run" in guard.changes()
+
+
+def test_no_write_into_the_overlay_follows_a_link_into_the_project(tmp_path):
+    root = git_project(tmp_path / "project")
+    (root / "lib").mkdir()
+    (root / "lib" / "B.sol").write_text("contract B {}\n")
+    (root / "src" / "B.sol").symlink_to(root / "lib" / "B.sol")
+    workspace = Workspace(tmp_path / "work")
+    project = Project(root, link=("lib",), copy=("src",), generated="test/gen")
+    with pytest.raises(WorkspaceError, match="src/B.sol is a link"):
+        project.overlay(workspace, replace={"src/B.sol": "contract C {}\n"})
+    assert (root / "lib" / "B.sol").read_text() == "contract B {}\n"
+    with pytest.raises(WorkspaceError, match="lib/gen is outside the overlay"):
+        Project(root, link=("lib",), copy=("src",), generated="lib/gen").overlay(workspace)
+    assert not (root / "lib" / "gen").exists()
+    overlay = project.overlay(workspace)
+    (root / "test").mkdir()
+    (overlay / "test" / "gen" / "M.sol").symlink_to(root / "test" / "M.sol")
+    with pytest.raises(WorkspaceError, match="M.sol is a link"):
+        project.write(overlay, "M.sol", "contract M {}\n")
+    assert not (root / "test" / "M.sol").exists()
+    project.write(overlay, "N.sol", "contract N {}\n")
+    assert (overlay / "test" / "gen" / "N.sol").read_text() == "contract N {}\n"
