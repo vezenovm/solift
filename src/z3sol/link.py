@@ -8,7 +8,8 @@ inputs, such as `vm.fee(baseFee);` for `block.basefee`. The parameters of the mo
 through `call`.
 
 "Agree" means: both succeed with the same result, or both revert. Revert data, storage writes and events are not
-compared.
+compared. The test reads the observed inputs before it calls the contract, so that each is the value that the contract
+reads, also when the call writes storage: the model reads nothing that the function wrote (extract.py).
 
 The generated files are the model library and host (solidity.py), the link test, and a test of each operator-table
 row and lemma that the model uses, which this build proves on its own bytecode and OpenZeppelin version.
@@ -155,13 +156,13 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         ",\n".join(params),
         "  ) public {",
         *adapters,
+        f"    {library}.Inputs memory i = {library}.Inputs({{",
+        ",\n".join(fields),
+        "    });",
         f"    (bool codeOk, bytes memory codeOut) = address({target}).call(",
         f"      abi.encodeCall({target}.{function}, ({arguments.strip()}))",
         "    );",
         f"    {host} host = new {host}();",
-        f"    {library}.Inputs memory i = {library}.Inputs({{",
-        ",\n".join(fields),
-        "    });",
         "    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));",
         "    assert(codeOk == modelOk);",
         "    if (codeOk) {",

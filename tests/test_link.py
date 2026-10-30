@@ -39,10 +39,6 @@ contract DepositSubsidyQuoteSubsidyLink is DepositSubsidySetup {
     _configure(targetRelayerProfit, maxSubsidyPerOperation);
     token.set(address(subsidy), pot, 1);
     vm.fee(baseFee);
-    (bool codeOk, bytes memory codeOut) = address(subsidy).call(
-      abi.encodeCall(subsidy.exposedQuote, (_fee, _reimbursableGas, _tokenPerEth))
-    );
-    DepositSubsidyQuoteSubsidyHost host = new DepositSubsidyQuoteSubsidyHost();
     DepositSubsidyQuoteSubsidyModel.Inputs memory i = DepositSubsidyQuoteSubsidyModel.Inputs({
       _fee: _fee,
       _reimbursableGas: _reimbursableGas,
@@ -53,6 +49,10 @@ contract DepositSubsidyQuoteSubsidyLink is DepositSubsidySetup {
       txGasPrice: tx.gasprice,
       baseFee: baseFee
     });
+    (bool codeOk, bytes memory codeOut) = address(subsidy).call(
+      abi.encodeCall(subsidy.exposedQuote, (_fee, _reimbursableGas, _tokenPerEth))
+    );
+    DepositSubsidyQuoteSubsidyHost host = new DepositSubsidyQuoteSubsidyHost();
     (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
     assert(codeOk == modelOk);
     if (codeOk) {

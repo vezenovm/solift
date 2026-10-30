@@ -19,10 +19,6 @@ contract QuoterQuoteLink is QuoterSetup {
     quoter.setConfig(margin, cap, floor);
     token.set(pot);
     vm.fee(baseFee);
-    (bool codeOk, bytes memory codeOut) = address(quoter).call(
-      abi.encodeCall(quoter.exposedQuote, (_gas, _price))
-    );
-    QuoterQuoteHost host = new QuoterQuoteHost();
     QuoterQuoteModel.Inputs memory i = QuoterQuoteModel.Inputs({
       _gas: _gas,
       _price: _price,
@@ -33,6 +29,10 @@ contract QuoterQuoteLink is QuoterSetup {
       txGasPrice: tx.gasprice,
       baseFee: baseFee
     });
+    (bool codeOk, bytes memory codeOut) = address(quoter).call(
+      abi.encodeCall(quoter.exposedQuote, (_gas, _price))
+    );
+    QuoterQuoteHost host = new QuoterQuoteHost();
     (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
     assert(codeOk == modelOk);
     if (codeOk) {
