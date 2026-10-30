@@ -1,5 +1,6 @@
 import json
 import pathlib
+import subprocess
 
 import pytest
 
@@ -159,6 +160,22 @@ def test_two_forge_results_for_one_test_are_refused():
     assert statuses(line.replace("b/V.t.sol:V", "b/W.t.sol:W"), ("V",)) == {
         ("a/V.t.sol", "V", "test_vector_000"): "Success"
     }
+
+
+def test_a_failed_forge_test_exit_is_an_error_even_when_every_reported_test_passes(monkeypatch, tmp_path):
+    """forge test exits with a failure when a test fails. An exit with a failure after only successes means that forge
+    stopped for another reason, such as a crash or a kill, so its results do not count."""
+    line = '{"a/V.t.sol:V": {"test_results": {"test_vector_000()": {"status": "Success"}}}}\n'
+    for returncode, failing in ((137, line), (1, line.replace("Success", "Failure"))):
+        done = subprocess.CompletedProcess([], returncode, stdout=failing, stderr="Killed")
+        monkeypatch.setattr(forge.subprocess, "run", lambda *args, done=done, **kwargs: done)
+        if returncode == 137:
+            with pytest.raises(BuildError, match="exited with 137, but every test it reported passed"):
+                forge.test(tmp_path, tmp_path / "out", tmp_path / "cache", ("V",))
+        else:
+            assert forge.test(tmp_path, tmp_path / "out", tmp_path / "cache", ("V",)) == {
+                ("a/V.t.sol", "V", "test_vector_000"): "Failure"
+            }
 
 
 def test_a_check_from_another_file_does_not_stand_in_for_the_generated_one():

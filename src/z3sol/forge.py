@@ -68,7 +68,8 @@ def test(
     allow_paths=(),
 ) -> dict[tuple[str, str, str], str]:
     """Runs the forge tests of the named contracts and returns the status of each test function, by source path,
-    contract and function name."""
+    contract and function name. forge exits with a failure when a test fails. An exit with a failure and no failed
+    test means that forge stopped for another reason, so it is an error."""
     pattern = "^(" + "|".join(contracts) + ")$"
     command = [binary(), "test", "--root", str(root), *FLAGS, "--match-contract", pattern, "--json"]
     result = subprocess.run(
@@ -77,6 +78,10 @@ def test(
     found = statuses(result.stdout, contracts)
     if not found and result.returncode:
         raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
+    if result.returncode and all(status == "Success" for status in found.values()):
+        raise BuildError(
+            f"{' '.join(command)} exited with {result.returncode}, but every test it reported passed:\n{result.stderr}"
+        )
     return found
 
 
