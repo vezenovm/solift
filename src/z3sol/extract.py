@@ -430,6 +430,8 @@ class _Extractor:
                 return Const(node["value"] == "true", BOOL, src=src)
             if node["kind"] != "number":
                 self.fail(node, f"a {node['kind']} literal")
+            if node["typeDescriptions"]["typeString"] == "address":
+                return Const(self._number(node), ADDRESS, text=self.text(node), src=src)
             return Const(self._number(node), LITERAL, text=self.text(node), src=src)
         if kind == "Identifier":
             target = scope.get(node.get("referencedDeclaration"))
@@ -534,7 +536,9 @@ class _Extractor:
         value = decl.get("value")
         if value is None:
             self.fail(decl, f"the constant {decl['name']} has no value")
-        if value["nodeType"] == "Literal" and value["kind"] == "number":
+        if value["nodeType"] == "Literal" and value["kind"] == "bool":
+            number, text = value["value"] == "true", value["value"]
+        elif value["nodeType"] == "Literal" and value["kind"] == "number":
             number, text = self._number(value), self.text(value)
         elif value["nodeType"] in ("Identifier", "MemberAccess"):
             other = self._named(value)

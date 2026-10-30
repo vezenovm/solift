@@ -300,3 +300,12 @@ def test_an_operation_whose_type_differs_from_solc_s_is_refused(build, monkeypat
     monkeypatch.setattr(ops, "literal_type", lambda value: uint(8))
     with pytest.raises(ExtractionError, match="ite has the type uint8 here and uint256 in solc"):
         extract(build, f"{PRICER}._wide", {})
+
+
+def test_a_bool_constant_and_an_address_literal_keep_their_types(build):
+    strict = extract(build, f"{PRICER}._strict", {}).model
+    assert evaluate(strict, {"_a": 1})[1] is True and evaluate(strict, {"_a": 0})[1] is False
+    assert "  bool internal constant STRICT = true;\n" in source(strict)
+    one = extract(build, f"{PRICER}._isOne", {}).model
+    assert evaluate(one, {"_a": 1})[1] is True and evaluate(one, {"_a": 2})[1] is False
+    assert "return i._a == 0x0000000000000000000000000000000000000001;" in source(one)

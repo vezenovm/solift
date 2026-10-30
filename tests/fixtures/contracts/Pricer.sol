@@ -7,6 +7,7 @@ import {Kinds} from "./Kinds.sol";
 
 IToken constant OTHER = IToken(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
 address constant NOBODY = address(0);
+bool constant STRICT = true;
 
 // A gas price with the shapes of a subsidy's priced gas: an enum parameter, an address parameter compared with an
 // immutable and a constant, a struct parameter, locals assigned in branches, compound assignments, a named return, and
@@ -116,5 +117,13 @@ contract Pricer {
 
   function _wide(bool _flag, uint8 _x) internal pure returns (uint256) {
     return (_flag ? _x : 57896044618658097711785492504343953926634992332820282019728792003956564819968) + 1;
+  }
+
+  function _strict(uint256 _a) internal pure returns (bool) {
+    return STRICT && _a > 0;
+  }
+
+  function _isOne(address _a) internal pure returns (bool) {
+    return _a == 0x0000000000000000000000000000000000000001;
   }
 }
