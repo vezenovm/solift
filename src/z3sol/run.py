@@ -353,7 +353,7 @@ def summary(record: dict) -> str:
             reads = ", ".join(f"{name} = {source}" for name, source in model["reads"].items())
             lines.append(f"model: {len(model['inputs'])} inputs; reads {reads}")
         for t in spec.get("theorems", []):
-            mark = "" if t["ok"] else "   <-- unexpected"
+            mark = "" if t["ok"] else "   <-- unexpected" + (f": {t['detail']}" if t["detail"] else "")
             witness = f" {t['witness']}" if t["witness"] else ""
             shown = " ".join(f"{k}={v}" for k, v in t["counterexample"].items())
             solver = f" ({t['solver']})" if t["solver"] not in ("", "z3") else ""

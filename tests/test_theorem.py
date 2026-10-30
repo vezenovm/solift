@@ -3,7 +3,7 @@ import z3
 
 from acceptance.oxide.deposit_subsidy import SPEC
 from tests.models import quote
-from z3sol import ops
+from z3sol import ops, solvers
 from z3sol.ir import UINT256, Assign, Call, Const, Function, Let, Model, Return, Var
 from z3sol.theorem import Terms, TheoremError, prove, theorem
 
@@ -171,3 +171,15 @@ def test_a_theorem_can_run_a_called_function_name_a_declared_value_and_fix_input
         q.declared("y")
     with pytest.raises(AttributeError, match="has no input c"):
         q.at(c=1)
+
+
+def test_a_counterexample_without_the_values_it_shows_fails(q, monkeypatch):
+    @theorem(expect="counterexample", reason="the quote can pay", show=("_fee", "pot"))
+    def pays_nothing(q):
+        """the quote pays nothing"""
+        return q.result == 0
+
+    assert prove(pays_nothing, q).ok
+    monkeypatch.setattr(solvers, "check", lambda *args, **kwargs: solvers.Answer("sat", "cvc5", 0.0, {"_fee": 1}))
+    result = prove(pays_nothing, q)
+    assert not result.ok and result.detail.startswith("the solver gave no value for pot")

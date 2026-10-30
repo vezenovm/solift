@@ -33,3 +33,12 @@ def test_the_portfolio_runs_after_z3_gives_unknown(monkeypatch):
     assert answer.answers["z3 (first)"].startswith("unknown")
     assert answer.verdict in ("unsat", "unknown")
     assert set(answer.answers) == {"z3 (first)", *solvers.SOLVERS}
+
+
+@pytest.mark.parametrize("solver", solvers.SOLVERS)
+def test_a_shown_term_that_no_assertion_names_still_gets_its_value(monkeypatch, solver):
+    monkeypatch.setattr(solvers, "SOLVERS", (solver,))
+    s = z3.Solver()
+    s.add(x > 1)
+    answer = solvers._portfolio(s.to_smt2(), {"x": x, "b": b, "y": y}, 20_000)
+    assert answer.verdict == "sat" and set(answer.values) == {"x", "b", "y"}, answer

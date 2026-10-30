@@ -221,6 +221,10 @@ def prove(t: Theorem, q: Terms) -> Result:
     if t.witness is not None:
         w = solvers.check(hypotheses + [t.witness(q)], timeout_ms=t.timeout_ms)
         result.witness = {"sat": "WITNESS", "unsat": "VACUOUS"}.get(w.verdict, "UNKNOWN")
+    missing = [name for name in t.show if name not in result.counterexample]
+    if result.verdict == "COUNTEREXAMPLE" and missing:
+        result.detail = f"the solver gave no value for {', '.join(missing)}. {result.detail}".strip()
     expected = "PROVED" if t.expect == "proved" else "COUNTEREXAMPLE"
     result.ok = result.verdict == expected and result.witness in (None, "WITNESS")
+    result.ok = result.ok and not (result.verdict == "COUNTEREXAMPLE" and missing)
     return result

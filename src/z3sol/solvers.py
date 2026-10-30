@@ -109,9 +109,25 @@ def _command(solver: str, timeout_ms: int) -> tuple[list[str], str]:
     return [sys.executable, "-c", CVC5, str(timeout_ms)], "(set-logic QF_NIA)\n"
 
 
+def _declarations(smt2: str, show: dict[str, z3.ExprRef]) -> str:
+    """Declarations of the constants in the shown terms that the query does not declare, because no assertion names
+    them, so that the solvers can give their values."""
+    found, stack, seen = [], list(show.values()), set()
+    while stack:
+        t = stack.pop()
+        if t.get_id() in seen:
+            continue
+        seen.add(t.get_id())
+        if z3.is_const(t) and t.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+            if f"(declare-fun {t.decl().name()} ()" not in smt2 and t.decl().sexpr() not in found:
+                found.append(t.decl().sexpr())
+        stack.extend(t.children())
+    return "".join(f"{d}\n" for d in found)
+
+
 def _portfolio(smt2: str, show: dict[str, z3.ExprRef], timeout_ms: int) -> Answer:
     values = "(get-value (" + " ".join(term.sexpr() for term in show.values()) + "))\n" if show else ""
-    query = smt2.replace("(check-sat)", "(check-sat)\n" + values)
+    query = smt2.replace("(check-sat)", _declarations(smt2, show) + "(check-sat)\n" + values)
     running = {}
     for solver in SOLVERS:
         command, logic = _command(solver, timeout_ms)
