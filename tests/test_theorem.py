@@ -183,3 +183,30 @@ def test_a_counterexample_without_the_values_it_shows_fails(q, monkeypatch):
     monkeypatch.setattr(solvers, "check", lambda *args, **kwargs: solvers.Answer("sat", "cvc5", 0.0, {"_fee": 1}))
     result = prove(pays_nothing, q)
     assert not result.ok and result.detail.startswith("the solver gave no value for pot")
+
+
+def test_given_indexes_an_input_as_terms_do_even_when_it_is_named_like_an_attribute():
+    """f(uint256 result) returns result - 1: in given, q["result"] is the input, and q.result the output."""
+    result = Var("result", input=True)
+    q = Terms(Model("C", Function("f", (result,), UINT256, (Return(ops.make("sub", result, Const(1))),))))
+
+    @theorem(given=lambda q: q["result"] > 0, witness=lambda q: q["result"] == 2)
+    def positive(q):
+        """the output is positive for a positive input"""
+        return q.result > 0
+
+    assert prove(positive, q).verdict == "COUNTEREXAMPLE"
+
+
+@pytest.mark.parametrize(
+    "given",
+    [lambda h: z3.Not(z3.simplify(Terms(h.model).reverts)), lambda h: z3.Not(h._q.reverts)],
+)
+def test_given_holds_no_way_back_to_the_model_or_its_terms(q, given):
+    @theorem(given=given, witness=lambda q: q.result > 0)
+    def never_reverts(q):
+        """the quote does not revert"""
+        return z3.Not(q.reverts)
+
+    with pytest.raises((TheoremError, AttributeError)):
+        prove(never_reverts, q)

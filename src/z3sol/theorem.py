@@ -168,22 +168,35 @@ def _mentions(term: z3.ExprRef, sub: z3.ExprRef) -> bool:
 
 
 class _Hypotheses:
-    """The terms as `given` sees them: everything but the model's reverts and outside, and the ways to reach them."""
+    """The terms as `given` sees them: the result, the inputs, the locals, `declared`, `free`, and a called function's
+    value. It keeps no model and no Terms, so none of its attributes leads to the model's reverts or outside. `h[name]`
+    is an input, a local or a free variable, as for Terms, and `h.name` too unless the view has an attribute of that
+    name."""
 
-    HIDDEN = ("reverts", "outside", "at")
+    HIDDEN = ("reverts", "outside", "at", "model")
 
     def __init__(self, q: Terms):
-        self._q = q
+        self.result = q.result
+        self.inputs = dict(q.inputs)
+        self.locals = dict(q.locals)
+        self.domain = q.domain
+        self.free_variables = q.free_variables
+        self.free = lambda name, kind="int": q.free(name, kind)
+        self.declared = lambda name: q.declared(name)
+        self.call = lambda function, *args: _Value(q.call(function, *args).value)
 
     def __getattr__(self, name: str):
         if name in self.HIDDEN:
             raise TheoremError(f"given mentions the model's {name}; state it with assume")
-        if name == "call":
-            return lambda function, *args: _Value(self._q.call(function, *args).value)
-        return getattr(self._q, name)
+        return self[name]
 
     def __getitem__(self, name: str):
-        return self.__getattr__(name)
+        for names in (self.inputs, self.locals, self.free_variables):
+            if name in names:
+                return names[name]
+        if name in self.HIDDEN:
+            raise TheoremError(f"given mentions the model's {name}; state it with assume")
+        raise AttributeError(f"given has no input, local or free variable {name}")
 
 
 @dataclass(frozen=True)
