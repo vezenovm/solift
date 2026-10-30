@@ -68,14 +68,25 @@ class Project:
     generated: str = "test/z3sol"
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
-        """Builds the overlay root, with `replace` (a project path to new content) applied to the copies."""
+        """Builds the overlay root, with `replace` (a project path to new content) applied to the copies. An entry under
+        another entry would be built through it, through a link into the project, so the overlay refuses it before it
+        writes anything."""
+        entries = [pathlib.PurePosixPath(rel) for rel in (*self.link, *self.copy)]
+        for entry in entries:
+            for other in entries:
+                if other != entry and other in entry.parents:
+                    raise WorkspaceError(f"the overlay entry {entry} is under {other}")
+        if len(set(entries)) != len(entries):
+            raise WorkspaceError("an overlay entry is both linked and copied, or named twice")
         root = workspace.fresh(name)
         for rel in self.link:
             target = root / rel
+            _inside(root, target.parent)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.symlink_to(self.root / rel)
         for rel in self.copy:
             source, target = self.root / rel, root / rel
+            _inside(root, target.parent)
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
                 shutil.copytree(source, target, symlinks=True)

@@ -105,3 +105,16 @@ def test_a_workspace_belongs_to_one_process_at_a_time(tmp_path):
         holder.wait()
     Workspace(tmp_path / "work").fresh("out")
     assert Workspace(tmp_path / "work").path == (tmp_path / "work").resolve()
+
+
+def test_an_overlay_entry_under_another_entry_is_refused_before_any_write(tmp_path):
+    root = git_project(tmp_path / "project")
+    (root / "lib").mkdir()
+    (root / "lib" / "new").mkdir()
+    (root / "lib" / "new" / "entry").write_text("x")
+    workspace = Workspace(tmp_path / "work")
+    with pytest.raises(WorkspaceError, match="lib/new/entry is under lib"):
+        Project(root, link=("lib", "lib/new/entry"), generated="test/gen").overlay(workspace)
+    with pytest.raises(WorkspaceError, match="src/A.sol is under src"):
+        Project(root, link=("src/A.sol",), copy=("src",), generated="test/gen").overlay(workspace)
+    assert sorted(p.name for p in (root / "lib" / "new").iterdir()) == ["entry"]
