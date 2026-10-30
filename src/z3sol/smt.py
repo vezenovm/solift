@@ -135,6 +135,8 @@ class _Run:
             if z3.is_false(reached):
                 break
             if isinstance(stmt, Let | Assign):
+                if isinstance(stmt, Let) and stmt.var.name in env:
+                    raise ValueError(f"local {stmt.var.name} shadows a variable of the same name")
                 v, r, o = self.expr(stmt.expr, env)
                 body.runs(reached, r, o)
                 env[stmt.var.name] = v

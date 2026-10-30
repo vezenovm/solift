@@ -129,4 +129,16 @@ contract OutOfScope {
     address x;
     return x == _a;
   }
+
+  function shadowing(uint256 _a, uint256 _b) internal pure returns (uint256) {
+    return _shadowed(_a, _b);
+  }
+
+  function _shadowed(uint256 _x, uint256 _y) internal pure returns (uint256) {
+    if (_y == 1) {
+      uint256 _x = 1;
+      _y = _x;
+    }
+    return _x;
+  }
 }

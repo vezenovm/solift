@@ -340,6 +340,8 @@ class _Extractor:
             scope[decl["id"]] = ("copy", prefix)
             return None
         var = Var(decl["name"], self._type(decl), src=self.src(decl))
+        if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
+            self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
         if init is None:
             if var.type.kind not in ("uint", "bool"):
                 self.fail(node, f"a local of type {var.type.solidity} declared without a value")

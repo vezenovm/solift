@@ -212,3 +212,12 @@ def test_an_address_and_an_enum_are_integers_in_their_range():
         ops.make("lt", kind, kind)
     with pytest.raises(TypeError, match="add takes unsigned operands, not address, literal"):
         ops.make("add", who, Const(1))
+
+
+def test_a_local_with_the_name_of_a_visible_variable_is_refused():
+    x, y, inner = Var("x"), Var("y"), Var("x")
+    g = Function("g", (x, y), UINT256, (If(ops.make("eq", y, Const(1)), (Let(inner, Const(1)),)), Return(x)))
+    a = Var("a", input=True)
+    model = Model("C", Function("f", (a,), UINT256, (Return(Call("g", (a, a), UINT256)),)), callees=(g,))
+    with pytest.raises(ValueError, match="local x shadows a variable of the same name"):
+        terms(model, symbols(model))

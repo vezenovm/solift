@@ -169,6 +169,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
         ("enumOrder", {}, r"lt takes unsigned operands, not enum, enum"),
         ("addressLocalWithoutValue", {}, r"a local of type address declared without a value"),
+        ("shadowing", {}, r"OutOfScope.sol:\d+:7: the local _x shadows a parameter, local or return of the same name"),
         (
             "readsTotal",
             {"$total": "total", "TOKEN.balanceOf(address(this))": "pot"},
