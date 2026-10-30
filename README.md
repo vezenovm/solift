@@ -1,80 +1,90 @@
 # solift
 
-solift lifts a Solidity function to an integer model and proves theorems on it. For each function of a spec, it:
+solift proves arithmetic properties of Solidity functions, such as rounding, solvency, and fee and pricing bounds,
+over exact integers, and proves with Halmos that what it proved on is the contract's bytecode.
+
+For each function of a spec, it:
 
 1. extracts an integer model from the solc AST. Each value that the function reads from outside itself (storage, a
    mapping entry, an external view call, `tx` and `block` fields, the fields of a struct parameter, or the result of an
    internal call that the spec cuts) becomes a named input, through a read map;
 2. emits the model as pure Solidity, and proves with Halmos that this Solidity and the contract's bytecode give the same
-   result and revert on the same inputs;
-3. proves theorems on the model's z3 integer terms.
+   result and revert on the same inputs. Both sides have the same structure, so Halmos checks an equivalence, not the
+   property;
+3. proves theorems, written in Python, on the model's integer terms, with z3, and with yices and cvc5 when z3 cannot
+   decide.
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
-To use it on a new contract, see [USAGE.md](USAGE.md). [examples/vault](examples/vault) is a standalone Foundry
-project with its specs, laid out as a project that uses solift lays out its own.
+## What it found
 
-Status: two acceptance runs cover public contracts, each at a pinned commit, with harnesses in
-`acceptance/<project>/harness/`:
+At the commit of Resupply's lending pair that the exploit of 2025-06-26 drained, the theorem "a borrower that the pair
+finds solvent has debt below twice the loan-to-value limit of its collateral's value" fails:
 
-- Resupply's lending pair, at the commit that the exploit of 2025-06-26 drained: the check that `borrow` makes,
-  `_updateExchangeRate` and then `_isSolvent`. The theorem that a solvent borrower's debt is within twice the
-  loan-to-value limit fails with the exploit as its counterexample, an oracle price above 1e36, and proves on the
-  fixed source. This reproduces the arithmetic failure behind the exploit, not the transaction: that the solvency
-  check reads the rate that `_updateExchangeRate` stored is a hypothesis of the harness, and the borrower's debt is a
-  cut point.
-- Morpho Blue v1.0.0: `_isHealthy`, with the same theorem, which proves, and a supply then a withdraw in its share math.
-  Three of the theorems state rules of Morpho's Certora specs. `supplyWithdraw` is stated on a supply then a withdraw
-  that the harness composes from SharesMathLib, not on `Morpho.supply` and `Morpho.withdraw`.
-  `checkSummaryMulDivUp` and `checkSummaryMulDivDown` are theorems of the integer model of MathLib's `mulDivUp` and
-  `mulDivDown` on any operands: the link proves those functions equal to the bytecode only where `_isHealthy` calls
-  them.
-
-The extractor takes loop-free functions with checked `uint` arithmetic, comparisons, boolean logic, ternaries, `if` and
-early returns, `require`, `assert` and `revert`, locals assigned also in branches, compound assignments, named returns,
-addresses, enums, constants and immutables, and `uint256(x)` of a narrower `x`. Internal calls are inlined, also a
-library call on a value (`x.mulDivDown(y, d)`). `Math.min` and `Math.mulDiv` are operators backed by lemmas. Named
-arguments bind by name. A target can name one of several functions of one name by its parameter types, and a parameter
-of a user-defined value type, such as Morpho's `Id`, that only read map keys use is not an input. A function can write
-storage and emit events: the model is its value and its revert, it lists the writes and events it leaves out, and the
-extractor refuses a write that could change either (`extract.py`). It refuses loops, `unchecked`, signed integers,
-narrowing casts, tuple returns, exponentiation, `%`, assembly, a local that shadows another variable, a variable or
-constant named `i` (the inputs struct of the emitted Solidity), a constant with the name of a parameter, local or
-return, and a function without inputs, with the place in the source. The type of each operation must match the type
-in solc's AST.
-
-## Run
-
-Needs Python 3.12 or later, and forge. `SOLIFT_FORGE` names the forge binary (default `forge`), for a toolchain that
-ships it under another name.
-
-```sh
-python3.12 -m venv .venv
-.venv/bin/pip install -e . -r requirements-dev.txt
-git submodule update --init
-.venv/bin/solift reads tests/fixtures/contracts/Quoter.sol:Quoter._quote   # the read map that a function needs
-.venv/bin/solift run examples.quoter.spec                # one spec on the test fixtures
-.venv/bin/python -m examples.pricer                       # three specs in one run
-(cd examples/vault && ../../.venv/bin/solift run vault_specs.spec --root .)   # a standalone project
-.venv/bin/python -m acceptance.resupply --root <resupply>    # setup in acceptance/resupply/__main__.py
-.venv/bin/python -m acceptance.morpho --root <morpho-blue>   # setup in acceptance/morpho/__main__.py
+```
+COUNTEREXAMPLE WITNESS [solvent-debt-within-twice-the-ltv] a borrower that the pair finds solvent has debt below twice
+  (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.03s]
+  _borrower=0 price=1500000000000024999999999999999999488 storedRate=0 maxLTV=3 collateral=2 borrowed=240000000000004
+PROVED WITNESS [solvent-debt-within-twice-the-ltv-up-to-a-price-of-1e36] up to an oracle price of 1e36, ... [0.01s]
+vectors: 192 of 192 agree
+PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.74s]
 ```
 
-A spec (`examples/quoter/spec.py`) names the target function, its read map, its link to the harness, and its theorems.
-A run takes one spec or several specs of one project. It builds the project once, extracts each model, and then runs
-every stage, even when one fails: the theorems, the vectors (one forge test for every model), and the links (one Halmos
-run for every model, with one test of the operator rows and lemmas they use). It prints one line for each result, and
-writes a JSON record (`schema` 3) with each result, the sources each model comes from with their hashes, and the
-versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and solift (with its commit). It also holds the
-sha256 of each solc input of the build, of each theorem's query, of the spec's Python files and of each file that the
-overlay adds, the profile, and the options of the link engine. The run fails when any result is not the expected one.
-An error in a stage, such as an exception in a theorem, fails that stage and the run goes on.
+An oracle price above 1e36 rounds the exchange rate down to 0, and at a rate of 0 one wei of collateral backs any debt.
+On the fixed source (resupplyfi/resupply@d84b3bf631) the theorem proves. This is the arithmetic failure behind the
+exploit, not the transaction: the harness runs `_updateExchangeRate` then `_isSolvent`, that the solvency check reads
+the rate that `_updateExchangeRate` stored is a hypothesis, and the borrower's debt is a cut point.
 
-Code on top of the models, such as a check of each deployed configuration, uses `solift.load(specs, workspace)`: the
-terms of each model from one build. `q.at(name=value, ...)` gives the terms with inputs fixed, `q.call(function, *args)`
-runs a function of the model, and `q.declared(local)` is a local's value where it is declared.
+The same theorem proves on Morpho Blue v1.0.0's `_isHealthy`, which takes the oracle price as it is. CI runs both at
+their pinned commits, Resupply also on its fix, each with mutants that a theorem must reject (`acceptance/`).
 
-To pin solift from another project, install it by commit: `pip install git+https://github.com/vezenovm/solift@<commit>`.
+## Install
+
+Needs Python 3.12 or later, forge, and Linux or macOS.
+
+```sh
+uv tool install solift      # or: pipx install solift
+```
+
+Specs are Python modules, so the tool's environment needs the packages they import: `uv tool install solift --with
+<package>`, or `pipx inject solift <package>`. To pin a commit: `pip install
+git+https://github.com/vezenovm/solift@<commit>`. `SOLIFT_FORGE` names the forge binary, for a toolchain that ships it
+under another name.
+
+## Use
+
+```sh
+solift reads src/Vault.sol:Vault.previewRedeem --root .   # the read map that a function needs, and a link skeleton
+solift run vault_specs.spec --root .                      # the specs of a module: theorems, vectors and the link
+```
+
+```python
+import pathlib
+
+from solift import Harness, Link, Project, Spec
+
+REDEEM = Spec(
+    name="vault-redeem",
+    target="src/Vault.sol:Vault.previewRedeem",
+    reads={"ASSET.balanceOf(address(this))": "held", "totalSupply": "supply"},
+    link=Link(
+        setup=Harness(pathlib.Path(__file__).parent / "VaultSetup.sol", "VaultSetup"),
+        call="vault.previewRedeem(_shares)",
+        adapters={"held": "asset.set(held);", "supply": "vault.setSupply(supply);"},
+    ),
+    project=Project.foundry(),
+)
+
+
+@REDEEM.theorem(assume=("no-revert", "inside"), witness=lambda q: q.result > 0)
+def redeem_rounds_down(q):
+    """a redeem pays at most the shares' exact part of the assets, shares * (held + 1) / (supply + 1)"""
+    return q.result * (q.supply + 1) <= q._shares * (q.held + 1)
+```
+
+[USAGE.md](USAGE.md) walks through a new contract. [examples/vault](examples/vault) is this spec in a standalone
+Foundry project, as a project that uses solift lays out its own. Your project is read-only: a run builds in an overlay
+in its workspace ([docs/overlay.md](docs/overlay.md)).
 
 ## What a run proves
 
@@ -103,13 +113,16 @@ Each theorem's record also says how far its result reaches:
 
 A link check fails on anything but PASS, on a path stopped at the loop bound or at Halmos's `--depth` or `--width`
 limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
-check, when Halmos exits with a failure, and when Halmos skips a contract. A theorem runs on z3 first. When z3 says
-"unknown", z3, yices and cvc5 run in parallel on the same query, and the first sat or unsat answer counts. "Unknown"
-from every solver fails the theorem.
+check, when Halmos exits with a failure, and when Halmos skips a contract. "Unknown" from every solver fails a theorem.
 
-A cut point, such as `_price()`, is an input of the model. The link sets it through the harness, such as a
-price feed with a symbolic answer, so it proves the model equal to the contract only for the values the harness can
-produce.
+A cut point, such as `_price()`, is an input of the model. The link sets it through the harness, such as a price feed
+with a symbolic answer, so it proves the model equal to the contract only for the values the harness can produce.
+
+A run builds the project once, and runs every stage even when one fails. It prints one line for each result, and writes
+a JSON record (`schema` 3) with each result and what it rests on: the sources of each model with their hashes, the
+versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and solift (with its commit), and the sha256 of
+each solc input of the build, of each theorem's query, of the spec's Python files and of each file that the overlay
+adds. The run fails when any result is not the expected one.
 
 ## What it trusts
 
@@ -117,25 +130,64 @@ The integer translation in `smt.py` and the operator table (the vectors check th
 solvers, the harness and its read adapters, and the compiler. A read of an external view call, and a cut point, is
 assumed to succeed.
 
-## How it builds a project without writing to it
+## What it takes
 
-The project that holds the target is read-only. A run builds an overlay root in its workspace (`build/<spec>`): symlinks
-to the project's `foundry.toml` and dependencies, copies of the sources that forge compiles as project files (forge
-finds no AST for a symlinked project file), local files at paths that the project does not have (`add`), such as the
-harness of a contract that the project does not test, and the generated files. Forge and Halmos run with `FOUNDRY_OUT`
-and `FOUNDRY_CACHE_PATH` in the workspace: Halmos runs `forge build` without `--out` and reads the build from
-`--forge-build-out`, so these variables are what keep the build out of the project. Each run builds once, from empty
-directories, with Halmos's own build flags, and the vectors and Halmos extend that build: every artifact has its AST,
-and a skipped contract still fails the run. Each write into the overlay refuses a link and a path outside it. A process
-locks each workspace it uses, so two runs never share one, and a run does not delete a workspace that another process
-holds. A guard compares the project's git status and file times before and after the run, and fails the run on a
-change. It detects a write that changes the status or a file time; it does not prove that nothing was written.
+| Takes | Refuses, with the place in the source |
+|---|---|
+| checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
+| `if`, early returns, `require`, `assert`, `revert` | loops |
+| locals, also assigned in branches; compound assignments; named returns | tuple returns, modifiers |
+| addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
+| internal calls (inlined), library calls on a value (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
+| `Math.min`, `Math.mulDiv`, as operators backed by lemmas | other `Math` functions |
+| storage writes and events that no later read sees (listed, not modeled) | a write that a later read sees |
+| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
+
+The type of each operation must match the type in solc's AST. To cut out a call that does not fit, name it in the read
+map: its result becomes an input.
+
+## How it compares
+
+solift is a small, open, inspectable workflow with a stated trust base, for one function's arithmetic. It does not
+claim more power than these tools:
+
+- **Halmos** runs symbolic tests on bytecode, with 256-bit bitvector arithmetic. solift uses it for the equivalence of a
+  model of the same structure, and for the operator lemmas, and proves the property on unbounded integers.
+- **hevm** checks bytecode equivalence too. solift adds the extraction of the model and the integer theorems.
+- **Certora** has `mathint`, summaries, storage and invariants across calls, in its own spec language. solift covers
+  one call, with theorems in Python.
+- **Kontrol** proves Foundry specifications in K, with lemmas and loop invariants.
+- **SMTChecker** is part of the compiler and reasons across transactions and loops, with no link to the bytecode.
+
+## Roadmap
+
+Coverage, by how much it widens what solift takes: generated names that never clash with the source's (no refusal of
+`i`, no clash of two callees' names), constant expressions, arithmetic below `uint256`, `%`, and library summaries
+through the operator table, each with its lemma. Then, as projects need them: `unchecked`, tuple returns, bounded
+loops.
+
+Past arithmetic, one step at a time:
+
+1. **State transitions.** A storage write becomes an output of the model, named as the read map names its read
+   (`$totalAssets` gives `post.totalAssets`). The link reads each written place after the call through the harness and
+   compares it, and theorems name `q.post.totalAssets`: conservation, monotonicity, exact deltas. The extractor already
+   records each write with its place (`Model.effects`).
+2. **Invariants over a set of functions.** With writes named as reads, an invariant I holds when, for each function f
+   of a set, I before f and f not reverting give I after f. Two reads of one mapping at keys that may be equal are the
+   hard part.
+3. **Events**, as outputs that the link compares.
 
 ## Develop
 
 ```sh
+python3.12 -m venv .venv
+.venv/bin/pip install -e . -r requirements-dev.txt
+git submodule update --init
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/pytest
+.venv/bin/solift run examples.quoter.spec                   # one spec on the test fixtures
+.venv/bin/python -m acceptance.resupply --root <resupply>   # setup in acceptance/resupply/__main__.py
+.venv/bin/python -m acceptance.morpho --root <morpho-blue>  # setup in acceptance/morpho/__main__.py
 ```
 
 `tests/test_boundary.py` fails when the package imports anything other than the standard library, itself and its

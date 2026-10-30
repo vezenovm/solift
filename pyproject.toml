@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solift"
-version = "0.0.0"
+version = "0.1.0"
 description = "Extracts an integer model from a Solidity function, links it to the bytecode with Halmos, and proves theorems on it with SMT solvers."
 readme = "README.md"
 license = "Apache-2.0"

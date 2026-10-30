@@ -145,3 +145,69 @@ runs on Linux and macOS.
 - **VACUOUS**: the hypotheses contradict each other, or the witness cannot hold with them.
 
 The README says what a run proves and what it trusts.
+
+## Reference
+
+### Read map keys
+
+A key names a value that the function reads from outside itself, and maps it to an input name:
+
+| Key | Reads |
+|---|---|
+| `$floor`, `TOKEN` | a storage variable or an immutable, by its name |
+| `$config.cap` | a field of a storage struct, read directly or through a memory copy (`Config memory cfg = $config;`) |
+| `$rates[_kind].cap` | a field of a struct in a mapping, through a memory copy, at a key that is a parameter |
+| `$balances[_who]`, `position[id][borrower].collateral` | any other storage read, by its source text |
+| `_meter.used` | a field of a memory struct parameter of the target |
+| `tx.gasprice`, `block.timestamp`, `msg.sender` | a field of `tx`, `block` or `msg` |
+| `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
+| `_price()` | an internal call: a cut point, whose result becomes an input |
+
+A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
+has. The model assumes that each read succeeds: an external call that reverts has no input in the model.
+`solift reads` prints the keys that a function needs.
+
+### Adapters
+
+An adapter is the harness code that makes the contract read an input. Each input reaches the contract in exactly one
+way: as an argument of `call`, through an adapter, or as an `observed` value.
+
+| The function reads | The link |
+|---|---|
+| a storage variable or field | an adapter that calls a setter of the harness: `"supply": "vault.setSupply(supply);"` |
+| several fields at once | one adapter for a tuple of inputs: `("margin", "cap"): "quoter.setConfig(margin, cap);"` |
+| an external view call | an adapter that sets a stub: `"held": "asset.set(held);"` |
+| `block.timestamp`, `block.number`, `block.basefee` | a cheatcode: `"time": "vm.warp(time);"`, `vm.roll`, `vm.fee` |
+| `tx.gasprice` | `observed={"gasPrice": "tx.gasprice"}`: Halmos makes it symbolic, and no cheatcode sets it |
+| a field of a struct parameter | an adapter that builds the argument: `"Pricer.Meter memory meter = Pricer.Meter(...);"` |
+| a cut point | `parameters={"answer": "uint128"}` for the symbolic value that sets it, an adapter that uses it, and `observed` for the input that results: `"price": "vault.exposedPrice()"` |
+| an immutable that the harness sets | `observed={"token": "address(pricer.TOKEN())"}`, which takes only that value |
+
+`parameters` are symbolic parameters of the check that are not inputs: an adapter uses them to set what the contract
+reads. `observed` maps an input to the expression that the check reads it from, before the call. `imports` adds the
+import directives that the adapters need.
+
+### Spec options
+
+| Option | Meaning |
+|---|---|
+| `impossible` | Outcomes (`"pays"`, `"zero"`, `"reverts"`) that the spec asserts no input reaches. A vector that reaches one fails the run. An outcome that z3 proves no input reaches needs no entry: the record lists it as unreachable. |
+| `stem` | The name of the generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and `quote`. |
+
+### The record
+
+`results.json` (`schema` 3) holds:
+
+- `ok`, `failures`, and `times`, the seconds of each stage;
+- `project`: the root, commit, dirty flag, profile, what the overlay links and copies, where the generated files go,
+  and the sha256 of each added file;
+- `versions` of the tools, `engine` with the options of the link, `build` with the sha256 of each solc input,
+  `spec files` with the sha256 of each Python file of the specs, and `generated` with the sha256 of each generated file;
+- `specs`, one for each spec:
+  - `model`: its inputs, reads, callees, and the writes and events that it leaves out (`effects`);
+  - `theorems`: each with its verdict, witness, the values of a counterexample or a witness, what it assumed,
+    `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver;
+  - `vectors`: the count, how many agree, and which outcomes and boundaries were reached or unreachable;
+  - `link`: each Halmos check with its verdict;
+- `link`: the shared operator checks and the problems of the Halmos run, and `tracebacks` for an error that is not one
+  of solift's own.
