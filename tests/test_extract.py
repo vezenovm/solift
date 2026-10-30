@@ -279,3 +279,10 @@ def test_named_arguments_bind_to_the_parameters_of_their_names(build):
     model = extract(build, f"{PRICER}._named", {}).model
     assert evaluate(model, {"_x": 3, "_y": 5}) == (False, 2 + 6, False)
     assert evaluate(model, {"_x": 5, "_y": 3})[0]
+
+
+def test_an_address_constant_keeps_its_conversion_unless_it_is_an_address_literal(build):
+    text = source(extract(build, f"{PRICER}._isNobody", {}).model)
+    assert "  address internal constant NOBODY = address(0);\n" in text
+    priced = source(extract(build, f"{PRICER}._priced", PRICED_READS).model)
+    assert "  address internal constant OTHER = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;\n" in priced

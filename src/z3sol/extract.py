@@ -533,8 +533,11 @@ class _Extractor:
             and value["arguments"][0]["nodeType"] == "Literal"
             and value["arguments"][0]["kind"] == "number"
         ):
+            # A checksummed address literal stands alone; any other number needs its conversion, as `address(0)`.
             literal = value["arguments"][0]
             number, text = self._number(literal), self.text(literal)
+            if not re.fullmatch(r"0x[0-9a-fA-F]{40}", text):
+                text = f"address({text})"
         else:
             self.fail(value, f"the constant {decl['name']} is not a literal, an address or another constant")
         return Const(number, self._type(decl), text=text, name=decl["name"], src=self.src(decl))
