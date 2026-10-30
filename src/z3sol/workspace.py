@@ -43,6 +43,10 @@ class Workspace:
         path.mkdir(parents=True)
         return path
 
+    def child(self, name: str) -> Workspace:
+        """A fresh workspace inside this one, for one of several runs."""
+        return Workspace(self.fresh(name))
+
 
 @dataclass(frozen=True)
 class Project:

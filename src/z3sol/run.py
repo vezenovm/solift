@@ -62,11 +62,13 @@ def run(
     link: bool = True,
     vectors: bool = True,
     emit: pathlib.Path | None = None,
+    only: tuple[str, ...] | None = None,
     engine: HalmosEngine | None = None,
 ) -> dict:
     """Runs the spec and returns its record. `replace` gives new content for project files, such as a mutant. Without
     `link` Halmos does not run, and without `vectors` neither do the vectors, and the record says so. `emit` is a
-    directory to write the model and its link tests to, for review."""
+    directory to write the model and its link tests to, for review. `only` names the theorems to prove, when a run
+    needs only some of them, as a mutant does."""
     engine = engine or HalmosEngine()
     project = spec.project
     record = {
@@ -116,7 +118,14 @@ def run(
 
     q = Terms(model)
     record["theorems"] = []
-    for t in spec.theorems:
+    chosen = spec.theorems
+    if only is not None:
+        unknown = set(only) - {t.id for t in spec.theorems}
+        if unknown:
+            record["failures"].append(f"theorems: no theorem {', '.join(sorted(unknown))}")
+        chosen = [t for t in spec.theorems if t.id in only]
+        record["only"] = list(only)
+    for t in chosen:
         try:
             result = prove(t, q)
         except TheoremError as err:

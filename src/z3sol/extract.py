@@ -9,6 +9,9 @@ outside itself, and gives it an input name. A key is one of:
 - any other expression, such as an external view call, by its source text without whitespace
   (`TOKEN.balanceOf(address(this))`). An internal call in the read map is a cut point: its result is an input.
 
+A read map entry that the function does not read is an error, except a field of `tx`, `block` or `msg`: every
+transaction has it, so it is an input even where the function ignores it, and a theorem can name it.
+
 Internal calls are inlined: each callee becomes a function of the model. OpenZeppelin's `Math.min` and `Math.mulDiv`
 become operators of the table in ops.py. A constant becomes its value, with its name and declared type. Anything else
 stops the extraction with an error that names the construct and its place in the source.
@@ -28,6 +31,7 @@ from z3sol import ops
 from z3sol.ir import (
     BOOL,
     LITERAL,
+    UINT256,
     Call,
     Const,
     Expr,
@@ -72,6 +76,20 @@ SUBDENOMINATIONS = {
     "weeks": 604800,
 }
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ENVIRONMENT = {
+    name: UINT256
+    for name in (
+        "tx.gasprice",
+        "block.basefee",
+        "block.blobbasefee",
+        "block.chainid",
+        "block.gaslimit",
+        "block.number",
+        "block.prevrandao",
+        "block.timestamp",
+        "msg.value",
+    )
+}
 
 
 class ExtractionError(Exception):
@@ -164,9 +182,12 @@ class _Extractor:
             raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_name}, not one")
         node = candidates[0]
         function = self._function(node, top=True)
-        for key, (written, _) in self.read_map.items():
-            if key not in self.reads:
+        for key, (written, name) in self.read_map.items():
+            if key in self.reads:
+                continue
+            if key not in ENVIRONMENT:
                 raise ExtractionError(f"the read map names {written}, which {qualified} does not read")
+            self.reads[key] = Read(Var(name, ENVIRONMENT[key], input=True), written)
         reads = tuple(self.reads[key] for key in self.read_map)
         self._check_names(node, function, reads)
         imports = ()

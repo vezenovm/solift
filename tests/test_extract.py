@@ -165,10 +165,21 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("assignment", {}, r"OutOfScope.sol:83:5: an assignment"),
         ("requireCall", {}, r"require is not supported"),
         ("namedReturn", {}, r"namedReturn has a named return"),
-        ("readsTotal", {"$total": "total", "tx.gasprice": "gasPrice"}, r"the read map names tx.gasprice"),
+        (
+            "readsTotal",
+            {"$total": "total", "TOKEN.balanceOf(address(this))": "pot"},
+            r"the read map names TOKEN.balanceOf\(address\(this\)\), which OutOfScope.readsTotal does not read",
+        ),
         ("readsTotal", {}, r"reads the mutable variable \$total, which the read map does not name"),
     ],
 )
 def test_the_extractor_refuses_each_construct_outside_the_scope(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{OUT_OF_SCOPE}.{function}", reads)
+
+
+def test_an_environment_field_in_the_read_map_is_an_input_even_where_the_function_does_not_read_it(build):
+    model = extract(build, f"{QUOTER}._withMargin", {"tx.gasprice": "txGasPrice"}).model
+    assert [(r.var.name, r.source) for r in model.reads] == [("txGasPrice", "tx.gasprice")]
+    with pytest.raises(ExtractionError, match="the read map names \\$floor, which Quoter._withMargin does not read"):
+        extract(build, f"{QUOTER}._withMargin", {"$floor": "floor"})
