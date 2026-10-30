@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 import pytest
 
@@ -87,3 +88,20 @@ def test_no_write_into_the_overlay_follows_a_link_into_the_project(tmp_path):
     assert not (root / "test" / "M.sol").exists()
     project.write(overlay, "N.sol", "contract N {}\n")
     assert (overlay / "test" / "gen" / "N.sol").read_text() == "contract N {}\n"
+
+
+def test_a_workspace_belongs_to_one_process_at_a_time(tmp_path):
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys, pathlib; from z3sol.workspace import Workspace; "
+         f"w = Workspace(pathlib.Path({str(tmp_path / 'work')!r})); print('held', flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(WorkspaceError, match="is in use by another process"):
+            Workspace(tmp_path / "work")
+    finally:
+        holder.stdin.close()
+        holder.wait()
+    Workspace(tmp_path / "work").fresh("out")
+    assert Workspace(tmp_path / "work").path == (tmp_path / "work").resolve()

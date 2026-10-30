@@ -1,7 +1,8 @@
 """Where a run writes, and how it builds a project without writing to it.
 
 A workspace is a directory that one run owns: every path the run writes is inside it. A marker file shows that z3sol
-made it, and `fresh` deletes only inside a marked workspace.
+made it, and `fresh` deletes only inside a marked workspace. A process holds an exclusive lock on each workspace it
+opens until it exits, so two runs never share one and validate each other's generated files.
 
 A project is the foundry project that holds the target. z3sol never writes to it. It builds an overlay root in the
 workspace instead: symlinks to the project's configuration and dependencies (`link`), copies of the sources that forge
@@ -13,6 +14,8 @@ that nothing in the project changed during the run.
 
 from __future__ import annotations
 
+import fcntl
+import os
 import pathlib
 import shutil
 import subprocess
@@ -20,6 +23,9 @@ import time
 from dataclasses import dataclass
 
 MARKER = ".z3sol-workspace"
+LOCK = ".z3sol-lock"
+# The lock files this process holds, open for as long as it runs.
+_HELD: dict[pathlib.Path, int] = {}
 
 
 class WorkspaceError(Exception):
@@ -33,6 +39,7 @@ class Workspace:
             raise WorkspaceError(f"{self.path} is not empty and is not a z3sol workspace")
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / MARKER).touch()
+        _lock(self.path)
 
     def fresh(self, name: str) -> pathlib.Path:
         """An empty directory `name` in the workspace."""
@@ -125,6 +132,19 @@ class Guard:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         found += [f"{line} changed during the run" for line in result.stdout.splitlines() if line]
         return found
+
+
+def _lock(path: pathlib.Path) -> None:
+    lock = path / LOCK
+    if lock in _HELD and lock.exists():
+        return
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise WorkspaceError(f"{path} is in use by another process") from None
+    _HELD[lock] = fd
 
 
 def _inside(root: pathlib.Path, path: pathlib.Path) -> None:
