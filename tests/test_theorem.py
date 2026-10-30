@@ -3,6 +3,8 @@ import z3
 
 from acceptance.oxide.deposit_subsidy import SPEC
 from tests.models import quote
+from z3sol import ops
+from z3sol.ir import UINT256, Assign, Call, Const, Function, Let, Model, Return, Var
 from z3sol.theorem import Terms, TheoremError, prove, theorem
 
 
@@ -129,3 +131,25 @@ def test_unknown_fails(q):
 
     result = prove(hard, q)
     assert (result.verdict, result.ok) == ("UNKNOWN", False)
+
+
+def test_a_theorem_can_run_a_called_function_name_a_declared_value_and_fix_inputs():
+    a, b, x, p = Var("a", input=True), Var("b", input=True), Var("x"), Var("p")
+    double = Function("double", (p,), UINT256, (Return(ops.make("mul", p, Const(2))),))
+    body = (
+        Let(x, Call("double", (a,), UINT256)),
+        Assign(x, ops.make("add", x, b)),
+        Return(x),
+    )
+    q = Terms(Model("C", Function("f", (a, b), UINT256, body), callees=(double,)))
+    assert z3.simplify(q.call("double", 21).value).as_long() == 42
+    assert z3.simplify(z3.substitute(q.declared("x"), (q.a, z3.IntVal(5)))).as_long() == 10
+    fixed = q.at(a=5, b=1)
+    assert z3.simplify(fixed.value).as_long() == 11 and z3.simplify(fixed.locals["x"]).as_long() == 11
+    assert z3.is_false(z3.simplify(fixed.reverts))
+    with pytest.raises(AttributeError, match="has no called function f"):
+        q.call("f", 1, 2)
+    with pytest.raises(AttributeError, match="declares no local y"):
+        q.declared("y")
+    with pytest.raises(AttributeError, match="has no input c"):
+        q.at(c=1)
