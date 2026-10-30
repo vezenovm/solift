@@ -18,11 +18,11 @@ Status: milestone M2. It covers the functions of Oxide's `formulas/subsidies.py`
 
 The extractor takes loop-free pure and view functions with checked `uint` arithmetic, comparisons, boolean logic,
 ternaries, `if` and early returns, locals assigned also in branches, compound assignments, named returns, addresses,
-enums, constants and immutables. Internal calls are inlined. `Math.min` and `Math.mulDiv` are operators backed by lemmas.
-Named arguments bind by name. It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple
-returns, exponentiation, `%`, `require`, assembly, a local that shadows another variable, a variable named `i` (the
-inputs struct of the emitted Solidity), and a function without inputs, with the place in the source. The type of each
-operation must match the type in solc's AST.
+enums, constants and immutables. Internal calls are inlined. `Math.min` and `Math.mulDiv` are operators backed by
+lemmas. Named arguments bind by name. It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple
+returns, exponentiation, `%`, `require`, assembly, a local that shadows another variable, a variable or constant named
+`i` (the inputs struct of the emitted Solidity), a constant with the name of a parameter, local or return, and a
+function without inputs, with the place in the source. The type of each operation must match the type in solc's AST.
 
 ## Run
 

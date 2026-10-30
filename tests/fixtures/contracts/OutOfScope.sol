@@ -153,4 +153,19 @@ contract OutOfScope {
   function noInputs() internal pure returns (uint256) {
     return 1;
   }
+
+  function constantNamedI(uint256 _a) internal pure returns (uint256) {
+    return _a + Named.i;
+  }
+
+  function constantNamedAsALocal(uint256 _x) internal pure returns (uint256) {
+    uint256 A = _x;
+    return Named.A + A;
+  }
+}
+
+// Constants whose names collide with the names of the emitted Solidity.
+library Named {
+  uint256 internal constant i = 7;
+  uint256 internal constant A = 7;
 }

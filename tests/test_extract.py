@@ -171,6 +171,8 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("addressLocalWithoutValue", {}, r"a local of type address declared without a value"),
         ("inputsName", {}, r"OutOfScope.sol:\d+:19: i names the inputs struct of the emitted Solidity"),
         ("noInputs", {}, r"noInputs has no inputs: its result is a constant"),
+        ("constantNamedI", {}, r"OutOfScope.sol:\d+:3: the constant i names the inputs struct of the emitted Solidity"),
+        ("constantNamedAsALocal", {}, r"OutOfScope.sol:\d+:3: the constant A has the name of a parameter, local"),
         ("shadowing", {}, r"OutOfScope.sol:\d+:7: the local _x shadows a parameter, local or return of the same name"),
         (
             "readsTotal",

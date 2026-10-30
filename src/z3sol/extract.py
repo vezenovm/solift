@@ -54,6 +54,7 @@ from z3sol.ir import (
     Var,
     enum,
     uint,
+    walk,
 )
 
 MATH_PATH = "utils/math/Math.sol"
@@ -212,6 +213,7 @@ class _Extractor:
         if not function.params and not reads:
             raise ExtractionError(f"{qualified} has no inputs: its result is a constant")
         self._check_names(node, function, reads)
+        _check_constants((function, *self.callees.values()))
         imports = []
         if self.math_path is not None:
             imports.append(f'import {{Math}} from "{self._import_of(unit, self.math_path)}";')
@@ -704,6 +706,26 @@ def _root(node):
     while node["nodeType"] in ("MemberAccess", "IndexAccess"):
         node = node["expression" if node["nodeType"] == "MemberAccess" else "baseExpression"]
     return node if node["nodeType"] == "Identifier" else None
+
+
+def _check_constants(functions) -> None:
+    """The emitted Solidity names a constant by its name alone, so a constant must not have the name of the inputs
+    struct, or of a parameter, a local or a return, which would shadow it there."""
+    names = {"i"}
+    for function in functions:
+        names.update(p.name for p in function.params)
+        names.update(stmt.var.name for stmt in _lets(function.body))
+        if function.result is not None:
+            names.add(function.result.name)
+    for function in functions:
+        for e in walk(function):
+            if isinstance(e, Const) and e.name in names:
+                if e.name == "i":
+                    raise ExtractionError(f"{e.src}: the constant i names the inputs struct of the emitted Solidity")
+                raise ExtractionError(
+                    f"{e.src}: the constant {e.name} has the name of a parameter, local or return of the emitted "
+                    "Solidity, which would shadow it there"
+                )
 
 
 def _lets(stmts):
