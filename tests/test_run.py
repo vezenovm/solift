@@ -88,3 +88,14 @@ def test_the_vectors_of_a_model_are_exactly_its_own_tests_in_its_own_file():
         "vectors: the results come from old/QVectors.t.sol, not test/z3sol/QVectors.t.sol",
         "vectors: 0 of 2 agree with the emitted Solidity",
     ]
+
+
+def test_a_vector_build_that_fails_is_a_failure_and_the_run_goes_on(tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise forge.BuildError("forge test failed: Compiler run failed")
+
+    monkeypatch.setattr(forge, "test", broken)
+    record = run(SPEC, Workspace(tmp_path / "work"), link=False)
+    assert record["failures"] == ["quoter: vectors: forge test failed: Compiler run failed"]
+    assert record["specs"][0]["vectors"] is None
+    assert "guard" in record["times"] and record["specs"][0]["theorems"]

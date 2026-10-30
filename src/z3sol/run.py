@@ -266,7 +266,12 @@ def _vectors(checked: list[_Checked], root, build, project: Project, allow) -> N
     if not sampled:
         return
     contracts = tuple(names(c.model)[0].removesuffix("Model") + "Vectors" for c in sampled)
-    statuses = forge.test(root, *build, contracts, project.profile, allow)
+    try:
+        statuses = forge.test(root, *build, contracts, project.profile, allow)
+    except forge.BuildError as err:
+        for c in sampled:
+            c.record["failures"].append(f"vectors: {err}")
+        return
     for c, contract in zip(sampled, contracts, strict=True):
         mine = {key: status for key, status in statuses.items() if key[1] == contract}
         failures = vector_failures(contract, f"{project.generated}/{contract}.t.sol", len(c.vectors), mine)
