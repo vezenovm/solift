@@ -1,8 +1,13 @@
 import pytest
 
+from acceptance.morpho.mutants import MUTANTS as MORPHO_MUTANTS
+from acceptance.morpho.specs import SPECS as MORPHO_SPECS
 from acceptance.mutants import apply, problems
 from acceptance.oxide.mutants import MUTANTS, Mutant
 from acceptance.oxide.specs import SPECS
+from acceptance.resupply import fix
+from acceptance.resupply.mutants import MUTANTS as RESUPPLY_MUTANTS
+from acceptance.resupply.solvency import SOLVENT
 
 SOURCE = """\
 contract C {
@@ -45,6 +50,17 @@ def test_each_mutant_names_a_theorem_of_its_spec_that_rejects_it():
         "migration-quote",
     }
     assert any(m.link for m in MUTANTS)
+
+
+def test_each_mutant_of_resupply_and_morpho_and_the_fix_name_theorems_of_their_specs():
+    for specs, mutants in ((MORPHO_SPECS, MORPHO_MUTANTS), ([SOLVENT], RESUPPLY_MUTANTS)):
+        by_name = {spec.name: spec for spec in specs}
+        for m in mutants:
+            ids = {t.id for t in by_name[m.spec].theorems}
+            assert m.breaks in ids and set(m.holds) <= ids, m.id
+    (found,) = [t for t in SOLVENT.theorems if t.id == fix.THEOREM]
+    assert found.expect == "counterexample"
+    assert set(fix.CHANGES) == {fix.CORE, fix.CONSTANTS}
 
 
 def mutant_record(theorems, failures, link=None):
