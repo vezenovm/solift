@@ -31,25 +31,25 @@ from z3sol.run import Spec
 from z3sol.workspace import Project
 
 PROJECT = Project(
-    profile=None,                          # the Foundry profile the contract deploys with; None is the default
-    link=("foundry.toml", "lib"),          # symlinked into the overlay
-    copy=("src",),                         # copied: forge finds no AST for a symlinked source
+    profile=None,  # the Foundry profile the contract deploys with; None is the default
+    link=("foundry.toml", "lib"),  # symlinked into the overlay
+    copy=("src",),  # copied: forge finds no AST for a symlinked source
     add={"test/VaultSetup.sol": pathlib.Path(__file__).parent / "VaultSetup.sol"},  # the harness
-    generated="test/z3sol",                # inside the profile's test directory
+    generated="test/z3sol",  # inside the profile's test directory
 )
 SPEC = Spec(
     name="vault-redeem",
     target="src/Vault.sol:Vault._redeem",  # add "(uint256,address)" to pick one overload
-    reads={                                # a value the function reads -> its input name
-        "totalAssets": "assets",           # storage, by name
-        "$fees.rate": "rate",              # a field of a storage struct
-        "ORACLE.price()": "price",         # an external view call, by its source text
+    reads={  # a value the function reads -> its input name
+        "totalAssets": "assets",  # storage, by name
+        "$fees.rate": "rate",  # a field of a storage struct
+        "ORACLE.price()": "price",  # an external view call, by its source text
         "block.timestamp": "time",
     },
     link=Link(
         setup="test/VaultSetup.sol:VaultSetup",
         call="vault.exposedRedeem(shares, owner)",  # with the target's parameter names
-        adapters={                                  # how the test sets each input
+        adapters={  # how the test sets each input
             ("assets", "rate"): "vault.set(assets, rate);",
             "price": "oracle.set(price);",
             "time": "vm.warp(time);",
@@ -96,6 +96,7 @@ Options:
 import sys
 from myproject.spec import SPEC
 from z3sol.cli import main
+
 sys.exit(main(SPEC))  # or main([SPEC_A, SPEC_B]) for several functions of one project
 ```
 
