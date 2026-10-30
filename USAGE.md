@@ -127,8 +127,8 @@ or the attribute after the colon. A module can also run itself: `sys.exit(solift
 
 `SOLIFT_FORGE` names the forge binary. Each result prints one line, and the record is `build/<name>/results.json`. The
 exit code is 0 only when every result is the expected one. Install solift as a tool, with the packages that your specs
-import: `uv tool install solift --with <package>`, or `pipx install solift` then `pipx inject solift <package>`. It
-runs on Linux and macOS.
+import: `uv tool install solift --with <package>`, or `pipx install solift` then `pipx inject solift <package>`. To
+pin a commit: `pip install 'git+https://github.com/vezenovm/solift@<commit>'`. It runs on Linux and macOS.
 
 ## When it fails
 
@@ -194,8 +194,32 @@ import directives that the adapters need.
 | `impossible` | Outcomes (`"pays"`, `"zero"`, `"reverts"`) that the spec asserts no input reaches. A vector that reaches one fails the run. An outcome that z3 proves no input reaches needs no entry: the record lists it as unreachable. |
 | `stem` | The name of the generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and `quote`. |
 
+### The link
+
+Each input is a symbolic parameter of the Halmos check, set in the contract through the call or an adapter, except an
+`observed` input, which the check reads from the deployed contract before the call. A cut point is set through the
+harness, such as a price feed with a symbolic answer, so the link proves the model equal to the contract only for the
+values that the harness can produce.
+
+A link check fails on anything but PASS, on a path stopped at the loop bound or at Halmos's `--depth` or `--width`
+limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
+check, when Halmos exits with a failure, and when Halmos skips a contract. The same build proves the operator rows and
+the lemmas that the models use: `Math.min` is the smaller value, and `Math.mulDiv(x, y, d)` is `x * y / d` rounded down
+when `x` and `y` are below 2**128 and `d` is not 0.
+
+### How far a theorem reaches
+
+- `lemma_domain` is `not-used` when no evaluation that the proof makes uses mulDiv, `established` when the hypotheses
+  keep every such evaluation inside the domain of the lemma, with each argument in the range of its Solidity type,
+  `not-established` when they do not, and `unknown` when the solvers cannot decide.
+- `callees` names the functions that the theorem runs on its own arguments with `q.call`. The link covers them only
+  where the target calls them, so a theorem on them is a theorem of the integer model.
+- "Unknown" from every solver fails a theorem.
+
 ### The record
 
+A run builds the project once. A failed theorem, vector or link check does not stop the others, but a failed build or
+a failed write of the generated files ends the run, and a spec whose extraction fails gets no later checks.
 `results.json` (`schema` 3) holds:
 
 - `ok`, `failures`, and `times`, the seconds of each stage;
