@@ -1,6 +1,7 @@
 import pytest
 
 from acceptance.oxide.mutants import MUTANTS, Mutant, apply
+from acceptance.oxide.specs import SPECS
 
 SOURCE = """\
 contract C {
@@ -22,9 +23,15 @@ def test_a_mutant_changes_its_text_inside_quote_subsidy_only():
         apply(SOURCE, Mutant("m", "_fee + 1", "_fee", breaks="t"))
     with pytest.raises(ValueError, match="does not occur exactly once"):
         apply(SOURCE, Mutant("m", "_fee", "1", breaks="t"))
+    assert "return _fee;" in apply(SOURCE, Mutant("m", "_fee + 1", "_fee", breaks="t", function="other"))
 
 
-def test_each_mutant_names_the_theorem_that_rejects_it():
+def test_each_mutant_names_a_theorem_of_its_spec_that_rejects_it():
+    specs = {spec.name: spec for spec in SPECS}
     assert len({m.id for m in MUTANTS}) == len(MUTANTS)
-    assert {m.breaks for m in MUTANTS} == {"deposit-no-farming", "deposit-liveness"}
+    for m in MUTANTS:
+        ids = {t.id for t in specs[m.spec].theorems}
+        assert m.breaks in ids and set(m.holds) <= ids, m.id
+        assert m.path == specs[m.spec].target.partition(":")[0], m.id
+    assert {m.spec for m in MUTANTS} == {"deposit-quote", "deposit-priced-gas", "withdrawal-quote"}
     assert any(m.link for m in MUTANTS)
