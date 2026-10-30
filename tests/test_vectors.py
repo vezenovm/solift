@@ -6,8 +6,8 @@ import z3
 from tests.projects import QUOTER, QUOTER_READS, fixtures
 from z3sol import forge, ops
 from z3sol.extract import extract
-from z3sol.ir import UINT256, Const, Function, If, Model, Return, Var
-from z3sol.solidity import source
+from z3sol.ir import ADDRESS, UINT256, Const, Function, If, Model, Return, Var, enum
+from z3sol.solidity import names, source
 from z3sol.vectors import VectorError, boundary, sample, vectors_source
 from z3sol.workspace import Workspace
 
@@ -75,3 +75,24 @@ def test_an_unknown_from_z3_never_counts_as_an_unreachable_outcome(monkeypatch):
         sample(model, impossible=("zero", "reverts"))
     with pytest.raises(VectorError, match="z3 gave unknown at the boundary of a comparison"):
         boundary(Model("C", Function("f", (a,), UINT256, (Return(ops.make("min", a, Const(4))),))))
+
+
+def test_the_vectors_compare_an_address_or_an_enum_result(quoter):
+    workspace, project, root, _ = quoter
+    kind = Var("kind", enum("Kinds.Kind", 4), input=True)
+    who = Var("who", ADDRESS, input=True)
+    kinds = ('import {Kinds} from "tests/fixtures/contracts/Kinds.sol";',)
+    models = [
+        Model("Identity", Function("_address", (who,), ADDRESS, (Return(who),)), pragma="^0.8.27"),
+        Model("Identity", Function("_kind", (kind,), kind.type, (Return(kind),)), imports=kinds, pragma="^0.8.27"),
+    ]
+    contracts = []
+    for model in models:
+        stem = names(model)[0].removesuffix("Model")
+        (root / project.generated / f"{stem}.sol").write_text(source(model))
+        vectors = sample(model, impossible=("reverts",))
+        (root / project.generated / f"{stem}Vectors.t.sol").write_text(vectors_source(model, vectors))
+        contracts.append(f"{stem}Vectors")
+    statuses = forge.test(root, workspace.fresh("typed-out"), workspace.fresh("typed-cache"), tuple(contracts))
+    assert {c for c, _ in statuses} == set(contracts)
+    assert set(statuses.values()) == {"Success"}
