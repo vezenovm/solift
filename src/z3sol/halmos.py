@@ -1,9 +1,10 @@
 """The Halmos link engine.
 
 Halmos runs `forge build --ast` itself, without `--out`, and reads the build from `--forge-build-out`. So the run sets
-FOUNDRY_OUT and FOUNDRY_CACHE_PATH to the same fresh directories, and puts a `forge` shim for the configured binary on
-PATH. It builds from empty directories, because Halmos skips, with only a warning, a contract whose cached build has no
-AST. Halmos's own default solver may change, so the run names yices.
+FOUNDRY_OUT and FOUNDRY_CACHE_PATH to the same directories, and puts a `forge` shim for the configured binary on PATH.
+Halmos skips, with only a warning, a contract whose cached build has no AST. So it builds from empty directories, or
+from the directories of a build with Halmos's own flags (forge.FLAGS), where every artifact has its AST. Halmos's own
+default solver may change, so the run names yices.
 
 A check passes only with a PASS result and no path stopped at the loop bound: Halmos reports such a check as a pass,
 with a warning. The run fails when a declared check has no result, when the run has a check that it did not declare,
@@ -85,10 +86,14 @@ class HalmosEngine:
         profile: str | None = None,
         allow_paths=(),
         fresh: bool = True,
+        build: tuple[pathlib.Path, pathlib.Path] | None = None,
     ) -> LinkRun:
-        """Runs the declared checks. `fresh=False` keeps the existing build directories, which only the tests of the
-        skipped-contract guard need."""
-        if fresh:
+        """Runs the declared checks. `build` is the output and cache directories of a build with forge.FLAGS, which
+        Halmos then extends instead of building from empty directories. `fresh=False` keeps the existing directories of
+        an earlier Halmos run, which only the tests of the skipped-contract guard need."""
+        if build is not None:
+            out, cache = build
+        elif fresh:
             out, cache = workspace.fresh("halmos-out"), workspace.fresh("halmos-cache")
         else:
             out, cache = workspace.path / "halmos-out", workspace.path / "halmos-cache"

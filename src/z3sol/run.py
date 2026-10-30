@@ -2,7 +2,8 @@
 result with the versions it rests on.
 
 The specs of one run share a project. The run builds it once, runs the vectors of every model in one forge test, and
-links every model in one Halmos run, with one test of the operator-table rows and lemmas that the models use. Each stage
+links every model in one Halmos run, with one test of the operator-table rows and lemmas that the models use. The three
+share one build directory, so solc compiles each project file once. The record holds the time of each stage. Each stage
 runs even when an earlier one fails, except that a spec without a model has nothing to check, so one run shows every
 failure. The run fails when a result is not the expected one, and when the project changed during the run.
 
@@ -19,6 +20,7 @@ import json
 import pathlib
 import platform
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -106,16 +108,21 @@ def run(
         "specs": [],
         "failures": [],
     }
+    times = record["times"] = {}
+    clock = _Clock(times)
     guard = project.guard(workspace, exclude=(emit,) if emit is not None else ())
+    clock.stage("guard")
     allow = (project.root,)
     checked = [_Checked(spec, {"spec": spec.name, "target": spec.target, "failures": []}) for spec in specs]
     record["specs"] = [c.record for c in checked]
+    build = (workspace.fresh("build-out"), workspace.fresh("build-cache"))
     try:
         root = project.overlay(workspace, replace=replace)
-        infos = forge.build(root, workspace.fresh("ast-out"), workspace.fresh("ast-cache"), project.profile, allow)
+        infos = forge.build(root, *build, project.profile, allow)
     except forge.BuildError as err:
         record["failures"].append(f"build: {err}")
-        return _finish(record, checked, guard)
+        return _finish(record, checked, guard, clock)
+    clock.stage("build")
 
     for c in checked:
         _extract(c, infos, operators=len(specs) == 1)
@@ -146,19 +153,23 @@ def run(
                 files[f"{stem}Vectors.t.sol"] = vectors_source(c.model, c.vectors, c.spec.link.test_import)
             except VectorError as err:
                 c.record["failures"].append(f"vectors: {err}")
+    clock.stage("extract and sample the vectors")
     for name, text in files.items():
         (root / project.generated / name).write_text(text)
     record["generated"] = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()}
 
     for c in models:
         _theorems(c, only)
+    clock.stage("theorems")
     if vectors:
-        _vectors(checked, root, workspace, project, allow)
+        _vectors(checked, root, build, project, allow)
+        clock.stage("vectors (forge test)")
     if link:
         checks = [check for c in models for check in c.generated.checks]
         if shared is not None:
             checks += shared.checks
-        linked = engine.run(root, workspace, tuple(checks), project.profile, allow)
+        linked = engine.run(root, workspace, tuple(checks), project.profile, allow, build=build)
+        clock.stage("link (Halmos)")
         results = {r.check: r for r in linked.results}
         record["link"] = {"engine": engine.name, "problems": list(linked.problems)}
         record["failures"] += [f"link: {p}" for p in linked.problems]
@@ -173,7 +184,20 @@ def run(
         record["link"] = None
         for c in models:
             c.record["link"] = None
-    return _finish(record, checked, guard)
+    return _finish(record, checked, guard, clock)
+
+
+class _Clock:
+    """Records the seconds since the last stage under each stage's name."""
+
+    def __init__(self, times: dict):
+        self.times = times
+        self.last = time.perf_counter()
+
+    def stage(self, name: str) -> None:
+        now = time.perf_counter()
+        self.times[name] = round(now - self.last, 2)
+        self.last = now
 
 
 def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
@@ -233,16 +257,14 @@ def _theorems(c: _Checked, only: tuple[str, ...] | None) -> None:
             c.record["failures"].append(f"theorem {t.id}: {result.verdict}{witness}, expected {expected}")
 
 
-def _vectors(checked: list[_Checked], root, workspace: Workspace, project: Project, allow) -> None:
+def _vectors(checked: list[_Checked], root, build, project: Project, allow) -> None:
     sampled = [c for c in checked if c.vectors is not None]
     for c in checked:
         c.record["vectors"] = None
     if not sampled:
         return
     contracts = tuple(names(c.model)[0].removesuffix("Model") + "Vectors" for c in sampled)
-    statuses = forge.test(
-        root, workspace.fresh("vectors-out"), workspace.fresh("vectors-cache"), contracts, project.profile, allow
-    )
+    statuses = forge.test(root, *build, contracts, project.profile, allow)
     for c, contract in zip(sampled, contracts, strict=True):
         mine = [status for (name, _), status in statuses.items() if name == contract]
         agree = sum(status == "Success" for status in mine)
@@ -256,11 +278,12 @@ def _check_record(r) -> dict:
             "paths": r.paths}  # fmt: skip
 
 
-def _finish(record: dict, checked: list[_Checked], guard) -> dict:
+def _finish(record: dict, checked: list[_Checked], guard, clock: _Clock) -> dict:
     for c in checked:
         c.record["ok"] = not c.record["failures"]
         record["failures"] += [f"{c.spec.name}: {failure}" for failure in c.record["failures"]]
     record["failures"] += [f"project: {change}" for change in guard.changes()]
+    clock.stage("guard")
     record["ok"] = not record["failures"]
     return record
 

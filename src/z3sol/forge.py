@@ -13,6 +13,10 @@ import os
 import pathlib
 import subprocess
 
+# The flags of Halmos's own build. Every build of a run uses them, so that one output directory serves the extraction,
+# the vectors and Halmos: solc compiles each file once, and every artifact has its AST.
+FLAGS = ("--ast", "--extra-output", "storageLayout", "metadata")
+
 
 class BuildError(Exception):
     pass
@@ -41,7 +45,7 @@ def build(
     for path in (out, cache):
         if path.exists() and any(path.iterdir()):
             raise BuildError(f"{path} is not empty: each build starts from empty output and cache directories")
-    command = [binary(), "build", "--root", str(root), "--ast", "--build-info"]
+    command = [binary(), "build", "--root", str(root), *FLAGS, "--build-info"]
     result = subprocess.run(
         command, env=environment(out, cache, profile, allow_paths), capture_output=True, text=True, check=False
     )
@@ -66,7 +70,7 @@ def test(
     """Runs the forge tests of the named contracts and returns the status of each test function, by contract and
     function name."""
     pattern = "^(" + "|".join(contracts) + ")$"
-    command = [binary(), "test", "--root", str(root), "--match-contract", pattern, "--json"]
+    command = [binary(), "test", "--root", str(root), *FLAGS, "--match-contract", pattern, "--json"]
     result = subprocess.run(
         command, env=environment(out, cache, profile, allow_paths), capture_output=True, text=True, check=False
     )
