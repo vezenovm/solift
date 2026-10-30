@@ -1,0 +1,73 @@
+name: acceptance
+
+# The public acceptance runs, at their pinned commits: Resupply's exploit and fix, and Morpho Blue. They run on main,
+# weekly, by hand, and on a pull request that can change what they prove.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**"
+      - "acceptance/**"
+      - "pyproject.toml"
+      - "requirements-dev.txt"
+      - "foundry.toml"
+      - ".gitmodules"
+      - "lib/**"
+      - ".github/**"
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [morpho, resupply]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.5
+
+      - name: Install the package
+        run: pip install -e .
+
+      # The setup in the docstring of acceptance/<project>/__main__.py.
+      - name: Check out Morpho Blue v1.0.0
+        if: matrix.project == 'morpho'
+        run: |
+          git clone https://github.com/morpho-org/morpho-blue "$RUNNER_TEMP/project"
+          git -C "$RUNNER_TEMP/project" checkout v1.0.0
+          git -C "$RUNNER_TEMP/project" submodule update --init --recursive
+
+      - name: Check out Resupply at the commit of the exploit
+        if: matrix.project == 'resupply'
+        run: |
+          git clone https://github.com/resupplyfi/resupply "$RUNNER_TEMP/project"
+          git -C "$RUNNER_TEMP/project" checkout 6c816badbf47fffddf81e683df81e56ba8cb6537
+          (cd "$RUNNER_TEMP/project" && npm ci --ignore-scripts)
+
+      - name: Run
+        run: python -m acceptance.${{ matrix.project }} --root "$RUNNER_TEMP/project" --results "$RUNNER_TEMP/acceptance.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: acceptance-${{ matrix.project }}
+          path: ${{ runner.temp }}/acceptance.json
+          if-no-files-found: warn

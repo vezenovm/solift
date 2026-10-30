@@ -119,3 +119,24 @@ def test_a_harness_goes_into_the_overlay_once_and_two_harnesses_at_one_place_fai
     c = dataclasses.replace(a, link=dataclasses.replace(link, setup=Harness(other / "VaultSetup.sol", "VaultSetup")))
     with pytest.raises(WorkspaceError, match="two harnesses go to"):
         _prepared([a, c])
+
+
+def test_the_standalone_vault_example_runs_from_its_own_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(ROOT / "examples" / "vault")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    work = tmp_path / "work"
+    try:
+        assert entrypoint(["run", "vault_specs.spec", "--root", ".", "--workspace", str(work)]) == 0
+    finally:
+        for name in [n for n in sys.modules if n.startswith("vault_specs")]:
+            del sys.modules[name]
+    record = json.loads((work / "results.json").read_text())
+    verdicts = {t["id"]: (t["verdict"], t["lemma_domain"]) for s in record["specs"] for t in s["theorems"]}
+    assert verdicts == {
+        "redeem-rounds-down": ("PROVED", "established"),
+        "redeem-pays-at-most-the-assets": ("PROVED", "established"),
+        "redeem-pays-the-exact-part": ("COUNTEREXAMPLE", "established"),
+        "deposit-mints-at-most-the-exact-shares": ("PROVED", "established"),
+    }
+    assert record["project"]["link"] == ["foundry.toml", "lib"] and record["project"]["copy"] == ["src"]
+    assert not list((ROOT / "examples" / "vault").rglob("__pycache__"))

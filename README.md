@@ -11,7 +11,8 @@ solift lifts a Solidity function to an integer model and proves theorems on it. 
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
-To use it on a new contract, see [USAGE.md](USAGE.md).
+To use it on a new contract, see [USAGE.md](USAGE.md). [examples/vault](examples/vault) is a standalone Foundry
+project with its specs, laid out as a project that uses solift lays out its own.
 
 Status: two acceptance runs cover public contracts, each at a pinned commit, with harnesses in
 `acceptance/<project>/harness/`:
@@ -54,6 +55,7 @@ git submodule update --init
 .venv/bin/solift reads tests/fixtures/contracts/Quoter.sol:Quoter._quote   # the read map that a function needs
 .venv/bin/solift run examples.quoter.spec                # one spec on the test fixtures
 .venv/bin/python -m examples.pricer                       # three specs in one run
+(cd examples/vault && ../../.venv/bin/solift run vault_specs.spec --root .)   # a standalone project
 .venv/bin/python -m acceptance.resupply --root <resupply>    # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>   # setup in acceptance/morpho/__main__.py
 ```

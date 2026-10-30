@@ -3,8 +3,8 @@
 solift checks one Solidity function at a time. You write a harness, a spec and theorems. solift writes the model, its
 Solidity and the Halmos link test. Your project is read-only: a run builds in `build/<name>`.
 
-To start, copy `acceptance/morpho/`, which covers a project outside this repo, or `examples/quoter/`, which covers
-contracts inside it.
+To start, copy `examples/vault/`, a standalone Foundry project with its specs, or `acceptance/morpho/`, which covers a
+project outside this repo.
 
 ## 1. Check that the function fits, and find what it reads
 

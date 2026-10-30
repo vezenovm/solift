@@ -1,0 +1,16 @@
+# A standalone Foundry project, laid out as a consumer of solift lays out theirs. lib holds forge-std and OpenZeppelin:
+# in this repo as links to its submodules, and in a copy made with `cp -rL` as files.
+[profile.default]
+src = "src"
+test = "test"
+libs = ["lib"]
+solc = "0.8.30"
+auto_detect_solc = false
+evm_version = "osaka"
+optimizer = true
+optimizer_runs = 200
+bytecode_hash = "none"
+remappings = [
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+  "forge-std/=lib/forge-std/src/",
+]

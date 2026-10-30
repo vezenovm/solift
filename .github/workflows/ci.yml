@@ -35,3 +35,37 @@ jobs:
 
       - name: Tests
         run: pytest
+
+  consumer:
+    name: the wheel, from outside the checkout
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.5
+
+      - name: Build the wheel and install it as a tool
+        run: |
+          pip wheel --no-deps --wheel-dir dist .
+          pipx install --python "$(which python)" dist/solift-*.whl
+
+      # The copy holds no file of this repo but the example: cp -L copies forge-std and OpenZeppelin out of its links.
+      - name: Copy the example out of the checkout
+        run: cp -rL examples/vault "$RUNNER_TEMP/vault"
+
+      - name: Find the reads of a target
+        working-directory: ${{ runner.temp }}/vault
+        run: solift reads src/Vault.sol:Vault.previewRedeem
+
+      - name: Run the example's specs
+        working-directory: ${{ runner.temp }}/vault
+        run: solift run vault_specs.spec --root .
