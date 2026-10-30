@@ -46,10 +46,10 @@ class Workspace:
 
 @dataclass(frozen=True)
 class Project:
-    """`generated` is the overlay directory for the generated files. It must be inside the profile's test directory,
-    so that forge builds them."""
+    """`root` is None until the command line gives it, for a project outside this repo. `generated` is the overlay
+    directory for the generated files. It must be inside the profile's test directory, so that forge builds them."""
 
-    root: pathlib.Path
+    root: pathlib.Path | None = None
     profile: str | None = None
     link: tuple[str, ...] = ()
     copy: tuple[str, ...] = ()
@@ -76,8 +76,9 @@ class Project:
         (root / self.generated).mkdir(parents=True, exist_ok=True)
         return root
 
-    def guard(self, workspace: Workspace) -> Guard:
-        return Guard(self.root, workspace.path / "guard.stamp", exclude=(workspace.path,))
+    def guard(self, workspace: Workspace, exclude=()) -> Guard:
+        """A guard of the project, outside the workspace and the `exclude` paths that the run writes to on purpose."""
+        return Guard(self.root, workspace.path / "guard.stamp", exclude=(workspace.path, *exclude))
 
 
 class Guard:

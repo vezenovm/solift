@@ -1,33 +1,11 @@
-"""The fixture project and the Quoter link, shared by the link and Halmos tests."""
+"""The fixture project and the Quoter link, shared by the link and Halmos tests. The example spec holds them."""
 
-import pathlib
+from examples.quoter.spec import LINK as QUOTER_LINK
+from examples.quoter.spec import PROJECT, QUOTER
+from examples.quoter.spec import READS as QUOTER_READS
 
-from z3sol.link import Link
-from z3sol.workspace import Project
-
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-QUOTER = "tests/fixtures/contracts/Quoter.sol"
-QUOTER_READS = {
-    "$config.margin": "margin",
-    "$config.cap": "cap",
-    "$floor": "floor",
-    "TOKEN.balanceOf(address(this))": "pot",
-    "tx.gasprice": "txGasPrice",
-    "block.basefee": "baseFee",
-}
-QUOTER_LINK = Link(
-    setup="tests/fixtures/test/QuoterSetup.sol:QuoterSetup",
-    call="quoter.exposedQuote(_gas, _price)",
-    adapters={
-        ("margin", "cap", "floor"): "quoter.setConfig(margin, cap, floor);",
-        "pot": "token.set(pot);",
-        "baseFee": "vm.fee(baseFee);",
-    },
-    observed={"txGasPrice": "tx.gasprice"},
-)
+__all__ = ["QUOTER", "QUOTER_LINK", "QUOTER_READS", "fixtures"]
 
 
-def fixtures() -> Project:
-    return Project(
-        root=ROOT, link=("foundry.toml", "lib"), copy=("tests/fixtures",), generated="tests/fixtures/test/z3sol"
-    )
+def fixtures():
+    return PROJECT
