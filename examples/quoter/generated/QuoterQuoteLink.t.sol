@@ -3,6 +3,7 @@
 pragma solidity ^0.8.27;
 
 import {QuoterSetup} from "tests/fixtures/test/QuoterSetup.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {QuoterQuoteModel, QuoterQuoteHost} from "./QuoterQuote.sol";
 
 contract QuoterQuoteLink is QuoterSetup {

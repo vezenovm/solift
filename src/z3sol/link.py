@@ -35,14 +35,19 @@ class LinkError(Exception):
 class Link:
     """`setup` is the harness as `path:Contract`, with the path relative to the project root. `call` calls the contract
     under test from the harness, such as `subsidy.exposedQuote(_fee, _reimbursableGas, _tokenPerEth)`. `adapters` maps
-    an input name, or a tuple of names, to the Solidity statements that set it. `observed` maps an input name to the
-    expression that the test reads it from."""
+    an input name, or a tuple of names, to the Solidity statements that set it, such as a struct argument built from the
+    inputs for its fields. `observed` maps an input name to the expression that the test reads it from. `parameters`
+    maps more symbolic parameters of the check, which are not inputs, to their types: an adapter can use them to set
+    what the contract reads, and an observed expression reads the input that results, as for a cut point such as a
+    price that the contract computes from a feed. `imports` are more import directives that the adapters need."""
 
     setup: str
     call: str
     adapters: dict = field(default_factory=dict)
     observed: dict = field(default_factory=dict)
     test_import: str = "forge-std/Test.sol"
+    imports: tuple[str, ...] = ()
+    parameters: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -59,7 +64,9 @@ class Generated:
     checks: tuple[Check, ...]
 
 
-def generate(model: Model, link: Link) -> Generated:
+def generate(model: Model, link: Link, operators: bool = True) -> Generated:
+    """The model, its link test, and with `operators` the test of each row and lemma it uses. A run of several models
+    writes one operators test for all of them instead (`operators_test`)."""
     stem = names(model)[0].removesuffix("Model")
     match = re.fullmatch(r"\s*(\w+)\.(\w+)\((.*)\)\s*", link.call, re.S)
     if match is None:
@@ -70,12 +77,11 @@ def generate(model: Model, link: Link) -> Generated:
         f"{stem}.sol": model_source(model),
         f"{stem}Link.t.sol": _link_test(model, link, stem, target, function, arguments, covered),
     }
-    checks = [Check(f"{stem}Link", "check_link")]
-    proofs = _proofs(model)
-    if proofs:
-        files[f"{stem}Operators.t.sol"] = _operators_test(model, link, stem, proofs)
-        checks += [Check(f"{stem}Operators", proof.name) for proof in proofs]
-    return Generated(files, tuple(checks))
+    generated = Generated(files, (Check(f"{stem}Link", "check_link"),))
+    if not operators:
+        return generated
+    shared = operators_test((model,), stem, link.test_import)
+    return Generated({**generated.files, **shared.files}, generated.checks + shared.checks)
 
 
 def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
@@ -94,18 +100,23 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
     for name in re.findall(r"\b[A-Za-z_]\w*\b", arguments):
         if name in inputs:
             cover(name, "call")
+    for name in link.parameters:
+        if name in inputs:
+            raise LinkError(f"the link parameter {name} has the name of an input of {model.name}")
     for key, code in link.adapters.items():
         for name in key if isinstance(key, tuple) else (key,):
             if not re.search(rf"\b{re.escape(name)}\b", code):
                 raise LinkError(f"the adapter for {name} does not use it: {code}")
-            cover(name, "adapter")
+            if name not in link.parameters:
+                cover(name, "adapter")
     for name in link.observed:
         cover(name, "observed")
     for name in inputs:
         if name not in covered:
             raise LinkError(f"no call argument, adapter or observed value sets the input {name}")
+    for name in [*inputs, *link.parameters]:
         if name in RESERVED:
-            raise LinkError(f"the input {name} has a name that the generated test uses")
+            raise LinkError(f"{name} has a name that the generated test uses")
     for param in model.function.params:
         if covered[param.name] != "call":
             raise LinkError(f"the parameter {param.name} must reach the contract through the call")
@@ -116,6 +127,7 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     library, host = names(model)
     setup_path, _, setup = link.setup.rpartition(":")
     params = [f"    {v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
+    params += [f"    {type_} {name}" for name, type_ in link.parameters.items()]
     fields = [f"      {v.name}: {link.observed.get(v.name, v.name)}" for v in model.inputs]
     returns = model.function.returns.solidity
     adapters = [f"    {code.strip()}" for code in link.adapters.values()]
@@ -125,6 +137,8 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         f"pragma solidity {model.pragma};",
         "",
         f'import {{{setup}}} from "{setup_path}";',
+        *model.imports,
+        *link.imports,
         f'import {{{library}, {host}}} from "./{stem}.sol";',
         "",
         f"contract {stem}Link is {setup} {{",
@@ -151,26 +165,35 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     return "\n".join(lines)
 
 
-def _proofs(model: Model) -> list:
+def _proofs(models) -> list:
     used = []
-    for function in (model.function, *model.callees):
-        for e in walk(function):
-            if isinstance(e, Op):
-                for name in TABLE[e.op].proofs:
-                    if PROOFS[name] not in used:
-                        used.append(PROOFS[name])
+    for model in models:
+        for function in (model.function, *model.callees):
+            for e in walk(function):
+                if isinstance(e, Op):
+                    for name in TABLE[e.op].proofs:
+                        if PROOFS[name] not in used:
+                            used.append(PROOFS[name])
     return used
 
 
-def _operators_test(model: Model, link: Link, stem: str, proofs: list) -> str:
+def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -> Generated:
+    """The test of each operator-table row and lemma that the models use, as `{stem}Operators.t.sol`. It has no
+    checks, and no file, when the models use none."""
+    proofs = _proofs(models)
+    if not proofs:
+        return Generated({}, ())
+    first = models[0]
+    imports = list(dict.fromkeys(line for model in models for line in model.imports))
+    used = ", ".join(model.name for model in models)
     wrappers = [p.wrapper for p in proofs if p.wrapper]
     lines = [
-        f"// SPDX-License-Identifier: {model.spdx}",
-        f"// Generated by z3sol: the operator-table rows and lemmas that {model.name} uses. Do not edit.",
-        f"pragma solidity {model.pragma};",
+        f"// SPDX-License-Identifier: {first.spdx}",
+        f"// Generated by z3sol: the operator-table rows and lemmas that {used} uses. Do not edit.",
+        f"pragma solidity {first.pragma};",
         "",
-        f'import {{Test}} from "{link.test_import}";',
-        *model.imports,
+        f'import {{Test}} from "{test_import}";',
+        *imports,
         "",
         f"contract {stem}CheckedOperators {{",
         "\n".join(wrappers).rstrip("\n"),
@@ -187,4 +210,5 @@ def _operators_test(model: Model, link: Link, stem: str, proofs: list) -> str:
         "}",
         "",
     ]
-    return "\n".join(lines)
+    checks = tuple(Check(f"{stem}Operators", proof.name) for proof in proofs)
+    return Generated({f"{stem}Operators.t.sol": "\n".join(lines)}, checks)

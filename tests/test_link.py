@@ -3,6 +3,7 @@ import dataclasses
 import pytest
 
 from tests.models import quote
+from z3sol.ir import Read, Var
 from z3sol.link import Check, Link, LinkError, generate
 
 DEPOSIT_LINK = Link(
@@ -22,6 +23,7 @@ LINK_TEST = """\
 pragma solidity >=0.8.27;
 
 import {DepositSubsidySetup} from "proofs/subsidies/test/SubsidySetup.sol";
+import {Math} from "@oz/utils/math/Math.sol";
 import {DepositSubsidyQuoteSubsidyModel, DepositSubsidyQuoteSubsidyHost} from "./DepositSubsidyQuoteSubsidy.sol";
 
 contract DepositSubsidyQuoteSubsidyLink is DepositSubsidySetup {
@@ -104,9 +106,32 @@ def test_the_run_declares_the_link_and_each_row_and_lemma_that_the_model_uses():
             "must reach the contract through the call",
         ),
         ({"call": "exposedQuote(_fee)"}, "is not target.function"),
+        ({"parameters": {"pot": "uint256"}}, "the link parameter pot has the name of an input"),
+        ({"parameters": {"host": "uint256"}}, "host has a name that the generated test uses"),
     ],
 )
 def test_a_link_that_does_not_set_each_input_exactly_once_is_refused(change, message):
     link = dataclasses.replace(DEPOSIT_LINK, **change)
     with pytest.raises(LinkError, match=message):
         generate(quote(), link)
+
+
+def test_a_link_parameter_is_symbolic_and_sets_a_cut_point_that_the_test_observes():
+    """The model of a quote whose third parameter is a cut point: the price that the contract computes from a feed."""
+    model = quote()
+    function = dataclasses.replace(model.function, params=model.function.params[:2])
+    price = Read(Var("tokenPerEth", input=True), "_tokenWeiPerEth()")
+    model = dataclasses.replace(model, function=function, reads=(*model.reads, price))
+    link = dataclasses.replace(
+        DEPOSIT_LINK,
+        call="subsidy.quoteSubsidy(_fee, _reimbursableGas)",
+        adapters={**DEPOSIT_LINK.adapters, "usdPerEth": "feed.set(int256(uint256(usdPerEth)), block.timestamp);"},
+        observed={"txGasPrice": "tx.gasprice", "tokenPerEth": "subsidy.exposedTokenWeiPerEth()"},
+        parameters={"usdPerEth": "uint128"},
+        imports=('import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";',),
+    )
+    test = generate(model, link).files["DepositSubsidyQuoteSubsidyLink.t.sol"]
+    assert "    uint256 baseFee,\n    uint128 usdPerEth\n  ) public {" in test
+    assert "    feed.set(int256(uint256(usdPerEth)), block.timestamp);\n" in test
+    assert "      tokenPerEth: subsidy.exposedTokenWeiPerEth()" in test
+    assert 'import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";' in test
