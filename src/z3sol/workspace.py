@@ -2,7 +2,8 @@
 
 A workspace is a directory that one run owns: every path the run writes is inside it. A marker file shows that z3sol
 made it, and `fresh` deletes only inside a marked workspace. A process holds an exclusive lock on each workspace it
-opens until it exits, so two runs never share one and validate each other's generated files.
+opens until it exits, so two runs never share one and validate each other's generated files. A forked process holds
+none of its parent's locks, and `fresh` does not delete a workspace that another process holds.
 
 A project is the foundry project that holds the target. z3sol never writes to it. It builds an overlay root in the
 workspace instead: symlinks to the project's configuration and dependencies (`link`), copies of the sources that forge
@@ -24,8 +25,9 @@ from dataclasses import dataclass
 
 MARKER = ".z3sol-workspace"
 LOCK = ".z3sol-lock"
-# The lock files this process holds, open for as long as it runs.
-_HELD: dict[pathlib.Path, int] = {}
+# The lock files this process holds, open for as long as it runs: the process id and the descriptor of each. A forked
+# process inherits the descriptors, but not the ownership.
+_HELD: dict[pathlib.Path, tuple[int, int]] = {}
 
 
 class WorkspaceError(Exception):
@@ -47,7 +49,7 @@ class Workspace:
         if self.path not in path.parents:
             raise WorkspaceError(f"{name} is outside the workspace")
         if path.exists():
-            shutil.rmtree(path)
+            _delete(path)
         path.mkdir(parents=True)
         return path
 
@@ -147,7 +149,7 @@ class Guard:
 
 def _lock(path: pathlib.Path) -> None:
     lock = path / LOCK
-    if lock in _HELD and lock.exists():
+    if _holds(lock):
         return
     fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -155,7 +157,38 @@ def _lock(path: pathlib.Path) -> None:
     except BlockingIOError:
         os.close(fd)
         raise WorkspaceError(f"{path} is in use by another process") from None
-    _HELD[lock] = fd
+    _HELD[lock] = (os.getpid(), fd)
+
+
+def _holds(lock: pathlib.Path) -> bool:
+    """Whether this process holds the lock on the file that is at `lock` now."""
+    if lock not in _HELD or _HELD[lock][0] != os.getpid():
+        return False
+    try:
+        return os.fstat(_HELD[lock][1]).st_ino == os.stat(lock).st_ino
+    except FileNotFoundError:
+        return False
+
+
+def _delete(path: pathlib.Path) -> None:
+    """Deletes `path`, holding the lock of each workspace inside it while it does. Refuses, before it deletes anything,
+    a workspace that another process holds. This process no longer holds the workspaces that it deletes."""
+    locks = [pathlib.Path(top) / LOCK for top, _, files in os.walk(path) if LOCK in files]
+    taken = []
+    try:
+        for lock in locks:
+            if not _holds(lock):
+                fd = os.open(lock, os.O_RDWR)
+                taken.append(fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise WorkspaceError(f"{lock.parent} is in use by another process") from None
+        taken += [_HELD.pop(lock)[1] for lock in locks if _holds(lock)]
+        shutil.rmtree(path)
+    finally:
+        for fd in taken:
+            os.close(fd)
 
 
 def _inside(root: pathlib.Path, path: pathlib.Path) -> None:

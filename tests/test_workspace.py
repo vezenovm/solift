@@ -1,9 +1,10 @@
+import os
 import subprocess
 import sys
 
 import pytest
 
-from z3sol.workspace import Guard, Project, Workspace, WorkspaceError
+from z3sol.workspace import MARKER, Guard, Project, Workspace, WorkspaceError
 
 
 def git_project(path):
@@ -105,6 +106,40 @@ def test_a_workspace_belongs_to_one_process_at_a_time(tmp_path):
         holder.wait()
     Workspace(tmp_path / "work").fresh("out")
     assert Workspace(tmp_path / "work").path == (tmp_path / "work").resolve()
+
+
+def test_a_workspace_that_another_process_holds_is_not_deleted_from_its_parent(tmp_path):
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / MARKER).touch()
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys, pathlib; from z3sol.workspace import Workspace; "
+         f"w = Workspace(pathlib.Path({str(tmp_path / 'work' / 'specs')!r})); (w.path / 'mine').touch(); "
+         "print('held', flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )  # fmt: skip
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        parent = Workspace(tmp_path / "work")
+        with pytest.raises(WorkspaceError, match="specs is in use by another process"):
+            parent.child("specs")
+        assert (tmp_path / "work" / "specs" / "mine").exists()
+    finally:
+        holder.stdin.close()
+        holder.wait()
+    assert not (parent.child("specs").path / "mine").exists()
+
+
+def test_a_forked_process_does_not_inherit_a_workspace(tmp_path):
+    Workspace(tmp_path / "work")
+    pid = os.fork()
+    if pid == 0:
+        try:
+            Workspace(tmp_path / "work")
+        except WorkspaceError:
+            os._exit(0)
+        os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, "the forked process opened the workspace that its parent holds"
 
 
 def test_an_overlay_entry_under_another_entry_is_refused_before_any_write(tmp_path):

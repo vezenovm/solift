@@ -89,8 +89,8 @@ finds no AST for a symlinked project file), and the generated files. Forge and H
 `--forge-build-out`, so these variables are what keep the build out of the project. Each run builds once, from empty
 directories, with Halmos's own build flags, and the vectors and Halmos extend that build: every artifact has its AST,
 and a skipped contract still fails the run. Each write into the overlay refuses a link and a path outside it. A process
-locks each workspace it uses, so two runs never share one. A guard compares the project's git status and file times
-before and after the run.
+locks each workspace it uses, so two runs never share one, and a run does not delete a workspace that another process
+holds. A guard compares the project's git status and file times before and after the run.
 
 ## Develop
 
