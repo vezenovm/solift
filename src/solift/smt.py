@@ -223,17 +223,17 @@ class _Run:
         operator = TABLE[e.op]
         if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
             self.comparisons.append((self.guard, values[0], values[1]))
-        lemma = _outside(operator, values) if operator.outside else None
-        if lemma is not None:
-            self.anywhere.append(lemma)
+        if operator.outside:
+            self.anywhere.append(_anywhere(operator, values))
         reverts = [p[1] for p in parts] + ([operator.reverts(*values)] if operator.reverts else [])
-        outside = [p[2] for p in parts] + ([lemma] if lemma is not None else [])
+        outside = [p[2] for p in parts] + ([operator.outside(*values)] if operator.outside else [])
         return operator.value(*values), _any(reverts), _any(outside)
 
 
-def _outside(operator, values: list) -> z3.BoolRef:
-    """Where an operation leaves its lemma's domain: the table's outside, or an operand out of the uint256 range, which
-    only an operand on a path that already reverted, or that does not run, can be."""
+def _anywhere(operator, values: list) -> z3.BoolRef:
+    """Where an operation leaves its lemma's domain on any path: the table's outside, or an operand out of the uint256
+    range, which an operand on a path that does not run, or that already reverted, can be. The model's `outside`, which
+    `inside` assumes away, is the table's outside where the operation runs, and nothing more."""
     return z3.Or(operator.outside(*values), *(z3.Not(z3.And(v >= 0, v < U256)) for v in values))
 
 

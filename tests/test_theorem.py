@@ -372,3 +372,18 @@ def test_a_mulDiv_operand_below_zero_on_a_path_that_reverted_is_outside_the_lemm
 
     result = prove(negative, q)
     assert (result.verdict, result.lemma_domain) == ("PROVED", "not-established")
+
+
+def test_inside_assumes_away_only_mulDiv_operands_at_or_above_half_width():
+    """uint256 b = a - 5; return Math.mulDiv(b, 1, 2): `inside` does not hide the revert at a < 5."""
+    a, b = Var("a", input=True), Var("b")
+    body = (Let(b, ops.make("sub", a, Const(5))), Return(ops.make("mulDiv", b, Const(1), Const(2))))
+    q = Terms(Model("C", Function("f", (a,), UINT256, body)))
+
+    @theorem(assume=("inside",), witness=lambda q: q.a == 5)
+    def live(q):
+        """the quote does not revert"""
+        return z3.Not(q.reverts)
+
+    result = prove(live, q)
+    assert result.verdict == "COUNTEREXAMPLE" and result.counterexample["a"] < 5
