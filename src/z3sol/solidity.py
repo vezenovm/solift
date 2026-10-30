@@ -8,14 +8,16 @@ to prove this code equal to the contract stays small. Named constants keep their
 
 from __future__ import annotations
 
-from z3sol.ir import Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var, walk
+from z3sol.ir import Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var, walk
 from z3sol.ops import TABLE
 
 
 def names(model: Model) -> tuple[str, str]:
     """The library and host contract names: `DepositSubsidy._quoteSubsidy` gives `DepositSubsidyQuoteSubsidyModel`
-    and `DepositSubsidyQuoteSubsidyHost`."""
-    stem = model.contract + model.function.name.lstrip("_")[:1].upper() + model.function.name.lstrip("_")[1:]
+    and `DepositSubsidyQuoteSubsidyHost`, or the model's stem with the same suffixes."""
+    stem = (
+        model.stem or model.contract + model.function.name.lstrip("_")[:1].upper() + model.function.name.lstrip("_")[1:]
+    )
     return stem + "Model", stem + "Host"
 
 
@@ -67,7 +69,8 @@ def _constants(model: Model) -> dict[str, Const]:
 
 def _function(function: Function, top: bool) -> list[str]:
     params = ["Inputs memory i"] + ([] if top else [f"{p.type.solidity} {p.name}" for p in function.params])
-    lines = [f"  function {function.name}({', '.join(params)}) internal pure returns ({function.returns.solidity}) {{"]
+    returns = function.returns.solidity + (f" {function.result.name}" if function.result is not None else "")
+    lines = [f"  function {function.name}({', '.join(params)}) internal pure returns ({returns}) {{"]
     lines += _block(function.body, "    ")
     lines.append("  }")
     return lines
@@ -78,6 +81,8 @@ def _block(stmts: tuple[Stmt, ...], indent: str) -> list[str]:
     for stmt in stmts:
         if isinstance(stmt, Let):
             lines.append(f"{indent}{stmt.var.type.solidity} {stmt.var.name} = {expr(stmt.expr, top=True)};")
+        elif isinstance(stmt, Assign):
+            lines.append(f"{indent}{stmt.var.name} = {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, Return):
             lines.append(f"{indent}return {expr(stmt.expr, top=True)};")
         elif isinstance(stmt, If):

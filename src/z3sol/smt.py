@@ -2,8 +2,10 @@
 
 `terms` runs the function's statements in order. `reached` is the condition under which a statement runs. An expression
 gives (value, reverts, outside), and a statement's reverts and outside count only where it is reached. Each return adds
-(reached, value). A function that ends without a return returns 0 or false, as Solidity does. An internal call runs the
-callee's statements on the argument values, and gives the callee's value, reverts and outside.
+(reached, value). After an `if`, each local that a branch assigned takes the value of the branch that ran. A function
+that ends without a return returns its named return variable, or 0 or false, as Solidity does. An internal call runs the
+callee's statements on the argument values, and gives the callee's value, reverts and outside. An address or an enum
+member is its integer value.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from dataclasses import dataclass, field
 
 import z3
 
-from z3sol.ir import BOOL, Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var
+from z3sol.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Stmt, Var
 from z3sol.ops import TABLE
 
 FALSE = z3.BoolVal(False)
@@ -21,13 +23,16 @@ TRUE = z3.BoolVal(True)
 
 @dataclass
 class Terms:
-    """`locals` holds each local of the modeled function, where it is declared. `comparisons` holds the two operand
-    values of each comparison and each min, for the boundary vectors."""
+    """`locals` holds the value of each local of the modeled function, and of its named return variable, where the
+    function returns. `declared` holds each local's value where it is declared. A local that a return does not reach
+    takes there the value of a return that does. `comparisons` holds the two operand values of each comparison and
+    each min, for the boundary vectors."""
 
     value: z3.ExprRef
     reverts: z3.BoolRef
     outside: z3.BoolRef
     locals: dict[str, z3.ExprRef]
+    declared: dict[str, z3.ExprRef] = field(default_factory=dict)
     comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = field(default_factory=list)
 
 
@@ -45,7 +50,18 @@ def domain(model: Model, inputs: dict[str, z3.ExprRef]) -> z3.BoolRef:
 def terms(model: Model, inputs: dict[str, z3.ExprRef]) -> Terms:
     run = _Run(model, inputs)
     value, reverts, outside = run.call(model.function, {}, top=True)
-    return Terms(value, reverts, outside, run.locals, run.comparisons)
+    return Terms(value, reverts, outside, run.locals, run.declared, run.comparisons)
+
+
+def terms_of_call(model: Model, function: Function, inputs: dict[str, z3.ExprRef], args) -> Terms:
+    """The value, reverts and outside of a called function of the model, on argument terms or numbers."""
+    if len(args) != len(function.params):
+        raise TypeError(f"{function.name} takes {len(function.params)} arguments, not {len(args)}")
+    env = {}
+    for param, arg in zip(function.params, args, strict=True):
+        env[param.name] = arg if z3.is_expr(arg) else z3.BoolVal(arg) if param.type == BOOL else z3.IntVal(arg)
+    value, reverts, outside = _Run(model, inputs).call(function, env)
+    return Terms(value, reverts, outside, {})
 
 
 def _or(a, b):
@@ -56,8 +72,23 @@ def _and(a, b):
     return b if z3.is_true(a) else a if z3.is_true(b) else z3.And(a, b)
 
 
+def _zero(var: Var) -> z3.ExprRef:
+    return FALSE if var.type == BOOL else z3.IntVal(0)
+
+
+def _select(cases: list) -> z3.ExprRef:
+    """The value of the case whose condition holds, of (condition, value) cases whose conditions are disjoint. The last
+    case is the default."""
+    value = cases[-1][1]
+    for cond, v in reversed(cases[:-1]):
+        value = value if v.eq(value) else z3.If(cond, v, value)
+    return value
+
+
 @dataclass
 class _Body:
+    """`returns` holds (reached, value, locals) for each return that runs."""
+
     reverts: z3.BoolRef = FALSE
     outside: z3.BoolRef = FALSE
     returns: list = field(default_factory=list)
@@ -72,6 +103,7 @@ class _Run:
         self.inputs = inputs
         self.functions = {f.name: f for f in model.callees}
         self.locals: dict[str, z3.ExprRef] = {}
+        self.declared: dict[str, z3.ExprRef] = {}
         self.comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = []
         self.stack: list[str] = []
 
@@ -80,44 +112,60 @@ class _Run:
             raise ValueError(f"{function.name} calls itself")
         self.stack.append(function.name)
         body = _Body()
-        reached = self.block(function.body, env, TRUE, body, top)
+        env = dict(env)
+        if function.result is not None:
+            env[function.result.name] = _zero(function.result)
+        reached, env = self.block(function.body, env, TRUE, body, top)
         self.stack.pop()
         returns = body.returns
         if not z3.is_false(reached):
-            returns = returns + [(reached, FALSE if function.returns == BOOL else z3.IntVal(0))]
-        value = returns[-1][1]
-        for cond, v in reversed(returns[:-1]):
-            value = z3.If(cond, v, value)
-        return value, body.reverts, body.outside
+            end = env[function.result.name] if function.result is not None else _zero(Var("", function.returns))
+            returns = returns + [(reached, end, env)]
+        if top:
+            names = {name for _, _, scope in returns for name in scope}
+            for name in sorted(names):
+                self.locals[name] = _select([(cond, scope[name]) for cond, _, scope in returns if name in scope])
+        return _select([(cond, value) for cond, value, _ in returns]), body.reverts, body.outside
 
     def block(self, stmts: tuple[Stmt, ...], env: dict, reached, body: _Body, top: bool):
-        """Runs the statements from `reached`, and returns the condition under which the block ends without a return."""
+        """Runs the statements from `reached`. Returns the condition under which the block ends without a return, and
+        the values of the locals there."""
         env = dict(env)
         for stmt in stmts:
             if z3.is_false(reached):
                 break
-            if isinstance(stmt, Let):
+            if isinstance(stmt, Let | Assign):
                 v, r, o = self.expr(stmt.expr, env)
                 body.runs(reached, r, o)
                 env[stmt.var.name] = v
-                if top:
-                    if stmt.var.name in self.locals:
+                if top and isinstance(stmt, Let):
+                    if stmt.var.name in self.declared:
                         raise ValueError(f"local {stmt.var.name} is declared twice")
-                    self.locals[stmt.var.name] = v
+                    self.declared[stmt.var.name] = v
             elif isinstance(stmt, Return):
                 v, r, o = self.expr(stmt.expr, env)
                 body.runs(reached, r, o)
-                body.returns.append((reached, v))
+                body.returns.append((reached, v, env))
                 reached = FALSE
             elif isinstance(stmt, If):
                 c, r, o = self.expr(stmt.cond, env)
                 body.runs(reached, r, o)
-                after_then = self.block(stmt.then, env, _and(reached, c), body, top)
-                after_else = self.block(stmt.orelse, env, _and(reached, z3.Not(c)), body, top)
+                after_then, then_env = self.block(stmt.then, env, _and(reached, c), body, top)
+                after_else, else_env = self.block(stmt.orelse, env, _and(reached, z3.Not(c)), body, top)
+                merged = {}
+                for name in env:
+                    a, b = then_env[name], else_env[name]
+                    if z3.is_false(after_then) or a.eq(b):
+                        merged[name] = b
+                    elif z3.is_false(after_else):
+                        merged[name] = a
+                    else:
+                        merged[name] = z3.If(after_then, a, b)
+                env = merged
                 reached = _or(after_then, after_else)
             else:
                 raise TypeError(f"no statement {stmt!r}")
-        return reached
+        return reached, env
 
     def expr(self, e: Expr, env: dict):
         if isinstance(e, Var):

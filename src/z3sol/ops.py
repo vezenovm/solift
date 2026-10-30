@@ -16,7 +16,9 @@ An expression also reverts when an operand that runs reverts, and is outside whe
 and `or` skip their second operand, and `ite` the branch not taken (smt.py).
 
 Arithmetic is at uint256: `make` refuses an addition, subtraction, multiplication or division at a narrower type, so
-the overflow bound is always 2**256. Comparisons and library calls take operands of any unsigned width.
+the overflow bound is always 2**256. Comparisons and library calls take operands of any unsigned width. `eq` and `ne`
+also compare two bools, two addresses, or two members of one enum, and `ite` selects between two values of one such
+type. z3 sees an address or an enum member as its integer value.
 
 Halmos proves on the bytecode each row that can revert, and the two OpenZeppelin facts that the min and mulDiv rows rest
 on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, and `Math.mulDiv(x, y, d)` is `x * y / d` when `x` and `y` are below
@@ -161,7 +163,7 @@ def make(op: str, *args: Expr, src: Src | None = None) -> Op:
         _numbers(op, types, where)
         result = UINT256
     elif operator.kind == "compare":
-        if op in ("eq", "ne") and types == [BOOL, BOOL]:
+        if op in ("eq", "ne") and _same_kind(*types):
             result = BOOL
         else:
             _numbers(op, types, where)
@@ -175,14 +177,19 @@ def make(op: str, *args: Expr, src: Src | None = None) -> Op:
     else:
         if types[0] != BOOL:
             raise TypeError(f"{op}{where} needs a bool condition")
-        if types[1] == BOOL and types[2] == BOOL:
-            result = BOOL
+        if _same_kind(types[1], types[2]):
+            result = types[1]
         else:
             _numbers(op, types[1:], where)
             result = common_type(types[1], types[2])
             if result is None:
                 result = literal_type(max(arg.value for arg in args[1:]))
     return Op(op, tuple(args), result, src)
+
+
+def _same_kind(a: Type, b: Type) -> bool:
+    """Two bools, two addresses, or two members of one enum."""
+    return a == b and a.kind in ("bool", "address", "enum")
 
 
 def _numbers(op: str, types: list[Type], where: str) -> None:

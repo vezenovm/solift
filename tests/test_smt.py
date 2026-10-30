@@ -5,7 +5,7 @@ import z3
 
 from tests.models import WAD, Reverts, quote, quote_reference
 from z3sol import ops
-from z3sol.ir import BOOL, UINT256, Call, Const, Function, If, Let, Model, Return, Var
+from z3sol.ir import ADDRESS, BOOL, UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var, enum
 from z3sol.smt import domain, symbols, terms
 
 EDGES = [0, 1, 2, WAD, 2**64 - 1, 2**128 - 1, 2**128, 2**255, 2**256 - 1]
@@ -153,3 +153,62 @@ def test_the_terms_expose_each_local_of_the_modeled_function():
     model = quote()
     t = terms(model, symbols(model))
     assert set(t.locals) == {"gasPrice", "gasCost", "targetPayout", "subsidy"}
+
+
+def test_a_local_assigned_in_a_branch_takes_the_value_of_the_branch_that_ran():
+    """x = a; if (a > 10) { x += 1; if (a > 20) return x; x *= 2; } else { x = 0; } return x + 100;"""
+    a, x = Var("a", input=True), Var("x")
+    inner = If(ops.make("gt", a, Const(20)), (Return(x),))
+    body = [
+        Let(x, a),
+        If(
+            ops.make("gt", a, Const(10)),
+            (Assign(x, ops.make("add", x, Const(1))), inner, Assign(x, ops.make("mul", x, Const(2)))),
+            (Assign(x, Const(0)),),
+        ),
+        Return(ops.make("add", x, Const(100))),
+    ]
+    model = function_model(body, [a])
+
+    def reference(v):
+        if v > 10:
+            if v + 1 > 0 and v > 20:
+                return v + 1
+            return (v + 1) * 2 + 100
+        return 100
+
+    for v in (0, 10, 11, 15, 20, 21, 1000):
+        assert evaluate(model, {"a": v}) == (False, reference(v), False), v
+    t = terms(model, symbols(model))
+    assert set(t.locals) == {"x"} and set(t.declared) == {"x"}
+    for v in (5, 15, 25):
+        final = z3.simplify(z3.substitute(t.locals["x"], (symbols(model)["a"], z3.IntVal(v))))
+        assert final.as_long() == {5: 0, 15: 32, 25: 26}[v]
+    assert evaluate(model, {"a": 2**256 - 1})[0]
+
+
+def test_a_named_return_starts_at_zero_and_is_returned_at_the_end():
+    a, r = Var("a", input=True), Var("r")
+    body = [
+        If(ops.make("gt", a, Const(3)), (Assign(r, ops.make("add", a, Const(1))),)),
+        If(ops.make("eq", a, Const(9)), (Return(r),)),
+    ]
+    model = Model("C", Function("f", (a,), UINT256, tuple(body), result=r))
+    assert evaluate(model, {"a": 2}) == (False, 0, False)
+    assert evaluate(model, {"a": 5}) == (False, 6, False)
+    assert evaluate(model, {"a": 9}) == (False, 10, False)
+
+
+def test_an_address_and_an_enum_are_integers_in_their_range():
+    kind = Var("kind", enum("K", 3), input=True)
+    who = Var("who", ADDRESS, input=True)
+    body = [Return(ops.make("and", ops.make("eq", kind, Const(1, enum("K", 3), text="K.B")), ops.make("ne", who, who)))]
+    model = function_model(body, [kind, who], returns=BOOL)
+    x = symbols(model)
+    s = z3.Solver()
+    s.add(domain(model, x), z3.Or(x["kind"] == 3, x["who"] == 2**160))
+    assert s.check() == z3.unsat
+    with pytest.raises(TypeError, match="lt takes unsigned operands, not enum, enum"):
+        ops.make("lt", kind, kind)
+    with pytest.raises(TypeError, match="add takes unsigned operands, not address, literal"):
+        ops.make("add", who, Const(1))

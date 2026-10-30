@@ -1,8 +1,8 @@
 """The IR: one loop-free Solidity function as typed expressions and statements.
 
-A model is a function whose reads from outside it (storage, external view calls, `tx` and `block` fields) are inputs,
-like its parameters. smt.py turns a model into z3 integer terms, and solidity.py into pure Solidity. ops.py holds the
-operator table that ties the two together and checks the types of each operation.
+A model is a function whose reads from outside it (storage, external view calls, `tx` and `block` fields, and the fields
+of a struct parameter) are inputs, like its parameters. smt.py turns a model into z3 integer terms, and solidity.py into
+pure Solidity. ops.py holds the operator table that ties the two together and checks the types of each operation.
 """
 
 from __future__ import annotations
@@ -24,25 +24,35 @@ class Src:
 
 @dataclass(frozen=True)
 class Type:
-    """`uint<bits>`, `bool`, or `literal`: a number literal, which takes the type of the operand next to it."""
+    """`uint<bits>`, `bool`, `address`, `enum`, or `literal`: a number literal, which takes the type of the operand next
+    to it. An enum has its Solidity name, such as `SIPABase.Intent`, and its number of members. A contract or interface
+    value is its address."""
 
     kind: str
     bits: int = 0
+    name: str = ""
+    members: int = 0
 
     @property
     def solidity(self) -> str:
         if self.kind == "uint":
             return f"uint{self.bits}"
-        if self.kind == "bool":
-            return "bool"
+        if self.kind in ("bool", "address"):
+            return self.kind
+        if self.kind == "enum":
+            return self.name
         raise ValueError(f"a {self.kind} has no Solidity type of its own")
 
     @property
     def bound(self) -> int:
-        """Values of an unsigned type lie in [0, bound)."""
-        if self.kind != "uint":
-            raise ValueError(f"{self.kind} has no bound")
-        return 2**self.bits
+        """Values of an unsigned type, an address or an enum lie in [0, bound)."""
+        if self.kind == "uint":
+            return 2**self.bits
+        if self.kind == "address":
+            return 2**160
+        if self.kind == "enum":
+            return self.members
+        raise ValueError(f"{self.kind} has no bound")
 
     @property
     def is_number(self) -> bool:
@@ -55,8 +65,13 @@ def uint(bits: int) -> Type:
     return Type("uint", bits)
 
 
+def enum(name: str, members: int) -> Type:
+    return Type("enum", 8, name, members)
+
+
 UINT256 = uint(256)
 BOOL = Type("bool")
+ADDRESS = Type("address", 160)
 LITERAL = Type("literal")
 
 
@@ -78,8 +93,8 @@ class Var(Expr):
 
 @dataclass(frozen=True, eq=False)
 class Const(Expr):
-    """A literal (`text` as written, such as `1e18`), or a named constant (`name`, such as `MAX_PRIORITY_FEE_WEI`,
-    with its declared type)."""
+    """A literal (`text` as written, such as `1e18`), an enum member (`text` such as `SIPABase.Intent.Deposit`, and its
+    index as the value), or a named constant (`name`, such as `MAX_PRIORITY_FEE_WEI`, with its declared type)."""
 
     value: int | bool
     type: Type = LITERAL
@@ -118,6 +133,15 @@ class Let:
 
 
 @dataclass(frozen=True)
+class Assign:
+    """An assignment to a local. A compound assignment such as `x += e` is `x = x + e`."""
+
+    var: Var
+    expr: Expr
+    src: Src | None = None
+
+
+@dataclass(frozen=True)
 class Return:
     expr: Expr
     src: Src | None = None
@@ -131,22 +155,26 @@ class If:
     src: Src | None = None
 
 
-Stmt = Let | Return | If
+Stmt = Let | Assign | Return | If
 
 
 @dataclass(frozen=True)
 class Function:
+    """`result` is the named return variable, if the function has one: it starts at zero, and the function returns it
+    when it ends without a return."""
+
     name: str
     params: tuple[Var, ...]
     returns: Type
     body: tuple[Stmt, ...]
     src: Src | None = None
+    result: Var | None = None
 
 
 @dataclass(frozen=True)
 class Read:
     """An input that the function reads from outside itself. `source` names the read as the read map does, such as
-    `TOKEN.balanceOf(address(this))` or `tx.gasprice`."""
+    `TOKEN.balanceOf(address(this))`, `tx.gasprice` or `_meter.frameGas`."""
 
     var: Var
     source: str
@@ -156,7 +184,8 @@ class Read:
 class Model:
     """`function` is the modeled function. Its parameters and the reads are the inputs. `callees` are the internal
     functions that it calls. `imports` are the import directives that the emitted Solidity needs, `pragma` its version
-    pragma and `spdx` its license identifier, each as the source file writes it."""
+    pragma and `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted
+    contracts instead of the contract and function names (solidity.names)."""
 
     contract: str
     function: Function
@@ -165,6 +194,7 @@ class Model:
     imports: tuple[str, ...] = ()
     pragma: str = "^0.8.0"
     spdx: str = "UNLICENSED"
+    stem: str = ""
 
     @property
     def name(self) -> str:
@@ -180,7 +210,7 @@ def walk(node):
     if isinstance(node, Function):
         for stmt in node.body:
             yield from walk(stmt)
-    elif isinstance(node, Let | Return):
+    elif isinstance(node, Let | Assign | Return):
         yield from walk(node.expr)
     elif isinstance(node, If):
         yield from walk(node.cond)

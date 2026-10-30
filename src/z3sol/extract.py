@@ -3,8 +3,11 @@
 A target names a function as `path:Contract.function`. The read map names each value that the function reads from
 outside itself, and gives it an input name. A key is one of:
 
-- a storage variable or immutable by its name (`$floor`), or a field of a storage struct (`$config.cap`), whether the
-  function reads it directly or through a memory copy (`Config memory cfg = $config;` then `cfg.cap`);
+- a storage variable or immutable by its name (`$floor`, `TOKEN`), or a field of a storage struct (`$config.cap`),
+  whether the function reads it directly or through a memory copy (`Config memory cfg = $config;` then `cfg.cap`);
+- a field of a storage struct in a mapping, at a key that is a parameter of the modeled function, through a memory copy
+  (`FlowPricing memory pricing = $flowPricing[_flow];` then `pricing.maxSubsidy`, as `$flowPricing[_flow].maxSubsidy`);
+- a field of a memory struct parameter of the modeled function (`_meter.frameGas`);
 - a field of `tx`, `block` or `msg` (`tx.gasprice`, `block.basefee`);
 - any other expression, such as an external view call, by its source text without whitespace
   (`TOKEN.balanceOf(address(this))`). An internal call in the read map is a cut point: its result is an input.
@@ -13,8 +16,10 @@ A read map entry that the function does not read is an error, except a field of 
 transaction has it, so it is an input even where the function ignores it, and a theorem can name it.
 
 Internal calls are inlined: each callee becomes a function of the model. OpenZeppelin's `Math.min` and `Math.mulDiv`
-become operators of the table in ops.py. A constant becomes its value, with its name and declared type. Anything else
-stops the extraction with an error that names the construct and its place in the source.
+become operators of the table in ops.py. A constant becomes its value, with its name and declared type, and an enum
+member its index. A contract or interface value is its address, and `address(x)` of one is the same value. Locals can
+be assigned, also in branches, and a named return starts at zero. Anything else stops the extraction with an error that
+names the construct and its place in the source.
 
 The model assumes that each read succeeds: an external view call that reverts has no input in the model.
 """
@@ -29,9 +34,11 @@ from fractions import Fraction
 
 from z3sol import ops
 from z3sol.ir import (
+    ADDRESS,
     BOOL,
     LITERAL,
     UINT256,
+    Assign,
     Call,
     Const,
     Expr,
@@ -45,6 +52,7 @@ from z3sol.ir import (
     Stmt,
     Type,
     Var,
+    enum,
     uint,
 )
 
@@ -77,19 +85,23 @@ SUBDENOMINATIONS = {
 }
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ENVIRONMENT = {
-    name: UINT256
-    for name in (
-        "tx.gasprice",
-        "block.basefee",
-        "block.blobbasefee",
-        "block.chainid",
-        "block.gaslimit",
-        "block.number",
-        "block.prevrandao",
-        "block.timestamp",
-        "msg.value",
-    )
+    **{
+        name: UINT256
+        for name in (
+            "tx.gasprice",
+            "block.basefee",
+            "block.blobbasefee",
+            "block.chainid",
+            "block.gaslimit",
+            "block.number",
+            "block.prevrandao",
+            "block.timestamp",
+            "msg.value",
+        )
+    },
+    **{name: ADDRESS for name in ("tx.origin", "msg.sender", "block.coinbase")},
 }
+ASSIGNMENTS = {"=": None, "+=": "add", "-=": "sub", "*=": "mul", "/=": "div", "%=": "mod"}
 
 
 class ExtractionError(Exception):
@@ -122,6 +134,8 @@ class _Extractor:
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
         self.paths = {s["id"]: path for path, s in self.sources.items()}
         self.nodes: dict[int, dict] = {}
+        self.enums: dict[str, dict] = {}
+        self.enum_members: dict[int, tuple[dict, int]] = {}
         for s in self.sources.values():
             self._index(s["ast"])
         self.read_map = {_normal(key): (key, name) for key, name in reads.items()}
@@ -132,11 +146,17 @@ class _Extractor:
         self.stack: list[int] = []
         self.used: set[str] = set()
         self.math_path: str | None = None
+        # The symbol and source path that the emitted Solidity imports for each enum type it names.
+        self.enum_imports: dict[str, str] = {}
 
     def _index(self, node) -> None:
         if isinstance(node, dict):
             if "id" in node and "nodeType" in node:
                 self.nodes[node["id"]] = node
+                if node["nodeType"] == "EnumDefinition":
+                    for index, member in enumerate(node["members"]):
+                        self.enum_members[member["id"]] = (node, index)
+                    self.enums[node["canonicalName"]] = node
             for value in node.values():
                 self._index(value)
         elif isinstance(node, list):
@@ -190,15 +210,17 @@ class _Extractor:
             self.reads[key] = Read(Var(name, ENVIRONMENT[key], input=True), written)
         reads = tuple(self.reads[key] for key in self.read_map)
         self._check_names(node, function, reads)
-        imports = ()
+        imports = []
         if self.math_path is not None:
-            imports = (f'import {{Math}} from "{self._import_of(unit, self.math_path)}";',)
+            imports.append(f'import {{Math}} from "{self._import_of(unit, self.math_path)}";')
+        for symbol, source in sorted(self.enum_imports.items()):
+            imports.append(f'import {{{symbol}}} from "{self._import_of(unit, source)}";')
         model = Model(
             contract=contract_name,
             function=function,
             reads=reads,
             callees=tuple(self.callees.values()),
-            imports=imports,
+            imports=tuple(imports),
             pragma=self._pragma(unit),
             spdx=unit.get("license") or "UNLICENSED",
         )
@@ -214,6 +236,8 @@ class _Extractor:
         if len(set(inputs)) != len(inputs):
             self.fail(node, f"two inputs have the same name: {', '.join(inputs)}")
         locals_ = [stmt.var.name for stmt in _lets(function.body)]
+        if function.result is not None:
+            locals_.append(function.result.name)
         for name in locals_:
             if name in inputs:
                 self.fail(node, f"the local {name} has the name of an input")
@@ -221,18 +245,14 @@ class _Extractor:
                 self.fail(node, f"two locals are named {name}")
 
     def _import_of(self, unit, path: str) -> str:
-        directives = [
-            n["file"] for n in unit["nodes"] if n["nodeType"] == "ImportDirective" and n["absolutePath"] == path
-        ]
-        for s in self.sources.values():
-            directives += [
-                n["file"]
-                for n in s["ast"]["nodes"]
-                if n["nodeType"] == "ImportDirective" and n["absolutePath"] == path and not n["file"].startswith(".")
-            ]
-        if not directives:
-            raise ExtractionError(f"no import of {path} that the emitted Solidity can reuse")
-        return directives[0]
+        """How the emitted Solidity imports `path`: as the target's file or another source imports it, if one does
+        without a relative path, so that the import keeps the project's remapping. Otherwise by its source unit name,
+        which forge resolves from the project root."""
+        for s in [unit, *(s["ast"] for s in self.sources.values())]:
+            for n in s["nodes"]:
+                if n["nodeType"] == "ImportDirective" and n["absolutePath"] == path and not n["file"].startswith("."):
+                    return n["file"]
+        return path
 
     def _pragma(self, unit) -> str:
         for n in unit["nodes"]:
@@ -251,19 +271,27 @@ class _Extractor:
         returns = node["returnParameters"]["parameters"]
         if len(returns) != 1:
             self.fail(node["returnParameters"], f"{name} returns {len(returns)} values, not one")
-        if returns[0]["name"]:
-            self.fail(returns[0], f"{name} has a named return")
         return_type = self._type(returns[0])
         scope = {}
+        result = None
+        if returns[0]["name"]:
+            result = Var(returns[0]["name"], return_type, src=self.src(returns[0]))
+            scope[returns[0]["id"]] = result
+            scope["return"] = result
         params = []
         for p in node["parameters"]["parameters"]:
+            if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
+                if not top:
+                    self.fail(p, f"the struct parameter {p['name']} of a called function")
+                scope[p["id"]] = ("param", p["name"])
+                continue
             var = Var(p["name"], self._type(p), input=top, src=self.src(p))
             scope[p["id"]] = var
             params.append(var)
         body = self._block(node["body"]["statements"], scope, return_type)
         if node["stateMutability"] not in ("pure", "view"):
             self.fail(node, f"{name} is {node['stateMutability']}: it can change state")
-        return Function(name, tuple(params), return_type, body, self.src(node))
+        return Function(name, tuple(params), return_type, body, self.src(node), result)
 
     def _block(self, statements, scope: dict, return_type: Type) -> tuple[Stmt, ...]:
         scope = dict(scope)
@@ -285,12 +313,15 @@ class _Extractor:
                 out.append(If(cond, then, orelse, self.src(node)))
             elif kind == "Return":
                 if node.get("expression") is None:
-                    self.fail(node, "a return without a value")
+                    if "return" not in scope:
+                        self.fail(node, "a return without a value")
+                    out.append(Return(scope["return"], self.src(node)))
+                    continue
                 value = self._expr(node["expression"], scope)
                 self._assignable(node["expression"], value.type, return_type)
                 out.append(Return(value, self.src(node)))
             elif kind == "ExpressionStatement":
-                self._expression_statement(node["expression"], scope)
+                out.append(self._expression_statement(node["expression"], scope))
             else:
                 self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
         return tuple(out)
@@ -301,43 +332,78 @@ class _Extractor:
             self.fail(node, "a tuple declaration")
         decl = declarations[0]
         init = node.get("initialValue")
-        if init is None:
-            self.fail(node, "a local declared without a value")
         type_string = decl["typeDescriptions"]["typeString"]
         if type_string.startswith("struct ") and decl.get("storageLocation") == "memory":
-            state = self._state_variable(init)
-            if state is None:
-                self.fail(init, "a memory struct that is not a copy of a storage struct")
-            scope[decl["id"]] = ("copy", state["name"])
+            prefix = self._struct_copy(init, scope) if init is not None else None
+            if prefix is None:
+                self.fail(init or node, "a memory struct that is not a copy of a storage struct")
+            scope[decl["id"]] = ("copy", prefix)
             return None
         var = Var(decl["name"], self._type(decl), src=self.src(decl))
-        value = self._expr(init, scope)
-        self._assignable(init, value.type, var.type)
+        if init is None:
+            if var.type.kind not in ("uint", "bool"):
+                self.fail(node, f"a local of type {var.type.solidity} declared without a value")
+            value = Const(False, BOOL, text="false") if var.type == BOOL else Const(0, var.type, text="0")
+        else:
+            value = self._expr(init, scope)
+            self._assignable(init, value.type, var.type)
         scope[decl["id"]] = var
         return Let(var, value, self.src(node))
 
-    def _expression_statement(self, expression, scope: dict) -> None:
+    def _struct_copy(self, init, scope: dict) -> str | None:
+        """The read map prefix of a memory copy of a storage struct: `$config`, or `$pricing[_flow]` for an entry of a
+        mapping at a parameter of the modeled function."""
+        state = self._state_variable(init)
+        if state is not None:
+            return state["name"]
+        if init["nodeType"] == "IndexAccess":
+            state = self._state_variable(init["baseExpression"])
+            index = init.get("indexExpression")
+            key = scope.get(index.get("referencedDeclaration")) if index else None
+            if state is not None and isinstance(key, Var) and key.input:
+                return f"{state['name']}[{key.name}]"
+        return None
+
+    def _expression_statement(self, expression, scope: dict) -> Assign:
         kind = expression["nodeType"]
         if kind == "Assignment":
-            root = _root(expression["leftHandSide"])
-            target = self.nodes.get(root.get("referencedDeclaration")) if root else None
-            if target is not None and target.get("stateVariable"):
-                self.fail(expression, "a storage write")
-            if root and isinstance(scope.get(root.get("referencedDeclaration")), tuple):
-                self.fail(expression, "a write to a memory struct")
-            self.fail(expression, "an assignment: locals are assigned only where they are declared")
+            return self._assignment(expression, scope)
         if kind == "FunctionCall" and expression["expression"].get("name") in ("require", "assert", "revert"):
             self.fail(expression, f"{expression['expression']['name']} is not supported")
         if kind == "UnaryOperation" and expression["operator"] in ("++", "--", "delete"):
             self.fail(expression, f"{expression['operator']} is not supported")
         self.fail(expression, "an expression statement")
 
+    def _assignment(self, expression, scope: dict) -> Assign:
+        lhs = expression["leftHandSide"]
+        root = _root(lhs)
+        target = self.nodes.get(root.get("referencedDeclaration")) if root else None
+        if target is not None and target.get("stateVariable"):
+            self.fail(expression, "a storage write")
+        if root and isinstance(scope.get(root.get("referencedDeclaration")), tuple):
+            self.fail(expression, "a write to a memory struct")
+        var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
+        if not isinstance(var, Var):
+            self.fail(expression, f"an assignment to {self.text(lhs)}")
+        if var.input:
+            self.fail(expression, f"an assignment to the input {var.name}")
+        operator = expression["operator"]
+        if operator not in ASSIGNMENTS:
+            self.fail(expression, f"the assignment operator {operator}")
+        rhs = expression["rightHandSide"]
+        value = self._expr(rhs, scope)
+        if ASSIGNMENTS[operator] is not None:
+            value = self._op(expression, ASSIGNMENTS[operator], var, value)
+        self._assignable(rhs, value.type, var.type)
+        return Assign(var, value, self.src(expression))
+
     def _assignable(self, node, source: Type, target: Type) -> None:
         if source == target or (source.kind == "literal" and target.kind == "uint"):
             return
         if source.kind == "uint" and target.kind == "uint" and source.bits <= target.bits:
             return
-        self.fail(node, f"a {source.kind} value where {target.solidity} is expected")
+        given = "literal" if source.kind == "literal" else source.solidity
+        self.fail(node, f"a {given} value where {target.solidity} is expected")
 
     # Expressions.
 
@@ -388,7 +454,9 @@ class _Extractor:
         self.fail(node, f"a {kind} expression is not supported")
 
     def _make(self, node, op: str, *operands, scope: dict) -> Expr:
-        args = [self._expr(operand, scope) for operand in operands]
+        return self._op(node, op, *(self._expr(operand, scope) for operand in operands))
+
+    def _op(self, node, op: str, *args: Expr) -> Expr:
         try:
             return dataclasses.replace(ops.make(op, *args), src=self.src(node))
         except TypeError as err:
@@ -409,7 +477,8 @@ class _Extractor:
             target = scope.get(base.get("referencedDeclaration"))
             state = self.nodes.get(base.get("referencedDeclaration"))
             if isinstance(target, tuple):
-                key, what = f"{target[1]}.{node['memberName']}", "a storage field"
+                what = "a storage field" if target[0] == "copy" else "a field of the struct parameter"
+                key = f"{target[1]}.{node['memberName']}"
             elif state is not None and state.get("stateVariable") and state.get("mutability") != "constant":
                 key, what = f"{state['name']}.{node['memberName']}", "a storage field"
             elif base["name"] in ("tx", "block", "msg") and base.get("referencedDeclaration", 0) < 0:
@@ -433,8 +502,13 @@ class _Extractor:
         return self.reads[_normal(key)].var
 
     def _named(self, node) -> Const:
-        """A constant, named by an identifier or a member access such as `OxideConstants.MAX_PRIORITY_FEE_WEI`."""
+        """A constant, named by an identifier or a member access such as `OxideConstants.MAX_PRIORITY_FEE_WEI`, or an
+        enum member such as `SIPABase.Intent.Deposit`, which the emitted Solidity names by its full name."""
         decl = self.nodes.get(node.get("referencedDeclaration"))
+        if decl is not None and decl["nodeType"] == "EnumValue":
+            definition, index = self.enum_members[decl["id"]]
+            type_ = self._enum(definition)
+            return Const(index, type_, text=f"{type_.name}.{decl['name']}", src=self.src(node))
         if decl is None or decl["nodeType"] != "VariableDeclaration" or decl.get("mutability") != "constant":
             self.fail(node, f"{self.text(node)} is not a constant, a local, a parameter or a read")
         return self._constant(decl)
@@ -449,8 +523,18 @@ class _Extractor:
         elif value["nodeType"] in ("Identifier", "MemberAccess"):
             other = self._named(value)
             number, text = other.value, other.text
+        elif (
+            value["nodeType"] == "FunctionCall"
+            and value["kind"] == "typeConversion"
+            and self._type(decl) == ADDRESS
+            and len(value["arguments"]) == 1
+            and value["arguments"][0]["nodeType"] == "Literal"
+            and value["arguments"][0]["kind"] == "number"
+        ):
+            literal = value["arguments"][0]
+            number, text = self._number(literal), self.text(literal)
         else:
-            self.fail(value, f"the constant {decl['name']} is not a literal or another constant")
+            self.fail(value, f"the constant {decl['name']} is not a literal, an address or another constant")
         return Const(number, self._type(decl), text=text, name=decl["name"], src=self.src(decl))
 
     def _number(self, node) -> int:
@@ -467,9 +551,22 @@ class _Extractor:
             self.fail(node, f"{self.text(node)} is not an unsigned integer")
         return int(number)
 
+    def _conversion(self, node, scope: dict) -> Expr:
+        """`address(x)` of a contract, an interface or an address is x, and of a number literal is that address. Any
+        other type conversion is an error."""
+        if self._type(node) == ADDRESS and len(node["arguments"]) == 1:
+            arg = node["arguments"][0]
+            if arg["nodeType"] == "Literal" and arg["kind"] == "number":
+                return Const(self._number(arg), ADDRESS, text=self.text(node), src=self.src(node))
+            if not arg.get("typeDescriptions", {}).get("typeString", "").startswith("int_const"):
+                value = self._expr(arg, scope)
+                if value.type == ADDRESS:
+                    return value
+        self.fail(node, f"a type conversion: {self.text(node)}")
+
     def _call(self, node, scope: dict) -> Expr:
         if node["kind"] == "typeConversion":
-            self.fail(node, f"a type conversion: {self.text(node)}")
+            return self._conversion(node, scope)
         if node["kind"] != "functionCall":
             self.fail(node, f"a {node['kind']}")
         callee = node["expression"]
@@ -496,8 +593,8 @@ class _Extractor:
         )
         if not internal:
             self.fail(node, f"an external call that the read map does not name: {self.text(node)}")
-        args = tuple(self._expr(arg, scope) for arg in node["arguments"])
         function = self._callee(decl, node)
+        args = tuple(self._expr(arg, scope) for arg in node["arguments"])
         for arg, param, arg_node in zip(args, function.params, node["arguments"], strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
@@ -532,7 +629,23 @@ class _Extractor:
             return uint(int(match.group(1)))
         if re.fullmatch(r"int\d*", type_string):
             self.fail(node, "a signed integer")
+        if type_string in ("address", "address payable") or re.fullmatch(r"contract \w+", type_string):
+            return ADDRESS
+        match = re.fullmatch(r"enum ([\w.]+)", type_string)
+        if match and match.group(1) in self.enums:
+            return self._enum(self.enums[match.group(1)])
         self.fail(node, f"the type {type_string} is not supported")
+
+    def _enum(self, definition) -> Type:
+        """The enum type, and the import of the contract or file-level enum that declares it, for the emitted
+        Solidity."""
+        name = definition["canonicalName"]
+        symbol = name.partition(".")[0]
+        path = self._place(definition)[0]
+        if self.enum_imports.setdefault(symbol, path) != path:
+            raise ExtractionError(f"two enums are declared under the name {symbol}")
+        self.used.add(path)
+        return enum(name, len(definition["members"]))
 
 
 _STATEMENT_ERRORS = {

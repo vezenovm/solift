@@ -80,7 +80,7 @@ contract OutOfScope {
 
   function assignment(uint256 _a) internal pure returns (uint256) {
     uint256 x = _a;
-    x = x + 1;
+    _a = x + 1;
     return x;
   }
 
@@ -89,11 +89,44 @@ contract OutOfScope {
     return _a;
   }
 
-  function namedReturn(uint256 _a) internal pure returns (uint256 r) {
-    r = _a;
+  function structParameterOfACallee(uint256 _a) internal pure returns (uint256) {
+    return _field(Pair({a: _a, b: _a}));
   }
 
   function readsTotal() internal view returns (uint256) {
     return $total;
+  }
+
+  struct Pair {
+    uint256 a;
+    uint256 b;
+  }
+
+  enum Side {
+    Left,
+    Right
+  }
+
+  function _field(Pair memory _pair) internal pure returns (uint256) {
+    return _pair.a;
+  }
+
+  function moduloAssignment(uint256 _a) internal pure returns (uint256) {
+    uint256 x = _a;
+    x %= 3;
+    return x;
+  }
+
+  function enumCast(Side _side) internal pure returns (uint256) {
+    return uint8(_side);
+  }
+
+  function enumOrder(Side _side) internal pure returns (bool) {
+    return _side < Side.Right;
+  }
+
+  function addressLocalWithoutValue(address _a) internal pure returns (bool) {
+    address x;
+    return x == _a;
   }
 }

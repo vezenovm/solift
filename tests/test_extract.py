@@ -162,9 +162,13 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("narrowArithmetic", {}, r"OutOfScope.sol:67:12: add at uint128: arithmetic narrower than uint256"),
         ("mathMax", {}, r"Math.max with 2 arguments has no lemma"),
         ("recursion", {}, r"recursion calls itself"),
-        ("assignment", {}, r"OutOfScope.sol:83:5: an assignment"),
+        ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
         ("requireCall", {}, r"require is not supported"),
-        ("namedReturn", {}, r"namedReturn has a named return"),
+        ("structParameterOfACallee", {}, r"the struct parameter _pair of a called function"),
+        ("moduloAssignment", {}, r"mod is not in the operator table"),
+        ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
+        ("enumOrder", {}, r"lt takes unsigned operands, not enum, enum"),
+        ("addressLocalWithoutValue", {}, r"a local of type address declared without a value"),
         (
             "readsTotal",
             {"$total": "total", "TOKEN.balanceOf(address(this))": "pot"},
@@ -183,3 +187,88 @@ def test_an_environment_field_in_the_read_map_is_an_input_even_where_the_functio
     assert [(r.var.name, r.source) for r in model.reads] == [("txGasPrice", "tx.gasprice")]
     with pytest.raises(ExtractionError, match="the read map names \\$floor, which Quoter._withMargin does not read"):
         extract(build, f"{QUOTER}._withMargin", {"$floor": "floor"})
+
+
+PRICER = "tests/fixtures/contracts/Pricer.sol:Pricer"
+OTHER = 0xA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48
+PRICED_READS = {
+    "_meter.used": "used",
+    "_meter.fresh": "fresh",
+    "_meter.paid": "paid",
+    "TOKEN": "token",
+    "TOKEN.balanceOf(tx.origin)": "relayerBalance",
+}
+
+
+def priced_reference(_kind, _token, used, fresh, paid, token, relayerBalance):
+    """Pricer._priced in plain Python integers. None means it reverts."""
+    base = {1: 1000, 2: 9000}.get(_kind, 0)
+    ceiling = 0 if base == 0 else base if _token == token else base + 700 if _token == OTHER else 0
+    if not paid or ceiling == 0:
+        return 0
+    gross = used + 21_000
+    if gross >= 2**256:
+        return None
+    if relayerBalance == 0:
+        gross, ceiling = gross + 5000, ceiling + 5000
+        if gross >= 2**256:
+            return None
+    refund = min((300 if _token == token else 700) + (100 if fresh else 200), gross // 5)
+    return min(gross - refund, ceiling)
+
+
+def test_the_pricer_model_reads_struct_fields_an_immutable_address_and_an_enum(build):
+    model = extract(build, f"{PRICER}._priced", PRICED_READS).model
+    assert [(v.name, v.type.solidity) for v in model.inputs] == [
+        ("_kind", "Kinds.Kind"),
+        ("_token", "address"),
+        ("used", "uint256"),
+        ("fresh", "bool"),
+        ("paid", "bool"),
+        ("token", "address"),
+        ("relayerBalance", "uint256"),
+    ]
+    assert model.function.params[0].type.bound == 4
+    assert [f.name for f in model.callees] == ["_ceiling", "_refund"]
+    assert model.callees[1].result.name == "refund"
+    text = source(model)
+    assert 'import {Kinds} from "tests/fixtures/contracts/Kinds.sol";' in text
+    assert "address internal constant OTHER = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;" in text
+    assert "      gross = gross + EXTRA;\n      ceiling = ceiling + EXTRA;\n" in text
+    assert "function _refund(Inputs memory i, address _token) internal pure returns (uint256 refund) {" in text
+
+
+def test_the_pricer_terms_give_the_reference_result(build):
+    model = extract(build, f"{PRICER}._priced", PRICED_READS).model
+    rng = random.Random(2)
+    token = 0xBEEF
+    outcomes = set()
+    for _ in range(300):
+        values = {
+            "_kind": rng.randrange(4),
+            "_token": rng.choice([token, OTHER, 0xD00D]),
+            "used": rng.choice([0, 1, 2**64, 2**256 - 21_001, 2**256 - 21_000, 2**256 - 1, rng.getrandbits(40)]),
+            "fresh": rng.random() < 0.5,
+            "paid": rng.random() < 0.8,
+            "token": token,
+            "relayerBalance": rng.choice([0, 1, rng.getrandbits(80)]),
+        }
+        expected = priced_reference(**values)
+        reverts, value, _ = evaluate(model, values)
+        assert reverts == (expected is None), values
+        if not reverts:
+            assert value == expected, values
+        outcomes.add("reverts" if reverts else "pays" if value else "zero")
+    assert outcomes == {"pays", "zero", "reverts"}
+
+
+def test_a_quote_reads_a_mapping_entry_through_a_copy_and_cuts_an_internal_call(build):
+    reads = {"$rates[_kind].floor": "floor", "$rates[_kind].cap": "cap", "_price()": "price"}
+    model = extract(build, f"{PRICER}.quoteFor", reads).model
+    assert [r.source for r in model.reads] == list(reads)
+    assert [f.name for f in model.callees] == ["units"]
+    for kind, units in ((0, 1), (1, 3), (2, 7), (3, 1)):
+        values = {"_kind": kind, "floor": 5, "cap": 2**200, "price": 10}
+        assert evaluate(model, values)[1] == max(units * 10 - 5, 0)
+    with pytest.raises(ExtractionError, match=r"reads a storage field \$rates\[_kind\].cap"):
+        extract(build, f"{PRICER}.quoteFor", {"$rates[_kind].floor": "floor", "_price()": "price"})
