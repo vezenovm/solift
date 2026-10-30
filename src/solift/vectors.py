@@ -2,12 +2,12 @@
 
 The link proves the emitted Solidity equal to the bytecode, and Halmos proves the rows of the operator table. Nothing
 proves that smt.py composes the rows as the Solidity does: the vectors check that on samples. For each comparison and
-each min of the model, z3 finds inputs that do not revert where the two sides are equal and one apart, with inputs that
-pay first, so that an early return does not skip the comparison. Random inputs then cover each outcome: pays (a
-positive or true result), zero, and reverts. z3 finds an input for an outcome that no random input reaches, such as a
-revert that only inputs near 2**256 reach. An outcome or a boundary that z3 proves no input reaches is recorded as
-unreachable, and an "unknown" from z3 is an error. A generated forge test runs the emitted Solidity on each vector and
-compares whether it reverts, and its result, with the z3 terms.
+each min of the model, z3 finds inputs that do not revert, under which the comparison runs, where the two sides are
+equal and one apart, with inputs that pay first. Random inputs then cover each outcome: pays (a positive or true
+result), zero, and reverts. z3 finds an input for an outcome that no random input reaches, such as a revert that only
+inputs near 2**256 reach. An outcome or a boundary that z3 proves no input reaches is recorded as unreachable, and an
+"unknown" from z3 is an error. A generated forge test runs the emitted Solidity on each vector and compares whether it
+reverts, and its result, with the z3 terms.
 """
 
 from __future__ import annotations
@@ -119,18 +119,19 @@ def boundary(model: Model, built: _Terms | None = None) -> list[Vector]:
 
 
 def _boundaries(model: Model, built: _Terms | None = None) -> tuple[list[Vector], int]:
-    """The vectors at the boundary of each comparison, and the number of boundaries that z3 proves no input reaches."""
+    """The vectors at the boundary of each comparison, where the comparison runs, and the number of boundaries that z3
+    proves no input reaches."""
     built = built or _Terms(model)
     inputs, t = built.inputs, built.terms
     pays = t.value if z3.is_bool(t.value) else t.value > 0
     found, unreachable = [], 0
-    for a, b in t.comparisons:
+    for runs, a, b in t.comparisons:
         for offset in (-1, 0, 1):
             undecided = False
             for wanted in (pays, z3.BoolVal(True)):
                 s = z3.Solver()
                 s.set("timeout", BOUNDARY_TIMEOUT_MS)
-                s.add(domain(model, inputs), z3.Not(t.reverts), a == b + offset, wanted)
+                s.add(domain(model, inputs), z3.Not(t.reverts), runs, a == b + offset, wanted)
                 r = s.check()
                 if r == z3.sat:
                     found.append(built.evaluate(_values(model, inputs, s.model())))

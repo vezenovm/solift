@@ -3,7 +3,7 @@ import z3
 
 from examples.quoter.spec import SPEC
 from solift import ops, solvers
-from solift.ir import UINT256, Assign, Call, Const, Function, Let, Model, Return, Var
+from solift.ir import UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var
 from solift.theorem import Terms, TheoremError, prove, theorem
 from tests.models import quote
 
@@ -308,3 +308,42 @@ def test_a_theorem_on_a_callee_names_it_and_its_arguments_count_for_the_lemma_do
         "halves-a-uint128": ("established", ["halve"]),
         "halves-minus-one": ("not-established", ["halve"]),
     }
+
+
+def test_a_local_on_a_path_that_skips_its_mulDiv_does_not_establish_the_lemma_domain():
+    """if (a >= 2**128) return 0; uint256 v = Math.mulDiv(a, 1, 2); return v: v is a term also where its statement does
+    not run, so a theorem that reads it rests on mulDiv at a >= 2**128."""
+    a, v = Var("a", input=True), Var("v")
+    body = (
+        If(ops.make("ge", a, Const(2**128)), (Return(Const(0)),)),
+        Let(v, ops.make("mulDiv", a, Const(1), Const(2))),
+        Return(v),
+    )
+    q = Terms(Model("C", Function("f", (a,), UINT256, body)))
+    goals = {
+        "result": lambda q: q.result >= 0,
+        "declared": lambda q: q.declared("v") >= 0,
+        "attribute": lambda q: q.v >= 0,
+        "locals": lambda q: q.locals["v"] >= 0,
+        "at locals": lambda q: q.at(a=q.free("b")).locals["v"] >= 0,
+    }
+    found = {}
+    for name, goal in goals.items():
+        goal.__doc__ = f"the {name} is not negative"
+        found[name] = prove(theorem(witness=lambda q: True)(goal), q).lemma_domain
+    assert found == {
+        "result": "established",
+        "declared": "not-established",
+        "attribute": "not-established",
+        "locals": "not-established",
+        "at locals": "not-established",
+    }
+
+
+def test_given_reads_the_locals_as_a_mapping(q):
+    @theorem(assume=("no-revert",), given=lambda h: h.locals["cost"] >= 0, witness=lambda q: q.result > 0)
+    def capped(q):
+        """the quote is at most the cap"""
+        return q.result <= q.cap
+
+    assert prove(capped, q).verdict == "PROVED"

@@ -5,7 +5,7 @@ import pytest
 from examples.quoter.spec import READS as QUOTER_READS
 from solift import forge
 from solift.discover import _propose, as_json, discover, report, skeleton
-from solift.extract import extract
+from solift.extract import ExtractionError, extract
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTE = "tests/fixtures/contracts/Quoter.sol:Quoter._quote"
@@ -69,3 +69,14 @@ def test_a_proposed_name_is_the_last_name_of_the_read_and_avoids_the_names_in_us
     assert _propose("TOKEN", set()) == "token"
     assert _propose("block.timestamp", set()) == "blockTimestamp"
     assert _propose("block.timestamp", {"blockTimestamp"}) == "blockTimestamp2"
+
+
+def test_the_given_reads_stay_in_the_read_map_and_a_reserved_word_is_never_a_name(build):
+    found = discover(build, QUOTE, reads=QUOTER_READS)
+    assert found.complete and found.reads == []
+    assert found.read_map == QUOTER_READS
+    assert [r["what"] for r in as_json(found)["reads"]] == ["given"] * 6
+    assert _propose("__type", set()) == "type_"
+    assert _propose("$config.uint", set()) == "uint_"
+    with pytest.raises(ExtractionError, match="the input name type of \\$floor is a word that Solidity reserves"):
+        extract(build, QUOTE, {**QUOTER_READS, "$floor": "type"})

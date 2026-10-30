@@ -71,6 +71,7 @@ from solift.ir import (
     Type,
     Var,
     enum,
+    reserved,
     uint,
     walk,
 )
@@ -306,6 +307,9 @@ class _Extractor:
         for name in inputs:
             if not IDENTIFIER.fullmatch(name) or name == "i":
                 self.fail(node, f"{name} is not a valid input name (and i names the inputs struct)")
+        for read in reads:
+            if reserved(read.var.name):
+                self.fail(node, f"the input name {read.var.name} of {read.source} is a word that Solidity reserves")
         if len(set(inputs)) != len(inputs):
             self.fail(node, f"two inputs have the same name: {', '.join(inputs)}")
         locals_ = [stmt.var.name for stmt in _lets(function.body)]

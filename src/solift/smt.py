@@ -25,15 +25,18 @@ TRUE = z3.BoolVal(True)
 class Terms:
     """`locals` holds the value of each local of the modeled function, and of its named return variable, where the
     function returns. `declared` holds each local's value where it is declared. A local that a return does not reach
-    takes there the value of a return that does. `comparisons` holds the two operand values of each comparison and
-    each min, for the boundary vectors."""
+    takes there the value of a return that does. `comparisons` holds the condition under which each comparison and each
+    min runs and its two operand values, for the boundary vectors. `anywhere` holds where an operation leaves its lemma
+    domain whether or not it runs: a local's value is a term also where its statement does not run, so a theorem that
+    reads a local rests on the lemma there too."""
 
     value: z3.ExprRef
     reverts: z3.BoolRef
     outside: z3.BoolRef
     locals: dict[str, z3.ExprRef]
     declared: dict[str, z3.ExprRef] = field(default_factory=dict)
-    comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = field(default_factory=list)
+    comparisons: list[tuple[z3.BoolRef, z3.ExprRef, z3.ExprRef]] = field(default_factory=list)
+    anywhere: z3.BoolRef = FALSE
 
 
 def symbols(model: Model) -> dict[str, z3.ExprRef]:
@@ -50,7 +53,7 @@ def domain(model: Model, inputs: dict[str, z3.ExprRef]) -> z3.BoolRef:
 def terms(model: Model, inputs: dict[str, z3.ExprRef]) -> Terms:
     run = _Run(model, inputs)
     value, reverts, outside = run.call(model.function, {}, top=True)
-    return Terms(value, reverts, outside, run.locals, run.declared, run.comparisons)
+    return Terms(value, reverts, outside, run.locals, run.declared, run.comparisons, _any(run.anywhere))
 
 
 def terms_of_call(model: Model, function: Function, inputs: dict[str, z3.ExprRef], args) -> Terms:
@@ -104,8 +107,13 @@ class _Run:
         self.functions = {f.name: f for f in model.callees}
         self.locals: dict[str, z3.ExprRef] = {}
         self.declared: dict[str, z3.ExprRef] = {}
-        self.comparisons: list[tuple[z3.ExprRef, z3.ExprRef]] = []
+        self.comparisons: list[tuple[z3.BoolRef, z3.ExprRef, z3.ExprRef]] = []
+        self.anywhere: list[z3.BoolRef] = []
         self.stack: list[str] = []
+        # The condition under which the expression being evaluated runs, from the modeled function's start, and the
+        # condition at the start of each function on the stack.
+        self.guard: z3.BoolRef = TRUE
+        self.entries: list[z3.BoolRef] = []
 
     def call(self, function: Function, env: dict, top: bool = False):
         if function.name in self.stack:
@@ -115,7 +123,9 @@ class _Run:
         env = dict(env)
         if function.result is not None:
             env[function.result.name] = _zero(function.result)
+        self.entries.append(self.guard)
         reached, env = self.block(function.body, env, TRUE, body, top)
+        self.guard = self.entries.pop()
         self.stack.pop()
         returns = body.returns
         if not z3.is_false(reached):
@@ -137,6 +147,7 @@ class _Run:
         for stmt in stmts:
             if z3.is_false(reached):
                 break
+            self.guard = _and(self.entries[-1], reached)
             if isinstance(stmt, Let | Assign):
                 if isinstance(stmt, Let) and stmt.var.name in env:
                     raise ValueError(f"local {stmt.var.name} shadows a variable of the same name")
@@ -175,6 +186,15 @@ class _Run:
                 raise TypeError(f"no statement {stmt!r}")
         return reached, env
 
+    def guarded(self, condition: z3.BoolRef, e: Expr, env: dict):
+        """The expression, evaluated where it runs only under `condition`, such as a branch of a ternary."""
+        outer = self.guard
+        self.guard = _and(outer, condition)
+        try:
+            return self.expr(e, env)
+        finally:
+            self.guard = outer
+
     def expr(self, e: Expr, env: dict):
         if isinstance(e, Var):
             return (self.inputs if e.input else env)[e.name], FALSE, FALSE
@@ -188,18 +208,23 @@ class _Run:
         if not isinstance(e, Op):
             raise TypeError(f"no expression {e!r}")
         if e.op == "ite":
-            (c, rc, oc), (a, ra, oa), (b, rb, ob) = (self.expr(arg, env) for arg in e.args)
+            c, rc, oc = self.expr(e.args[0], env)
+            a, ra, oa = self.guarded(c, e.args[1], env)
+            b, rb, ob = self.guarded(z3.Not(c), e.args[2], env)
             return z3.If(c, a, b), _or(rc, z3.If(c, ra, rb)), _or(oc, z3.If(c, oa, ob))
         if e.op in ("and", "or"):
-            (a, ra, oa), (b, rb, ob) = (self.expr(arg, env) for arg in e.args)
+            a, ra, oa = self.expr(e.args[0], env)
             runs_b = a if e.op == "and" else z3.Not(a)
+            b, rb, ob = self.guarded(runs_b, e.args[1], env)
             value = z3.And(a, b) if e.op == "and" else z3.Or(a, b)
             return value, _or(ra, _and(runs_b, rb)), _or(oa, _and(runs_b, ob))
         parts = [self.expr(arg, env) for arg in e.args]
         values = [p[0] for p in parts]
         operator = TABLE[e.op]
         if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
-            self.comparisons.append((values[0], values[1]))
+            self.comparisons.append((self.guard, values[0], values[1]))
+        if operator.outside:
+            self.anywhere.append(operator.outside(*values))
         reverts = [p[1] for p in parts] + ([operator.reverts(*values)] if operator.reverts else [])
         outside = [p[2] for p in parts] + ([operator.outside(*values)] if operator.outside else [])
         return operator.value(*values), _any(reverts), _any(outside)

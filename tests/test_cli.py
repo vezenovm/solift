@@ -4,11 +4,13 @@ import pathlib
 import sys
 
 import pytest
+import z3
 
 from examples.quoter.spec import SPEC
+from solift import forge
 from solift.cli import SpecError, entrypoint, load_specs
 from solift.link import Harness
-from solift.run import _prepared, run
+from solift.run import _prepared, load, run
 from solift.workspace import Project, Workspace, WorkspaceError
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -140,3 +142,28 @@ def test_the_standalone_vault_example_runs_from_its_own_directory(tmp_path, monk
     }
     assert record["project"]["link"] == ["foundry.toml", "lib"] and record["project"]["copy"] == ["src"]
     assert not list((ROOT / "examples" / "vault").rglob("__pycache__"))
+
+
+def test_a_missing_added_file_fails_the_run_with_a_record(tmp_path):
+    project = dataclasses.replace(SPEC.project, add={"tests/fixtures/test/Gone.sol": tmp_path / "Gone.sol"})
+    record = run(dataclasses.replace(SPEC, project=project), Workspace(tmp_path / "work"), link=False)
+    assert not record["ok"] and record["failures"][0].startswith("build: ") and "Gone.sol" in record["failures"][0]
+
+
+def test_a_foundry_config_that_forge_cannot_read_is_a_build_error(tmp_path):
+    (tmp_path / "foundry.toml").write_text("[profile.default\nsrc = \n")
+    with pytest.raises(forge.BuildError, match="config --json"):
+        Project.foundry(root=tmp_path).resolve()
+
+
+def test_load_adds_a_harness_that_holds_the_target(tmp_path):
+    harness = tmp_path / "Doubler.sol"
+    harness.write_text(
+        "// SPDX-License-Identifier: Apache-2.0\npragma solidity ^0.8.27;\n\ncontract Doubler {\n"
+        "  function twice(uint256 _x) external pure returns (uint256) {\n    return _x * 2;\n  }\n}\n"
+    )
+    at = "tests/fixtures/test/solift/harness/Doubler.sol"
+    link = dataclasses.replace(SPEC.link, setup=Harness(harness, "Doubler"))
+    spec = dataclasses.replace(SPEC, name="doubler", target=f"{at}:Doubler.twice", reads={}, link=link, theorems=[])
+    (q,) = load([spec], Workspace(tmp_path / "work")).values()
+    assert z3.simplify(q.at(_x=21).value).as_long() == 42

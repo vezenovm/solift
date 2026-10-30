@@ -121,11 +121,11 @@ def run(
     record = {
         "schema": SCHEMA,
         "started": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-        "project": _project(project),
+        "project": {"root": str(project.root)},
         "replaced": sorted(replace or {}),
         "versions": {},
         "engine": {"name": engine.name, "options": engine.options()},
-        "spec files": _spec_files(specs),
+        "spec files": {},
         "specs": [],
         "failures": [],
     }
@@ -138,6 +138,7 @@ def run(
     record["specs"] = [c.record for c in checked]
     try:
         record["versions"] = _tool_versions(engine)
+        record["spec files"] = _spec_files(specs)
         project, prepared = _prepared(specs)
         for c, spec in zip(checked, prepared, strict=True):
             c.spec = spec
@@ -297,7 +298,7 @@ class _Clock:
 def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     """The terms of each spec's model, by spec name, from one build of the project: for checks that use the models
     without a run, such as a check of each deployed configuration. Raises the first extraction error."""
-    project = specs[0].project.resolve()
+    project, specs = _prepared(list(specs))
     guard = project.guard(workspace)
     root = project.overlay(workspace)
     out, cache = workspace.fresh("ast-out"), workspace.fresh("ast-cache")

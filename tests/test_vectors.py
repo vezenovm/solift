@@ -70,6 +70,18 @@ def test_a_comparison_boundary_that_no_input_reaches_is_unreachable():
     assert samples.outcomes == {"pays": "reached", "zero": "unreachable", "reverts": "unreachable"}
 
 
+def test_a_boundary_counts_only_where_its_comparison_runs():
+    """if (a < 10) return 1; return a < 5 ? 1 : 2: the second comparison runs only at a >= 10, so its three boundaries
+    are unreachable."""
+    a = Var("a", input=True)
+    body = (
+        If(ops.make("lt", a, Const(10)), (Return(Const(1)),)),
+        Return(ops.make("ite", ops.make("lt", a, Const(5)), Const(1), Const(2))),
+    )
+    samples = sample(Model("C", Function("f", (a,), UINT256, body)))
+    assert samples.boundaries == {"reached": 3, "unreachable": 3}
+
+
 def test_z3_finds_an_input_for_an_outcome_that_no_random_input_reaches():
     """if (a != 123456789) return 1; return a + (2**256 - 123456789): only a = 123456789 reverts."""
     a = Var("a", input=True)

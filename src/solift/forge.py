@@ -47,10 +47,11 @@ def config(root: pathlib.Path, profile: str | None = None) -> dict:
     """The project's foundry configuration under the profile, as `forge config --json` gives it. It writes nothing."""
     command = [binary(), "config", "--json", "--root", str(root)]
     result = subprocess.run(command, env=_clean(profile), capture_output=True, text=True, check=False)
-    try:
-        return json.loads(result.stdout) if not result.returncode else None
-    except json.JSONDecodeError:
-        pass
+    if not result.returncode:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            pass
     raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
 
 

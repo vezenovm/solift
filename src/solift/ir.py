@@ -8,7 +8,27 @@ pure Solidity. ops.py holds the operator table that ties the two together and ch
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+# The keywords and reserved words of Solidity, its global names, and the elementary type names, none of which an input
+# of the emitted Solidity can take.
+KEYWORDS = frozenset(
+    """abstract after alias anonymous apply assembly auto break byte case catch constant constructor continue contract
+    copyof default define delete do else emit enum error event external fallback false final for function global
+    immutable implements import in indexed inline interface internal is let library macro mapping match memory modifier
+    mutable new null of override partial payable pragma private promise public pure receive reference relocatable
+    return returns revert sealed sizeof static storage struct supports switch this true try type typedef typeof
+    unchecked unicode using var view virtual while if bool string address abi block msg tx now super gasleft blockhash
+    blobhash keccak256 sha256 ripemd160 ecrecover addmod mulmod selfdestruct require assert wei gwei ether seconds
+    minutes hours days weeks years""".split()
+)
+ELEMENTARY = re.compile(r"(u?int|bytes|u?fixed)(\d+(x\d+)?)?")
+
+
+def reserved(name: str) -> bool:
+    """Whether Solidity reserves the name, so that the emitted Solidity cannot use it as an identifier."""
+    return name in KEYWORDS or ELEMENTARY.fullmatch(name) is not None
 
 
 @dataclass(frozen=True)

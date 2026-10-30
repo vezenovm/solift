@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 
 from solift.extract import ExtractionError, Missing, declared, extract
-from solift.ir import Effect, Model
+from solift.ir import Effect, Model, reserved
 from solift.link import RESERVED
 
 LIMIT = 200
@@ -44,10 +44,12 @@ class Discovery:
     complete: bool = False
     diagnostic: str = ""
     model: Model | None = None
+    given: dict[str, str] = field(default_factory=dict)
 
     @property
     def read_map(self) -> dict[str, str]:
-        return {missing.key: name for missing, name in self.reads}
+        """The given reads, then the reads that the discovery found."""
+        return {**self.given, **{missing.key: name for missing, name in self.reads}}
 
     @property
     def cuts(self) -> list[str]:
@@ -60,7 +62,7 @@ class Discovery:
 
 def discover(build_infos: list[dict], target: str, reads: dict[str, str] | None = None) -> Discovery:
     """The reads of the target, starting from `reads`."""
-    found = Discovery(target)
+    found = Discovery(target, given=dict(reads or {}))
     taken = declared(build_infos, target) | RESERVED | set((reads or {}).values())
     read_map = dict(reads or {})
     for _ in range(LIMIT):
@@ -96,6 +98,7 @@ def _propose(key: str, taken: set[str]) -> str:
         names = [n.lstrip("$_") for n in re.findall(r"[A-Za-z_$][\w$]*", text)]
         names = [n.lower() if n.isupper() else n for n in names if n] or ["value"]
         candidates = [names[-1], *([_camel(names[-2:])] if len(names) > 1 else [])]
+    candidates = [f"{c}_" if reserved(c) else c for c in candidates]
     for name in candidates:
         if name not in taken:
             return name
@@ -112,6 +115,7 @@ def _camel(names: list[str]) -> str:
 def skeleton(found: Discovery, function: str) -> str:
     """The read map and a link for the spec, with placeholders where only the user knows the harness."""
     lines = ["reads={"]
+    lines += [f"    {key!r}: {name!r},  # given" for key, name in found.given.items()]
     for missing, name in found.reads:
         lines.append(f"    {missing.key!r}: {name!r},  # {missing.what}, {missing.src}")
     lines.append("},")
@@ -159,8 +163,14 @@ def as_json(found: Discovery) -> dict:
         "complete": found.complete,
         "diagnostic": found.diagnostic,
         "reads": [
-            {"key": m.key, "name": name, "what": m.what, "at": str(m.src), "type": types.get(m.key)}
-            for m, name in found.reads
+            *(
+                {"key": key, "name": name, "what": "given", "at": None, "type": types.get(key)}
+                for key, name in found.given.items()
+            ),
+            *(
+                {"key": m.key, "name": name, "what": m.what, "at": str(m.src), "type": types.get(m.key)}
+                for m, name in found.reads
+            ),
         ],
         "cuts": found.cuts,
         "effects": [{"kind": e.kind, "place": e.place, "source": e.source, "at": str(e.src)} for e in found.effects],

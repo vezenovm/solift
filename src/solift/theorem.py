@@ -78,7 +78,7 @@ class Terms:
         self.inputs = symbols(model)
         t = terms(model, self.inputs)
         self._value, self._reverts, self._outside, self._locals = t.value, t.reverts, t.outside, t.locals
-        self._declared = t.declared
+        self._declared, self._anywhere = t.declared, t.anywhere
         self._lemma = _uses_lemma(model, model.function)
         self.domain = domain(model, self.inputs)
         self.free_variables: dict[str, z3.ExprRef] = {}
@@ -94,11 +94,17 @@ class Terms:
         return view
 
     def _evaluated(self, what: str, lemma: bool, obligation: z3.BoolRef) -> None:
-        if not any(e.what == what == "model" and e.witness == self.witnessing for e in self.evaluations):
+        once = what in ("model", "model locals")
+        if not (once and any(e.what == what and e.witness == self.witnessing for e in self.evaluations)):
             self.evaluations.append(Evaluation(what, lemma, obligation, self.witnessing))
 
     def _model(self) -> None:
         self._evaluated("model", self._lemma, self._outside)
+
+    def _model_locals(self) -> None:
+        """A local's value is a term also on the paths where its statement does not run, so a theorem that reads one
+        rests on the lemma wherever the function's operations leave its domain."""
+        self._evaluated("model locals", self._lemma, self._anywhere)
 
     @property
     def result(self) -> z3.ExprRef:
@@ -117,8 +123,7 @@ class Terms:
 
     @property
     def locals(self) -> dict[str, z3.ExprRef]:
-        self._model()
-        return self._locals
+        return _Locals(self._locals, self._model_locals)
 
     def __getattr__(self, name: str) -> z3.ExprRef:
         names = self.__dict__
@@ -127,7 +132,7 @@ class Terms:
         if name in names["inputs"]:
             return names["inputs"][name]
         if name in names["_locals"]:
-            self._model()
+            self._model_locals()
             return names["_locals"][name]
         if name in names["free_variables"]:
             return names["free_variables"][name]
@@ -162,7 +167,7 @@ class Terms:
     def declared(self, name: str) -> z3.ExprRef:
         if name not in self._declared:
             raise AttributeError(f"{self.model.name} declares no local {name}")
-        self._model()
+        self._model_locals()
         return self._declared[name]
 
     def call(self, name: str, *args) -> ModelTerms:
@@ -188,12 +193,39 @@ class Terms:
             var = next(v for v in self.model.inputs if v.name == name)
             if var.type != BOOL:
                 outside.append(z3.Not(_in_range(var.type.bound, pairs[-1][1])))
-        fixed = ModelTerms(
-            *(z3.substitute(x, *pairs) if pairs else x for x in (self._value, self._reverts, self._outside)),
-            {k: z3.substitute(v, *pairs) if pairs else v for k, v in self._locals.items()},
-        )
-        self._evaluated("at", self._lemma, z3.Or(fixed.outside, *outside))
-        return fixed
+
+        def fixed(term: z3.ExprRef) -> z3.ExprRef:
+            return z3.substitute(term, *pairs) if pairs else term
+
+        value, reverts, out, anywhere = (fixed(x) for x in (self._value, self._reverts, self._outside, self._anywhere))
+        values = {k: fixed(v) for k, v in self._locals.items()}
+        locals_ = _Locals(values, lambda: self._evaluated("at locals", self._lemma, z3.Or(anywhere, *outside)))
+        self._evaluated("at", self._lemma, z3.Or(out, *outside))
+        return ModelTerms(value, reverts, out, locals_)
+
+
+class _Locals(dict):
+    """The locals of a run of the model, which record the run's obligation when the theorem reads one."""
+
+    def __init__(self, values: dict, record: Callable[[], None]):
+        super().__init__(values)
+        self._record = record
+
+    def __getitem__(self, name):
+        self._record()
+        return super().__getitem__(name)
+
+    def get(self, name, default=None):
+        self._record()
+        return super().get(name, default)
+
+    def values(self):
+        self._record()
+        return super().values()
+
+    def items(self):
+        self._record()
+        return super().items()
 
 
 def _uses_lemma(model: Model, function: Function) -> bool:
@@ -308,11 +340,16 @@ class _Hypotheses:
         self.declared = lambda name: q.declared(name)
         self.call = lambda function, *args: _Value(q.call(function, *args).value)
         self._result = lambda: q.result
+        self._locals = lambda: q.locals
         self._term = lambda name: q[name]
 
     @property
     def result(self) -> z3.ExprRef:
         return self._result()
+
+    @property
+    def locals(self) -> dict[str, z3.ExprRef]:
+        return self._locals()
 
     def __getattr__(self, name: str):
         if name in self.HIDDEN:
