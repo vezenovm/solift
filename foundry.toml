@@ -1,4 +1,4 @@
-# The default profile builds the extractor's test contracts in tests/fixtures. z3sol runs forge with FOUNDRY_OUT and
+# The default profile builds the extractor's test contracts in tests/fixtures. solift runs forge with FOUNDRY_OUT and
 # FOUNDRY_CACHE_PATH set, so `out` and `cache_path` here are only for a manual `forge build`.
 [profile.default]
 src = "tests/fixtures/contracts"

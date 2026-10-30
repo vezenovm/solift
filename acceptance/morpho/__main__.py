@@ -21,8 +21,8 @@ from acceptance.common import finish, pinned, run_mutants
 from acceptance.morpho import mutants
 from acceptance.morpho.project import COMMIT
 from acceptance.morpho.specs import SPECS
-from z3sol.run import run, summary
-from z3sol.workspace import Workspace
+from solift.run import run, summary
+from solift.workspace import Workspace
 
 
 def main(argv=None) -> int:

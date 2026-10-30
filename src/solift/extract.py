@@ -48,8 +48,8 @@ import re
 from dataclasses import dataclass
 from fractions import Fraction
 
-from z3sol import ops
-from z3sol.ir import (
+from solift import ops
+from solift.ir import (
     ADDRESS,
     BOOL,
     LITERAL,

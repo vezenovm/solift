@@ -1,6 +1,6 @@
-# Using z3sol on a new contract
+# Using solift on a new contract
 
-z3sol checks one Solidity function at a time. You write a harness, a spec and theorems. z3sol writes the model, its
+solift checks one Solidity function at a time. You write a harness, a spec and theorems. solift writes the model, its
 Solidity and the Halmos link test. Your project is read-only: a run builds in `build/<name>`.
 
 To start, copy `acceptance/morpho/`, which covers a project outside this repo, or `examples/quoter/`, which covers
@@ -26,16 +26,16 @@ The generated test inherits from the harness, so `call` and the adapters use its
 
 ```python
 import pathlib
-from z3sol.link import Link
-from z3sol.run import Spec
-from z3sol.workspace import Project
+from solift.link import Link
+from solift.run import Spec
+from solift.workspace import Project
 
 PROJECT = Project(
     profile=None,  # the Foundry profile the contract deploys with; None is the default
     link=("foundry.toml", "lib"),  # symlinked into the overlay
     copy=("src",),  # copied: forge finds no AST for a symlinked source
     add={"test/VaultSetup.sol": pathlib.Path(__file__).parent / "VaultSetup.sol"},  # the harness
-    generated="test/z3sol",  # inside the profile's test directory
+    generated="test/solift",  # inside the profile's test directory
 )
 SPEC = Spec(
     name="vault-redeem",
@@ -95,7 +95,7 @@ Options:
 # myproject/__main__.py
 import sys
 from myproject.spec import SPEC
-from z3sol.cli import main
+from solift.cli import main
 
 sys.exit(main(SPEC))  # or main([SPEC_A, SPEC_B]) for several functions of one project
 ```
@@ -106,7 +106,7 @@ python -m myproject --root <project>              # also the Halmos link
 python -m myproject --root <project> --emit out/  # also writes the model and the link test to out/
 ```
 
-`Z3SOL_FORGE` names the forge binary. Each result prints one line, and the record is `build/<name>/results.json`. The
+`SOLIFT_FORGE` names the forge binary. Each result prints one line, and the record is `build/<name>/results.json`. The
 exit code is 0 only when every result is the expected one.
 
 ## When it fails
@@ -115,7 +115,7 @@ exit code is 0 only when every result is the expected one.
   in the harness.
 - **"the read map names X, which ... does not read"**: remove X from the read map.
 - **The link fails**: an adapter does not set what the contract reads, or the read map misses a read.
-- **The vectors disagree**: this is a z3sol bug.
+- **The vectors disagree**: this is a solift bug.
 - **COUNTEREXAMPLE**: the output prints the input values. `show` adds more.
 - **VACUOUS**: the hypotheses contradict each other, or the witness cannot hold with them.
 

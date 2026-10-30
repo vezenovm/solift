@@ -2,11 +2,11 @@ import dataclasses
 
 from examples.pricer.spec import SPECS as PRICER_SPECS
 from examples.quoter.spec import QUOTER, SPEC
-from z3sol import forge
-from z3sol.extract import extract
-from z3sol.link import Link, generate
-from z3sol.run import Spec, run, summary, vector_failures
-from z3sol.workspace import Workspace
+from solift import forge
+from solift.extract import extract
+from solift.link import Link, generate
+from solift.run import Spec, run, summary, vector_failures
+from solift.workspace import Workspace
 
 
 def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_path):
@@ -22,7 +22,7 @@ def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_
     assert len(spec["link"]) == 8
     assert spec["versions"]["solc"].startswith("0.8.30+commit.")
     assert spec["versions"]["OpenZeppelin"]["git blob"] == "cd55ff13085414af44d7bd049a19847d8f614a48"
-    assert {"halmos", "yices-solver", "cvc5", "z3 (theorems)", "forge", "python", "z3sol commit"} <= set(
+    assert {"halmos", "yices-solver", "cvc5", "z3 (theorems)", "forge", "python", "solift commit"} <= set(
         record["versions"]
     )
     assert QUOTER in spec["sources"]
@@ -67,9 +67,9 @@ def test_one_run_of_several_specs_links_every_model_in_one_halmos_run_with_one_o
         assert [r["check"] for r in spec["link"]] == ["check_link"]
         assert all(t["verdict"] == "PROVED" or t["expected"] == "counterexample" for t in spec["theorems"])
         assert spec["vectors"]["agree"] == spec["vectors"]["count"] > 0
-    assert {r["contract"] for r in record["link"]["shared"]} == {"Z3solOperators"}
+    assert {r["contract"] for r in record["link"]["shared"]} == {"SoliftOperators"}
     assert len(record["link"]["shared"]) == 8
-    assert "Z3solOperators.t.sol" in record["generated"]
+    assert "SoliftOperators.t.sol" in record["generated"]
 
 
 def test_two_specs_whose_generated_contracts_have_the_same_names_fail_the_run(tmp_path):
@@ -80,12 +80,12 @@ def test_two_specs_whose_generated_contracts_have_the_same_names_fail_the_run(tm
 
 
 def test_the_vectors_of_a_model_are_exactly_its_own_tests_in_its_own_file():
-    path = "test/z3sol/QVectors.t.sol"
+    path = "test/solift/QVectors.t.sol"
     mine = {(path, "QVectors", f"test_vector_{n:03d}"): "Success" for n in range(2)}
     assert vector_failures("QVectors", path, 2, mine) == []
     old = {("old/QVectors.t.sol", "QVectors", f"test_old_{n}"): "Success" for n in range(2)}
     assert vector_failures("QVectors", path, 2, old) == [
-        "vectors: the results come from old/QVectors.t.sol, not test/z3sol/QVectors.t.sol",
+        "vectors: the results come from old/QVectors.t.sol, not test/solift/QVectors.t.sol",
         "vectors: 0 of 2 agree with the emitted Solidity",
     ]
 

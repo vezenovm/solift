@@ -1,7 +1,7 @@
 import pytest
 import z3
 
-from z3sol import solvers
+from solift import solvers
 
 x, y = z3.Ints("x y")
 b = z3.Bool("b")

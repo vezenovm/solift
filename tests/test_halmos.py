@@ -4,13 +4,13 @@ import subprocess
 
 import pytest
 
+from solift import forge
+from solift.extract import extract
+from solift.forge import BuildError, statuses
+from solift.halmos import HalmosEngine, judge
+from solift.link import Check, generate, placed
+from solift.workspace import Workspace
 from tests.projects import QUOTER, QUOTER_LINK, QUOTER_READS, fixtures
-from z3sol import forge
-from z3sol.extract import extract
-from z3sol.forge import BuildError, statuses
-from z3sol.halmos import HalmosEngine, judge
-from z3sol.link import Check, generate, placed
-from z3sol.workspace import Workspace
 
 GUARDS = "Guards"
 

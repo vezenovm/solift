@@ -3,10 +3,10 @@ import random
 import pytest
 import z3
 
+from solift import ops
+from solift.ir import ADDRESS, BOOL, UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var, enum
+from solift.smt import domain, symbols, terms
 from tests.models import WAD, quote, quote_reference
-from z3sol import ops
-from z3sol.ir import ADDRESS, BOOL, UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var, enum
-from z3sol.smt import domain, symbols, terms
 
 EDGES = [0, 1, 2, WAD, 2**64 - 1, 2**128 - 1, 2**128, 2**255, 2**256 - 1]
 

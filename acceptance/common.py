@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 from acceptance.mutants import apply, problems
-from z3sol.run import run
+from solift.run import run
 
 
 def pinned(root: pathlib.Path, commit: str) -> list[str]:

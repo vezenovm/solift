@@ -6,7 +6,7 @@ runs), and only what the files in `_` import, as its source, test and script dir
 
 import pathlib
 
-from z3sol.workspace import Project
+from solift.workspace import Project
 
 HARNESS = pathlib.Path(__file__).parent / "harness"
 COMMIT = "6c816badbf47fffddf81e683df81e56ba8cb6537"
@@ -16,5 +16,5 @@ PROJECT = Project(
     link=("foundry.toml", "remappings.txt", "node_modules"),
     copy=("src",),
     add={"_/ResupplySetup.sol": HARNESS / "ResupplySetup.sol"},
-    generated="_/z3sol",
+    generated="_/solift",
 )

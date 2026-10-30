@@ -1,6 +1,6 @@
 """Runs forge.
 
-The binary is configurable (`Z3SOL_FORGE`, default `forge`), because some toolchains ship it under another name. A
+The binary is configurable (`SOLIFT_FORGE`, default `forge`), because some toolchains ship it under another name. A
 build writes only to the output and cache directories that the caller passes, through FOUNDRY_OUT and
 FOUNDRY_CACHE_PATH, which take precedence over the profile. Other FOUNDRY_ variables of the caller's environment are
 dropped, so that the profile and these settings are the whole configuration.
@@ -23,7 +23,7 @@ class BuildError(Exception):
 
 
 def binary() -> str:
-    return os.environ.get("Z3SOL_FORGE", "forge")
+    return os.environ.get("SOLIFT_FORGE", "forge")
 
 
 def environment(out: pathlib.Path, cache: pathlib.Path, profile: str | None = None, allow_paths=()) -> dict:

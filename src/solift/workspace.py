@@ -1,11 +1,11 @@
 """Where a run writes, and how it builds a project without writing to it.
 
-A workspace is a directory that one run owns: every path the run writes is inside it. A marker file shows that z3sol
+A workspace is a directory that one run owns: every path the run writes is inside it. A marker file shows that solift
 made it, and `fresh` deletes only inside a marked workspace. A process holds an exclusive lock on each workspace it
 opens until it exits, so two runs never share one and validate each other's generated files. A forked process holds
 none of its parent's locks, and `fresh` does not delete a workspace that another process holds.
 
-A project is the foundry project that holds the target. z3sol never writes to it. It builds an overlay root in the
+A project is the foundry project that holds the target. solift never writes to it. It builds an overlay root in the
 workspace instead: symlinks to the project's configuration and dependencies (`link`), copies of the sources that forge
 compiles as project files or that a mutant changes (`copy`), local files at paths that the project does not have
 (`add`), such as the harness of a contract that the project does not test, and the generated files. Forge reads a
@@ -24,8 +24,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
-MARKER = ".z3sol-workspace"
-LOCK = ".z3sol-lock"
+MARKER = ".solift-workspace"
+LOCK = ".solift-lock"
 # The lock files this process holds, open for as long as it runs: the process id and the descriptor of each. A forked
 # process inherits the descriptors, but not the ownership.
 _HELD: dict[pathlib.Path, tuple[int, int]] = {}
@@ -39,7 +39,7 @@ class Workspace:
     def __init__(self, path: pathlib.Path):
         self.path = path.resolve()
         if self.path.exists() and any(self.path.iterdir()) and not (self.path / MARKER).exists():
-            raise WorkspaceError(f"{self.path} is not empty and is not a z3sol workspace")
+            raise WorkspaceError(f"{self.path} is not empty and is not a solift workspace")
         self.path.mkdir(parents=True, exist_ok=True)
         (self.path / MARKER).touch()
         _lock(self.path)
@@ -70,7 +70,7 @@ class Project:
     link: tuple[str, ...] = ()
     copy: tuple[str, ...] = ()
     add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
-    generated: str = "test/z3sol"
+    generated: str = "test/solift"
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
         """Builds the overlay root, with `replace` (a project path to new content) applied to the copies. An entry under

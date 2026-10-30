@@ -15,8 +15,8 @@ d84b3bf631, reverts on a price above 1e22 (fix.py).
 import z3
 
 from acceptance.resupply.project import PROJECT
-from z3sol.link import Link
-from z3sol.run import Spec
+from solift.link import Link
+from solift.run import Spec
 
 LTV_PRECISION = 10**5
 EXCHANGE_PRECISION = 10**18

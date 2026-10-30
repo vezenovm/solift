@@ -22,8 +22,8 @@ from acceptance.common import finish, pinned, run_mutants
 from acceptance.resupply import fix, mutants
 from acceptance.resupply.project import COMMIT
 from acceptance.resupply.solvency import SOLVENT
-from z3sol.run import run, summary
-from z3sol.workspace import Workspace
+from solift.run import run, summary
+from solift.workspace import Workspace
 
 
 def main(argv=None) -> int:

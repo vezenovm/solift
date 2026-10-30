@@ -24,9 +24,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from z3sol import forge
-from z3sol.link import Check
-from z3sol.workspace import Workspace
+from solift import forge
+from solift.link import Check
+from solift.workspace import Workspace
 
 EXITCODES = {0: "PASS", 1: "COUNTEREXAMPLE", 2: "TIMEOUT", 3: "STUCK", 4: "REVERT_ALL", 5: "EXCEPTION"}
 LOG_FAILURES = {

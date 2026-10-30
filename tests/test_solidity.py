@@ -1,7 +1,7 @@
+from solift import ops
+from solift.ir import UINT256, Call, Const, Function, If, Model, Return, Var
+from solift.solidity import names, source
 from tests.models import QUOTE_SOURCE, quote
-from z3sol import ops
-from z3sol.ir import UINT256, Call, Const, Function, If, Model, Return, Var
-from z3sol.solidity import names, source
 
 
 def test_the_quote_model_emits_the_contract_operators_in_source_order():

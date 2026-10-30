@@ -26,18 +26,18 @@ from dataclasses import dataclass, field
 
 import z3
 
-from z3sol import forge, solvers
-from z3sol.extract import ExtractionError, extract
-from z3sol.halmos import HalmosEngine
-from z3sol.link import Link, LinkError, generate, operators_test, placed
-from z3sol.solidity import names
-from z3sol.theorem import Terms, TheoremError, prove, theorem
-from z3sol.vectors import VectorError, sample, vectors_source
-from z3sol.workspace import Project, Workspace
+from solift import forge, solvers
+from solift.extract import ExtractionError, extract
+from solift.halmos import HalmosEngine
+from solift.link import Link, LinkError, generate, operators_test, placed
+from solift.solidity import names
+from solift.theorem import Terms, TheoremError, prove, theorem
+from solift.vectors import VectorError, sample, vectors_source
+from solift.workspace import Project, Workspace
 
 MATH_PATH = "utils/math/Math.sol"
 SCHEMA = 2
-SHARED_OPERATORS = "Z3sol"
+SHARED_OPERATORS = "Solift"
 
 
 @dataclass
@@ -213,7 +213,7 @@ def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     loaded = {spec.name: Terms(extract(infos, spec.target, spec.reads).model) for spec in specs}
     changes = guard.changes()
     if changes:
-        raise RuntimeError(f"the project changed while z3sol read it: {'; '.join(changes)}")
+        raise RuntimeError(f"the project changed while solift read it: {'; '.join(changes)}")
     return loaded
 
 
@@ -322,8 +322,8 @@ def _project(root: pathlib.Path) -> dict:
 def _tool_versions(engine) -> dict:
     return {
         "python": platform.python_version(),
-        "z3sol": importlib.metadata.version("z3sol"),
-        "z3sol commit": _own_commit(),
+        "solift": importlib.metadata.version("solift"),
+        "solift commit": _own_commit(),
         "z3 (theorems)": z3.get_full_version(),
         **solvers.versions(),
         **engine.versions(),
@@ -331,8 +331,8 @@ def _tool_versions(engine) -> dict:
 
 
 def _own_commit() -> str | None:
-    """The commit of this z3sol: from pip's record of a git install, or from the checkout of an editable one."""
-    distribution = importlib.metadata.distribution("z3sol")
+    """The commit of this solift: from pip's record of a git install, or from the checkout of an editable one."""
+    distribution = importlib.metadata.distribution("solift")
     direct = distribution.read_text("direct_url.json")
     if direct:
         data = json.loads(direct)

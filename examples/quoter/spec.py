@@ -3,9 +3,9 @@ tests/fixtures/test/QuoterSetup.sol. Run it from the repo root with `python -m e
 
 import pathlib
 
-from z3sol.link import Link
-from z3sol.run import Spec
-from z3sol.workspace import Project
+from solift.link import Link
+from solift.run import Spec
+from solift.workspace import Project
 
 WAD = 10**18
 QUOTER = "tests/fixtures/contracts/Quoter.sol"
@@ -14,7 +14,7 @@ PROJECT = Project(
     root=pathlib.Path(__file__).resolve().parents[2],
     link=("foundry.toml", "lib"),
     copy=("tests/fixtures",),
-    generated="tests/fixtures/test/z3sol",
+    generated="tests/fixtures/test/solift",
 )
 READS = {
     "$config.margin": "margin",

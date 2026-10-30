@@ -10,8 +10,8 @@ withdraw. Certora proves it on Morpho's supply and withdraw, storage included, a
 """
 
 from acceptance.morpho.project import PROJECT
-from z3sol.link import Link
-from z3sol.run import Spec
+from solift.link import Link
+from solift.run import Spec
 
 SUPPLY_WITHDRAW = Spec(
     name="morpho-supply-withdraw",

@@ -1,4 +1,4 @@
-"""The package's boundary. `src/z3sol` imports only the standard library, itself and its declared dependencies, so an
+"""The package's boundary. `src/solift` imports only the standard library, itself and its declared dependencies, so an
 install of the wheel has everything that the package imports. The dependencies are pinned, and no Python file names a
 path in a home directory."""
 
@@ -9,7 +9,7 @@ import sys
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-PACKAGE = ROOT / "src" / "z3sol"
+PACKAGE = ROOT / "src" / "solift"
 # lib holds the Solidity dependencies as git submodules.
 SKIPPED_DIRS = {".git", ".venv", "build", "lib"}
 # The import name of each declared dependency, by its distribution name.
@@ -38,7 +38,7 @@ def python_files() -> list[pathlib.Path]:
 
 
 def test_the_package_imports_only_the_standard_library_itself_and_its_dependencies():
-    allowed = {"z3sol"} | {IMPORT_NAMES[pin.partition("==")[0]] for pin in dependencies()}
+    allowed = {"solift"} | {IMPORT_NAMES[pin.partition("==")[0]] for pin in dependencies()}
     found = []
     for path in sorted(PACKAGE.rglob("*.py")):
         for line, module in imports(path.read_text(), path.name):
@@ -48,9 +48,9 @@ def test_the_package_imports_only_the_standard_library_itself_and_its_dependenci
 
 
 def test_the_check_finds_an_import_of_anything_else():
-    assert imports("import os\nfrom z3sol.ir import Model\nimport numpy.linalg\nfrom . import ops\n", "sample.py") == [
+    assert imports("import os\nfrom solift.ir import Model\nimport numpy.linalg\nfrom . import ops\n", "sample.py") == [
         (1, "os"),
-        (2, "z3sol"),
+        (2, "solift"),
         (3, "numpy"),
     ]
 

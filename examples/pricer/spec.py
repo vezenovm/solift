@@ -4,8 +4,8 @@ tests/fixtures/test/PricerSetup.sol. Run them with the Quoter from the repo root
 import z3
 
 from examples.quoter.spec import PROJECT
-from z3sol.link import Link
-from z3sol.run import Spec
+from solift.link import Link
+from solift.run import Spec
 
 PRICER = "tests/fixtures/contracts/Pricer.sol"
 SETUP = "tests/fixtures/test/PricerSetup.sol:PricerSetup"

@@ -4,13 +4,13 @@ import random
 import pytest
 import z3
 
+from solift import forge, ops
+from solift.extract import ExtractionError, extract
+from solift.ir import uint
+from solift.smt import symbols, terms
+from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
 from tests.test_smt import evaluate
-from z3sol import forge, ops
-from z3sol.extract import ExtractionError, extract
-from z3sol.ir import uint
-from z3sol.smt import symbols, terms
-from z3sol.solidity import source
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTER = "tests/fixtures/contracts/Quoter.sol:Quoter"

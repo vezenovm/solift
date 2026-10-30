@@ -2,10 +2,10 @@ import pytest
 import z3
 
 from examples.quoter.spec import SPEC
+from solift import ops, solvers
+from solift.ir import UINT256, Assign, Call, Const, Function, Let, Model, Return, Var
+from solift.theorem import Terms, TheoremError, prove, theorem
 from tests.models import quote
-from z3sol import ops, solvers
-from z3sol.ir import UINT256, Assign, Call, Const, Function, Let, Model, Return, Var
-from z3sol.theorem import Terms, TheoremError, prove, theorem
 
 
 @pytest.fixture(scope="module")

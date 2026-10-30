@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 import z3
 
-from z3sol.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var
-from z3sol.ops import TABLE
+from solift.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var
+from solift.ops import TABLE
 
 FALSE = z3.BoolVal(False)
 TRUE = z3.BoolVal(True)

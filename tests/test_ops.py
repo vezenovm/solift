@@ -2,9 +2,9 @@ import re
 
 import pytest
 
-from z3sol import ops
-from z3sol.ir import BOOL, UINT256, Const, Var, uint
-from z3sol.ops import PROOFS, TABLE
+from solift import ops
+from solift.ir import BOOL, UINT256, Const, Var, uint
+from solift.ops import PROOFS, TABLE
 
 
 def test_each_row_that_can_revert_or_leave_the_lemma_domain_has_a_halmos_proof():

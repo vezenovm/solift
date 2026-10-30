@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from z3sol.workspace import MARKER, Guard, Project, Workspace, WorkspaceError
+from solift.workspace import MARKER, Guard, Project, Workspace, WorkspaceError
 
 
 def git_project(path):
@@ -29,7 +29,7 @@ def test_a_workspace_deletes_only_inside_itself(tmp_path):
 def test_a_directory_with_other_files_is_not_taken_as_a_workspace(tmp_path):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "notes.txt").write_text("keep")
-    with pytest.raises(WorkspaceError, match="is not a z3sol workspace"):
+    with pytest.raises(WorkspaceError, match="is not a solift workspace"):
         Workspace(tmp_path / "data")
 
 
@@ -94,7 +94,7 @@ def test_no_write_into_the_overlay_follows_a_link_into_the_project(tmp_path):
 
 def test_a_workspace_belongs_to_one_process_at_a_time(tmp_path):
     holder = subprocess.Popen(
-        [sys.executable, "-c", "import sys, pathlib; from z3sol.workspace import Workspace; "
+        [sys.executable, "-c", "import sys, pathlib; from solift.workspace import Workspace; "
          f"w = Workspace(pathlib.Path({str(tmp_path / 'work')!r})); print('held', flush=True); sys.stdin.read()"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )  # fmt: skip
@@ -113,7 +113,7 @@ def test_a_workspace_that_another_process_holds_is_not_deleted_from_its_parent(t
     (tmp_path / "work").mkdir()
     (tmp_path / "work" / MARKER).touch()
     holder = subprocess.Popen(
-        [sys.executable, "-c", "import sys, pathlib; from z3sol.workspace import Workspace; "
+        [sys.executable, "-c", "import sys, pathlib; from solift.workspace import Workspace; "
          f"w = Workspace(pathlib.Path({str(tmp_path / 'work' / 'specs')!r})); (w.path / 'mine').touch(); "
          "print('held', flush=True); sys.stdin.read()"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,

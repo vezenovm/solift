@@ -13,8 +13,8 @@ theorems of the functions that the link proves equal to the bytecode.
 import z3
 
 from acceptance.morpho.project import PROJECT
-from z3sol.link import Link
-from z3sol.run import Spec
+from solift.link import Link
+from solift.run import Spec
 
 WAD = 10**18
 ORACLE_PRICE_SCALE = 10**36

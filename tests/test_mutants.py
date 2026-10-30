@@ -70,7 +70,7 @@ def test_a_mutant_counts_as_rejected_only_when_its_one_expected_failure_is_the_o
         ),
     )
     assert found == ["quoter: theorem t-held: PROVED, witness VACUOUS, expected PROVED", "t-held is not ok"]
-    shared = "link: Z3solOperators.check_lemma_minIsTheSmallerValue COUNTEREXAMPLE"
+    shared = "link: SoliftOperators.check_lemma_minIsTheSmallerValue COUNTEREXAMPLE"
     assert problems(mutant, mutant_record([broken, held], [expected, shared])) == [shared]
     assert problems(Mutant("m", "a", "b", breaks="t-broken", link=True), mutant_record([broken], [expected])) == [
         "link: not run"

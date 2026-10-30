@@ -3,13 +3,13 @@ import dataclasses
 import pytest
 import z3
 
+from solift import forge, ops
+from solift.extract import extract
+from solift.ir import ADDRESS, UINT256, Const, Function, If, Model, Return, Var, enum
+from solift.solidity import names, source
+from solift.vectors import VectorError, boundary, sample, vectors_source
+from solift.workspace import Workspace
 from tests.projects import QUOTER, QUOTER_READS, fixtures
-from z3sol import forge, ops
-from z3sol.extract import extract
-from z3sol.ir import ADDRESS, UINT256, Const, Function, If, Model, Return, Var, enum
-from z3sol.solidity import names, source
-from z3sol.vectors import VectorError, boundary, sample, vectors_source
-from z3sol.workspace import Workspace
 
 
 @pytest.fixture(scope="module")

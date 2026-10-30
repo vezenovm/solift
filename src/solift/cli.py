@@ -2,7 +2,7 @@
 [--no-link] [--emit DIR]`.
 
 A module runs one spec or several specs of one project in one run. `--root` is the project root, for specs whose project
-lives outside this repo. The forge binary comes from Z3SOL_FORGE. The record is JSON (run.py).
+lives outside this repo. The forge binary comes from SOLIFT_FORGE. The record is JSON (run.py).
 """
 
 from __future__ import annotations
@@ -13,14 +13,14 @@ import json
 import pathlib
 from collections.abc import Sequence
 
-from z3sol.run import Spec, run, summary
-from z3sol.workspace import Workspace
+from solift.run import Spec, run, summary
+from solift.workspace import Workspace
 
 
 def main(specs: Spec | Sequence[Spec], argv: list[str] | None = None) -> int:
     specs = [specs] if isinstance(specs, Spec) else list(specs)
     name = specs[0].name if len(specs) == 1 else "run"
-    parser = argparse.ArgumentParser(description=f"Runs the z3sol specs {', '.join(s.name for s in specs)}.")
+    parser = argparse.ArgumentParser(description=f"Runs the solift specs {', '.join(s.name for s in specs)}.")
     parser.add_argument("--root", type=pathlib.Path, help="the root of the foundry project that holds the targets")
     parser.add_argument("--workspace", type=pathlib.Path, default=pathlib.Path("build") / name)
     parser.add_argument("--results", type=pathlib.Path, help="where to write the record (default: in the workspace)")

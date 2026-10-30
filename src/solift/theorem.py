@@ -26,10 +26,10 @@ from dataclasses import dataclass, field
 
 import z3
 
-from z3sol import solvers
-from z3sol.ir import Model
-from z3sol.smt import Terms as ModelTerms
-from z3sol.smt import domain, symbols, terms, terms_of_call
+from solift import solvers
+from solift.ir import Model
+from solift.smt import Terms as ModelTerms
+from solift.smt import domain, symbols, terms, terms_of_call
 
 ASSUMPTIONS = {"no-revert": "the model does not revert", "inside": "no mulDiv operand reaches 2**128"}
 DEFAULT_TIMEOUT_MS = 300_000

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 import z3
 
-from z3sol.ir import BOOL, UINT256, Expr, Op, Src, Type, uint
+from solift.ir import BOOL, UINT256, Expr, Op, Src, Type, uint
 
 U256 = 2**256
 HALF = 2**128

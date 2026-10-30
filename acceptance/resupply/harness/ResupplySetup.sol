@@ -51,7 +51,7 @@ contract ResupplyPairHarness is ResupplyPairCore {
             address(_stub),
             abi.encode(address(_stub), address(_stub), address(_stub), uint256(0), uint256(0), uint256(0), uint256(0), uint256(0)),
             abi.encode(address(_stub)),
-            abi.encode("z3sol", address(0), address(0), uint256(0))
+            abi.encode("solift", address(0), address(0), uint256(0))
         )
     {}
 

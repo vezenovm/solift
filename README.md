@@ -1,6 +1,6 @@
-# z3sol
+# solift
 
-Solidity Arithmetic Prover (working name). For each Solidity function of a spec, it:
+solift lifts a Solidity function to an integer model and proves theorems on it. For each function of a spec, it:
 
 1. extracts an integer model from the solc AST. Each value that the function reads from outside itself (storage, a
    mapping entry, an external view call, `tx` and `block` fields, the fields of a struct parameter, or the result of an
@@ -39,7 +39,7 @@ in solc's AST.
 
 ## Run
 
-Needs Python 3.12 or later, and forge. `Z3SOL_FORGE` names the forge binary (default `forge`), for a toolchain that
+Needs Python 3.12 or later, and forge. `SOLIFT_FORGE` names the forge binary (default `forge`), for a toolchain that
 ships it under another name.
 
 ```sh
@@ -57,14 +57,14 @@ A run takes one spec or several specs of one project. It builds the project once
 every stage, even when one fails: the theorems, the vectors (one forge test for every model), and the links (one Halmos
 run for every model, with one test of the operator rows and lemmas they use). It prints one line for each result, and
 writes a JSON record (`schema` 2) with each result, the sources each model comes from with their hashes, and the
-versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and z3sol (with its commit). The run fails when
+versions of solc, OpenZeppelin, Halmos, yices, z3, cvc5, forge, Python and solift (with its commit). The run fails when
 any result is not the expected one.
 
-Code on top of the models, such as a check of each deployed configuration, uses `z3sol.run.load(specs, workspace)`: the
+Code on top of the models, such as a check of each deployed configuration, uses `solift.run.load(specs, workspace)`: the
 terms of each model from one build. `q.at(name=value, ...)` gives the terms with inputs fixed, `q.call(function, *args)`
 runs a function of the model, and `q.declared(local)` is a local's value where it is declared.
 
-To pin z3sol from another project, install it by commit: `pip install git+https://github.com/vezenovm/z3sol@<commit>`.
+To pin solift from another project, install it by commit: `pip install git+https://github.com/vezenovm/solift@<commit>`.
 
 ## What a run proves
 
