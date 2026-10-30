@@ -15,11 +15,11 @@ The run fails when any of these fails, and when Oxide changed during the run. It
 
 import argparse
 import dataclasses
-import json
 import pathlib
 import sys
 import time
 
+from acceptance.common import finish, run_mutants
 from acceptance.oxide import mutants, reference
 from acceptance.oxide.specs import SPECS
 from z3sol.run import load, run, summary
@@ -69,42 +69,14 @@ def main(argv=None) -> int:
 
     mutant_records = {}
     if not args.no_mutants:
-        print("\n== mutants")
         start = time.time()
-        by_name = {spec.name: spec for spec in specs}
-        for mutant in mutants.MUTANTS:
-            source = (root / mutant.path).read_text()
-            m = run(
-                by_name[mutant.spec],
-                workspace.child(f"mutant-{mutant.id}"),
-                replace={mutant.path: mutants.apply(source, mutant)},
-                link=mutant.link,
-                vectors=False,
-                only=(mutant.breaks, *mutant.holds),
-            )
-            mutant_records[mutant.id] = m
-            problems = mutants.problems(mutant, m)
-            failures += [f"mutant {mutant.id}: {p}" for p in problems]
-            status = "REJECTED" if not problems else "NOT REJECTED"
-            print(f"{status} {mutant.id}: {mutant.breaks} fails" + (", and its link passes" if mutant.link else ""))
-            for problem in problems:
-                print(f"FAILED {problem}")
+        mutant_records, found = run_mutants(mutants.MUTANTS, specs, root, workspace)
+        failures += found
         times["mutants"] = time.time() - start
 
     failures += [f"oxide: {change}" for change in guard.changes()]
-    result = {
-        "ok": not failures,
-        "failures": failures,
-        "times": times,
-        "specs": record,
-        "equivalence": equal,
-        "mutants": mutant_records,
-    }
-    path = args.results or workspace.path / "acceptance.json"
-    path.write_text(json.dumps(result, indent=2) + "\n")
-    print("\n" + ", ".join(f"{name} {seconds:.0f}s" for name, seconds in times.items()))
-    print(f"{'ok' if not failures else f'{len(failures)} failure(s)'}; record: {path}")
-    return 0 if not failures else 1
+    result = {"specs": record, "equivalence": equal, "mutants": mutant_records}
+    return finish(result, failures, times, args.results or workspace.path / "acceptance.json")
 
 
 sys.exit(main())

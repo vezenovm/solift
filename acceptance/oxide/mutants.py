@@ -1,30 +1,16 @@
-"""Mutants of the subsidy functions, of Caps and of MigrationSubsidy. Each changes one expression of one function, and a
-theorem must reject it: the run of the mutant fails on that theorem, and the theorems in `holds` still prove. The
-model follows the contract, so the link of a mutant still passes. The mutants marked `link` show that with a Halmos
-run."""
+"""Mutants of the subsidy functions, of Caps and of MigrationSubsidy (acceptance/mutants.py)."""
 
-from dataclasses import dataclass
+from functools import partial
+
+from acceptance import mutants
 
 DEPOSIT = "src/periphery/DepositSubsidy.sol"
 WITHDRAWAL = "src/periphery/PlainWithdrawalSubsidy.sol"
 CAPS = "src/core/Caps.sol"
 MIGRATION = "src/periphery/migration/MigrationSubsidy.sol"
 
-
-@dataclass(frozen=True)
-class Mutant:
-    """`spec` names the spec whose run must reject the mutant, `function` the function of `path` that it changes,
-    `breaks` the theorem that must fail, and `holds` the theorems that must still prove."""
-
-    id: str
-    old: str
-    new: str
-    breaks: str
-    holds: tuple[str, ...] = ()
-    link: bool = False
-    spec: str = "deposit-quote"
-    path: str = DEPOSIT
-    function: str = "_quoteSubsidy"
+# A mutant of DepositSubsidy._quoteSubsidy, unless it names another spec, path and function.
+Mutant = partial(mutants.Mutant, spec="deposit-quote", path=DEPOSIT, function="_quoteSubsidy")
 
 
 GAS_PRICE = "Math.min(tx.gasprice, block.basefee + OxideConstants.MAX_PRIORITY_FEE_WEI)"
@@ -164,34 +150,3 @@ MUTANTS = [
         function="_cappedGasPrice",
     ),
 ]
-
-
-def apply(source: str, mutant: Mutant) -> str:
-    """The source with the mutant applied. The changed text must occur exactly once in the file, inside the function."""
-    start = source.index(f"function {mutant.function}(")
-    end = source.find("\n  function ", start + 1)
-    body = source[start : end if end != -1 else len(source)]
-    if source.count(mutant.old) != 1 or body.count(mutant.old) != 1:
-        raise ValueError(f"{mutant.id}: {mutant.old!r} does not occur exactly once, inside {mutant.function}")
-    return source.replace(mutant.old, mutant.new)
-
-
-def problems(mutant: Mutant, record: dict) -> list[str]:
-    """Why the run of a mutant does not show that its theorem rejects it. The run must fail on `breaks` with a complete
-    counterexample and a witness, and on nothing else: each theorem in `holds` proves with a witness, and every other
-    check passes."""
-    (spec,) = record["specs"]
-    theorems = {t["id"]: t for t in spec.get("theorems", [])}
-    expected = f"{spec['spec']}: theorem {mutant.breaks}: COUNTEREXAMPLE, expected PROVED"
-    found = [f for f in record["failures"] if f != expected]
-    broken = theorems.get(mutant.breaks, {})
-    if broken.get("verdict") != "COUNTEREXAMPLE":
-        found.append(f"{mutant.breaks} is {broken.get('verdict')}, not COUNTEREXAMPLE")
-    elif broken.get("detail"):
-        found.append(f"{mutant.breaks}: {broken['detail']}")
-    for held in mutant.holds:
-        if not theorems.get(held, {}).get("ok"):
-            found.append(f"{held} is not ok")
-    if mutant.link and spec.get("link") is None:
-        found.append("link: not run")
-    return found

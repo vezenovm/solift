@@ -1,6 +1,7 @@
 import pytest
 
-from acceptance.oxide.mutants import MUTANTS, Mutant, apply, problems
+from acceptance.mutants import apply, problems
+from acceptance.oxide.mutants import MUTANTS, Mutant
 from acceptance.oxide.specs import SPECS
 
 SOURCE = """\
@@ -24,6 +25,8 @@ def test_a_mutant_changes_its_text_inside_quote_subsidy_only():
     with pytest.raises(ValueError, match="does not occur exactly once"):
         apply(SOURCE, Mutant("m", "_fee", "1", breaks="t"))
     assert "return _fee;" in apply(SOURCE, Mutant("m", "_fee + 1", "_fee", breaks="t", function="other"))
+    overloaded = SOURCE.replace("function other(uint256 _fee)", "function _quoteSubsidy(uint256 _fee, bool)")
+    assert "return _fee;" in apply(overloaded, Mutant("m", "_fee + 1", "_fee", breaks="t"))
 
 
 def test_each_mutant_names_a_theorem_of_its_spec_that_rejects_it():
