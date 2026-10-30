@@ -19,8 +19,10 @@ Status: milestone M2. It covers the functions of Oxide's `formulas/subsidies.py`
 The extractor takes loop-free pure and view functions with checked `uint` arithmetic, comparisons, boolean logic,
 ternaries, `if` and early returns, locals assigned also in branches, compound assignments, named returns, addresses,
 enums, constants and immutables. Internal calls are inlined. `Math.min` and `Math.mulDiv` are operators backed by lemmas.
-It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple returns, exponentiation, `%`,
-`require`, and assembly, with the place in the source.
+Named arguments bind by name. It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple
+returns, exponentiation, `%`, `require`, assembly, a local that shadows another variable, a variable named `i` (the
+inputs struct of the emitted Solidity), and a function without inputs, with the place in the source. The type of each
+operation must match the type in solc's AST.
 
 ## Run
 
@@ -62,8 +64,9 @@ To pin z3sol from another project, install it by commit: `pip install git+https:
   is inside the lemma domain. A theorem expected to prove needs a witness that its hypotheses hold. An expected
   counterexample names its issue or reason.
 
-A link check fails on anything but PASS, on a path at the loop bound, on a missing or undeclared check, and when Halmos
-skips a contract. A theorem runs on z3 first. When z3 says "unknown", z3, yices and cvc5 run in parallel on the same
+A link check fails on anything but PASS, on a path at the loop bound, on a missing or undeclared check, on a result
+from a file other than the generated one, on two results for one check, when Halmos exits with a failure, and when
+Halmos skips a contract. A theorem runs on z3 first. When z3 says "unknown", z3, yices and cvc5 run in parallel on the same
 query, and the first sat or unsat answer counts. "Unknown" from every solver fails the theorem.
 
 A cut point, such as `_tokenWeiPerEth()`, is an input of the model. The link sets it through the harness, such as a
@@ -82,8 +85,11 @@ The project that holds the target is read-only. A run builds an overlay root in 
 to the project's `foundry.toml` and dependencies, copies of the sources that forge compiles as project files (forge
 finds no AST for a symlinked project file), and the generated files. Forge and Halmos run with `FOUNDRY_OUT` and
 `FOUNDRY_CACHE_PATH` in the workspace: Halmos runs `forge build` without `--out` and reads the build from
-`--forge-build-out`, so these variables are what keep the build out of the project. Each Halmos run starts from empty
-directories. A guard compares the project's git status and file times before and after the run.
+`--forge-build-out`, so these variables are what keep the build out of the project. Each run builds once, from empty
+directories, with Halmos's own build flags, and the vectors and Halmos extend that build: every artifact has its AST,
+and a skipped contract still fails the run. Each write into the overlay refuses a link and a path outside it. A process
+locks each workspace it uses, so two runs never share one. A guard compares the project's git status and file times
+before and after the run.
 
 ## Develop
 
