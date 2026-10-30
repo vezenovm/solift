@@ -3,9 +3,10 @@
     Z3SOL_FORGE=aztec-forge python -m acceptance.oxide --root <oxide>/l1-contracts
 
 1. One run of every spec (specs.py): the models of DepositSubsidy._quoteSubsidy, DepositSubsidy.quoteSubsidy,
-   DepositSubsidy._pricedGas and PlainWithdrawalSubsidy.quoteSubsidy, the theorems of prove.py on them, their vectors,
-   and their Halmos links against the bytecode built from Oxide's sources, with Oxide's harness.
-2. z3 proves each model equal to Oxide's formula of the same function in formulas/subsidies.py.
+   DepositSubsidy._pricedGas and PlainWithdrawalSubsidy.quoteSubsidy, with the theorems of prove.py on them, and of
+   Caps.getCurrentAvailable, with its own theorems; their vectors; and their Halmos links against the bytecode built
+   from Oxide's sources, with Oxide's harness or, for Caps, the harness in harness/.
+2. z3 proves each model of a function of formulas/subsidies.py equal to Oxide's formula of it.
 3. Each mutant fails on the theorem it breaks.
 
 The run fails when any of these fails, and when Oxide changed during the run. It prints the time of each part.
@@ -54,7 +55,7 @@ def main(argv=None) -> int:
         models = {}
         failures.append(f"equivalence: {err}")
     for spec in specs:
-        if spec.name not in models:
+        if spec.name not in models or spec.name not in reference.REFERENCES:
             continue
         ref = reference.REFERENCES[spec.name]
         equal[spec.name] = reference.equivalence(root, models[spec.name], ref)

@@ -1,11 +1,12 @@
-"""Mutants of the subsidy functions. Each changes one expression of one function, and a theorem must reject it: the run
-of the mutant fails on that theorem, and the theorems in `holds` still prove. The model follows the contract, so the
-link of a mutant still passes. The mutants marked `link` show that with a Halmos run."""
+"""Mutants of the subsidy functions and of Caps. Each changes one expression of one function, and a theorem must reject
+it: the run of the mutant fails on that theorem, and the theorems in `holds` still prove. The model follows the
+contract, so the link of a mutant still passes. The mutants marked `link` show that with a Halmos run."""
 
 from dataclasses import dataclass
 
 DEPOSIT = "src/periphery/DepositSubsidy.sol"
 WITHDRAWAL = "src/periphery/PlainWithdrawalSubsidy.sol"
+CAPS = "src/core/Caps.sol"
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Mutant:
 GAS_PRICE = "Math.min(tx.gasprice, block.basefee + OxideConstants.MAX_PRIORITY_FEE_WEI)"
 PRICED_GAS = {"spec": "deposit-priced-gas", "function": "_pricedGas"}
 WITHDRAWAL_QUOTE = {"spec": "withdrawal-quote", "path": WITHDRAWAL, "function": "quoteSubsidy"}
+AVAILABLE = {"spec": "caps-available", "path": CAPS, "function": "getCurrentAvailable"}
 
 MUTANTS = [
     Mutant(
@@ -104,6 +106,23 @@ MUTANTS = [
         "(modeledTxGas(_flow) + 1) * (gasPrice",
         breaks="withdrawal-no-farming-against-the-model",
         **WITHDRAWAL_QUOTE,
+    ),
+    Mutant(
+        "caps-refill-at-half-the-rate",
+        "Math.min($cachedAvailable + increase, GLOBAL_LIMIT)",
+        "Math.min($cachedAvailable + increase / 2, GLOBAL_LIMIT)",
+        breaks="available-refills-to-the-global-limit",
+        holds=("available-at-most-the-global-limit", "available-does-not-revert"),
+        **AVAILABLE,
+    ),
+    Mutant(
+        "caps-elapsed-time-reversed",
+        "(block.timestamp - $lastUpdatedTime) * RATE",
+        "($lastUpdatedTime - block.timestamp) * RATE",
+        breaks="available-does-not-revert",
+        holds=("available-at-most-the-global-limit",),
+        link=True,
+        **AVAILABLE,
     ),
 ]
 

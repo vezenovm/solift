@@ -33,7 +33,7 @@ def test_each_mutant_names_a_theorem_of_its_spec_that_rejects_it():
         ids = {t.id for t in specs[m.spec].theorems}
         assert m.breaks in ids and set(m.holds) <= ids, m.id
         assert m.path == specs[m.spec].target.partition(":")[0], m.id
-    assert {m.spec for m in MUTANTS} == {"deposit-quote", "deposit-priced-gas", "withdrawal-quote"}
+    assert {m.spec for m in MUTANTS} == {"deposit-quote", "deposit-priced-gas", "withdrawal-quote", "caps-available"}
     assert any(m.link for m in MUTANTS)
 
 

@@ -4,9 +4,9 @@ model: the depositQuote theorems on both quotes, and the depositPricedGas theore
 
 import z3
 
+from acceptance.oxide.project import PROJECT
 from z3sol.link import Link
 from z3sol.run import Spec
-from z3sol.workspace import Project
 
 MAX_PRIORITY_FEE_WEI = 100_000_000
 WAD = 10**18
@@ -25,13 +25,6 @@ CONFIG_ADAPTERS = {
     "pot": "token.set(address(subsidy), pot, 1);",
     "baseFee": "vm.fee(baseFee);",
 }
-
-PROJECT = Project(
-    profile="subsidy-proofs",
-    link=("foundry.toml", "node_modules", ".deps"),
-    copy=("src", "proofs/subsidies/src/SubsidyHarnesses.sol", "proofs/subsidies/test/SubsidySetup.sol"),
-    generated="proofs/subsidies/test/z3sol",
-)
 
 SPEC = Spec(
     name="deposit-quote",
