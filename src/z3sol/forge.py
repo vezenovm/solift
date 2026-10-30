@@ -1,8 +1,8 @@
 """Runs forge.
 
-The binary is configurable (`Z3SOL_FORGE`, default `forge`), because some toolchains ship it under another name, such
-as `aztec-forge`. A build writes only to the output and cache directories that the caller passes, through FOUNDRY_OUT
-and FOUNDRY_CACHE_PATH, which take precedence over the profile. Other FOUNDRY_ variables of the caller's environment are
+The binary is configurable (`Z3SOL_FORGE`, default `forge`), because some toolchains ship it under another name. A
+build writes only to the output and cache directories that the caller passes, through FOUNDRY_OUT and
+FOUNDRY_CACHE_PATH, which take precedence over the profile. Other FOUNDRY_ variables of the caller's environment are
 dropped, so that the profile and these settings are the whole configuration.
 """
 

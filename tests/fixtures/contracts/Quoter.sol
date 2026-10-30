@@ -11,8 +11,8 @@ library Fees {
   uint128 internal constant TIP = 2 gwei;
 }
 
-// A quote with the shapes of a gas subsidy: a storage struct read through a memory copy, a storage scalar, an external
-// view call, tx.gasprice and block.basefee, constants, an internal call with an early return, and the Math operators.
+// A quote for gas at a token price: a storage struct read through a memory copy, a storage scalar, an external view
+// call, tx.gasprice and block.basefee, constants, an internal call with an early return, and the Math operators.
 contract Quoter {
   struct Config {
     uint128 margin;

@@ -13,14 +13,8 @@ Nobody writes the formula. People write the theorems, the read map, and the test
 
 To use it on a new contract, see [USAGE.md](USAGE.md).
 
-Status: milestone M4. The acceptance run against Oxide covers the functions of Oxide's `formulas/subsidies.py`:
-`DepositSubsidy._quoteSubsidy`, `DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`,
-and `PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). It also covers two contracts that Oxide does not
-prove, with their own theorems and with harnesses in `acceptance/oxide/harness/`: `Caps.getCurrentAvailable`, the
-portal's deposit capacity, and `MigrationSubsidy._pricedGas` and `_quoteSubsidy`, which Oxide's registry exempts.
-Wiring the tool into Oxide's proof check, and deleting `subsidies.py` there, happens from an Oxide session.
-
-Two acceptance runs cover public contracts, each at a pinned commit, with harnesses in `acceptance/<project>/harness/`:
+Status: two acceptance runs cover public contracts, each at a pinned commit, with harnesses in
+`acceptance/<project>/harness/`:
 
 - Resupply's lending pair, at the commit that the exploit of 2025-06-26 drained: the check that `borrow` makes,
   `_updateExchangeRate` and then `_isSolvent`. The theorem that a solvent borrower's debt is within twice the
@@ -45,8 +39,8 @@ in solc's AST.
 
 ## Run
 
-Needs Python 3.12 or later, and forge. `Z3SOL_FORGE` names the forge binary (default `forge`; the aztec toolchain
-ships it as `aztec-forge`).
+Needs Python 3.12 or later, and forge. `Z3SOL_FORGE` names the forge binary (default `forge`), for a toolchain that
+ships it under another name.
 
 ```sh
 python3.12 -m venv .venv
@@ -54,7 +48,6 @@ python3.12 -m venv .venv
 git submodule update --init
 .venv/bin/python -m examples.quoter                     # one spec on the test fixtures
 .venv/bin/python -m examples.pricer                     # three specs in one run
-Z3SOL_FORGE=aztec-forge .venv/bin/python -m acceptance.oxide --root <oxide>/l1-contracts
 .venv/bin/python -m acceptance.resupply --root <resupply>    # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>   # setup in acceptance/morpho/__main__.py
 ```
@@ -94,7 +87,7 @@ check, when Halmos exits with a failure, and when Halmos skips a contract. A the
 "unknown", z3, yices and cvc5 run in parallel on the same query, and the first sat or unsat answer counts. "Unknown"
 from every solver fails the theorem.
 
-A cut point, such as `_tokenWeiPerEth()`, is an input of the model. The link sets it through the harness, such as a
+A cut point, such as `_price()`, is an input of the model. The link sets it through the harness, such as a
 price feed with a symbolic answer, so it proves the model equal to the contract only for the values the harness can
 produce.
 
@@ -124,8 +117,8 @@ holds. A guard compares the project's git status and file times before and after
 .venv/bin/pytest
 ```
 
-`tests/test_no_oxide.py` fails when Python code here imports anything other than the standard library, this repo and
-the pinned dependencies, edits `sys.path`, loads a module by path, or names a path outside the repo.
+`tests/test_boundary.py` fails when the package imports anything other than the standard library, itself and its
+pinned dependencies, and when a Python file names a path in a home directory.
 
 ## License
 

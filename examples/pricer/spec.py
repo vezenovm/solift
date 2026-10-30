@@ -18,7 +18,7 @@ PRICED = Spec(
         "_meter.fresh": "fresh",
         "_meter.paid": "paid",
         "TOKEN": "token",
-        "TOKEN.balanceOf(tx.origin)": "relayerBalance",
+        "TOKEN.balanceOf(tx.origin)": "originBalance",
     },
     link=Link(
         setup=SETUP,
@@ -27,7 +27,7 @@ PRICED = Spec(
             ("used", "fresh", "paid"): (
                 "Pricer.Meter memory meter = Pricer.Meter({startGas: 0, used: used, fresh: fresh, paid: paid});"
             ),
-            "relayerBalance": "token.set(tx.origin, relayerBalance);",
+            "originBalance": "token.set(tx.origin, originBalance);",
         },
         observed={"token": "address(pricer.TOKEN())"},
         imports=(f'import {{Pricer}} from "{PRICER}";',),

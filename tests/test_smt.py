@@ -3,7 +3,7 @@ import random
 import pytest
 import z3
 
-from tests.models import WAD, Reverts, quote, quote_reference
+from tests.models import WAD, quote, quote_reference
 from z3sol import ops
 from z3sol.ir import ADDRESS, BOOL, UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var, enum
 from z3sol.smt import domain, symbols, terms
@@ -27,44 +27,37 @@ def function_model(body, params=(), returns=UINT256, callees=()) -> Model:
 def test_the_quote_terms_give_the_reference_result_on_edge_and_random_inputs():
     model = quote()
     rng = random.Random(0)
-    narrow = {"targetRelayerProfit", "maxSubsidyPerOperation"}
     outcomes = set()
     for _ in range(400):
         values = {}
         for v in model.inputs:
-            bound = 2**128 if v.name in narrow else 2**256
-            values[v.name] = min(rng.choice(EDGES + [rng.getrandbits(rng.randint(1, 80))] * 4), bound - 1)
-        try:
-            expected = (False, quote_reference(**values))
-        except Reverts:
-            expected = (True, None)
+            values[v.name] = min(rng.choice(EDGES + [rng.getrandbits(rng.randint(1, 80))] * 4), v.type.bound - 1)
+        expected = quote_reference(**values)
         reverts, value, _ = evaluate(model, values)
-        assert reverts == expected[0], values
+        assert reverts == (expected is None), values
         if not reverts:
-            assert value == expected[1], values
+            assert value == expected, values
         outcomes.add("reverts" if reverts else "pays" if value else "zero")
     assert outcomes == {"pays", "zero", "reverts"}
 
 
 def test_the_quote_is_outside_where_a_mulDiv_operand_reaches_half_width():
-    base = dict(_fee=0, _reimbursableGas=1, _tokenPerEth=1, targetRelayerProfit=0, maxSubsidyPerOperation=0, pot=0)
+    base = dict(_gas=1, _price=1, margin=0, cap=0, floor=0, pot=0)
     assert not evaluate(quote(), {**base, "txGasPrice": 2**128 - 1, "baseFee": 2**128})[2]
     assert evaluate(quote(), {**base, "txGasPrice": 2**128, "baseFee": 2**128})[2]
-    assert evaluate(quote(), {**base, "_tokenPerEth": 2**128, "txGasPrice": 1, "baseFee": 0})[2]
+    assert evaluate(quote(), {**base, "_price": 2**128, "txGasPrice": 1, "baseFee": 0})[2]
     # The first return skips the mulDiv.
-    assert not evaluate(
-        quote(), {**base, "_reimbursableGas": 0, "_tokenPerEth": 2**128, "txGasPrice": 1, "baseFee": 0}
-    )[2]
+    assert not evaluate(quote(), {**base, "_gas": 0, "_price": 2**128, "txGasPrice": 1, "baseFee": 0})[2]
 
 
 def test_the_domain_bounds_each_input_by_its_type():
     model = quote()
     x = symbols(model)
     s = z3.Solver()
-    s.add(domain(model, x), x["targetRelayerProfit"] == 2**128)
+    s.add(domain(model, x), x["margin"] == 2**128)
     assert s.check() == z3.unsat
     s = z3.Solver()
-    s.add(domain(model, x), x["pot"] == 2**256 - 1, x["targetRelayerProfit"] == 2**128 - 1)
+    s.add(domain(model, x), x["pot"] == 2**256 - 1, x["margin"] == 2**128 - 1)
     assert s.check() == z3.sat
 
 
@@ -152,7 +145,7 @@ def test_a_function_that_calls_itself_is_refused():
 def test_the_terms_expose_each_local_of_the_modeled_function():
     model = quote()
     t = terms(model, symbols(model))
-    assert set(t.locals) == {"gasPrice", "gasCost", "targetPayout", "subsidy"}
+    assert set(t.locals) == {"gasPrice", "cost", "target"}
 
 
 def test_a_local_assigned_in_a_branch_takes_the_value_of_the_branch_that_ran():

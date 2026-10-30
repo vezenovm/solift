@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The forge version of the aztec toolchain that Oxide uses.
+      # A pinned forge release: a new one reaches CI only through a commit.
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
           version: v1.8.5

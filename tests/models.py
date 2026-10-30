@@ -1,65 +1,122 @@
 """Models built by hand, as the extractor should build them, for the tests of the IR and its back ends."""
 
 from z3sol import ops
-from z3sol.ir import UINT256, Const, Function, If, Let, Model, Read, Return, Var, uint
+from z3sol.ir import UINT256, Call, Const, Function, If, Let, Model, Read, Return, Var, uint
 
-MAX_PRIORITY_FEE_WEI = 100_000_000
+TIP = 2 * 10**9
 WAD = 10**18
 
 
 def quote() -> Model:
-    """DepositSubsidy._quoteSubsidy, with the config fields, the pot, tx.gasprice and block.basefee as reads."""
-    fee, gas, token_per_eth = (Var(name, input=True) for name in ("_fee", "_reimbursableGas", "_tokenPerEth"))
-    profit = Var("targetRelayerProfit", uint(128), input=True)
-    cap = Var("maxSubsidyPerOperation", uint(128), input=True)
-    pot, tx_gas_price, base_fee = (Var(name, input=True) for name in ("pot", "txGasPrice", "baseFee"))
-    tip = Const(MAX_PRIORITY_FEE_WEI, uint(128), text="100000000", name="MAX_PRIORITY_FEE_WEI")
-    gas_price, gas_cost, target, subsidy = (Var(name) for name in ("gasPrice", "gasCost", "targetPayout", "subsidy"))
+    """Quoter._quote (tests/fixtures/contracts/Quoter.sol), with the config fields, the floor, the pot, tx.gasprice and
+    block.basefee as reads, and _withMargin as its callee."""
+    gas, price = Var("_gas", input=True), Var("_price", input=True)
+    margin, cap = Var("margin", uint(128), input=True), Var("cap", uint(128), input=True)
+    floor, pot, tx_gas_price, base_fee = (Var(name, input=True) for name in ("floor", "pot", "txGasPrice", "baseFee"))
+    tip = Const(TIP, uint(128), text="2 gwei", name="TIP")
+    wad = Const(WAD, UINT256, text="1e18", name="WAD")
+    gas_price, cost, target = (Var(name) for name in ("gasPrice", "cost", "target"))
     body = (
         If(ops.make("eq", gas, Const(0)), (Return(Const(0)),)),
         Let(gas_price, ops.make("min", tx_gas_price, ops.make("add", base_fee, tip))),
-        Let(gas_cost, ops.make("mulDiv", ops.make("mul", gas, gas_price), token_per_eth, Const(WAD, text="1e18"))),
-        Let(target, ops.make("add", gas_cost, ops.make("min", profit, fee))),
-        If(ops.make("le", target, fee), (Return(Const(0)),)),
-        Let(subsidy, ops.make("min", ops.make("sub", target, fee), cap)),
-        Return(ops.make("min", subsidy, pot)),
+        Let(cost, ops.make("mulDiv", ops.make("mul", gas, gas_price), price, wad)),
+        Let(target, Call("_withMargin", (cost, margin), UINT256)),
+        If(ops.make("le", target, floor), (Return(Const(0)),)),
+        Return(ops.make("min", ops.make("min", ops.make("sub", target, floor), cap), pot)),
+    )
+    plain, extra = Var("_cost"), Var("_margin")
+    with_margin = Function(
+        "_withMargin",
+        (plain, extra),
+        UINT256,
+        (If(ops.make("eq", extra, Const(0)), (Return(plain),)), Return(ops.make("add", plain, extra))),
     )
     reads = (
-        Read(profit, "$depositConfig.targetRelayerProfit"),
-        Read(cap, "$depositConfig.maxSubsidyPerOperation"),
+        Read(margin, "$config.margin"),
+        Read(cap, "$config.cap"),
+        Read(floor, "$floor"),
         Read(pot, "TOKEN.balanceOf(address(this))"),
         Read(tx_gas_price, "tx.gasprice"),
         Read(base_fee, "block.basefee"),
     )
     return Model(
-        "DepositSubsidy",
-        Function("_quoteSubsidy", (fee, gas, token_per_eth), UINT256, body),
+        "Quoter",
+        Function("_quote", (gas, price), UINT256, body),
         reads=reads,
-        imports=('import {Math} from "@oz/utils/math/Math.sol";',),
-        pragma=">=0.8.27",
+        callees=(with_margin,),
+        imports=('import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";',),
+        pragma="^0.8.27",
         spdx="Apache-2.0",
     )
 
 
-class Reverts(Exception):
-    pass
-
-
-def quote_reference(_fee, _reimbursableGas, _tokenPerEth, targetRelayerProfit, maxSubsidyPerOperation, pot,
-                    txGasPrice, baseFee):  # fmt: skip
-    """The same function in plain Python integers, written from the Solidity, for checking the z3 terms."""
-
-    def checked(value):
-        if value >= 2**256:
-            raise Reverts
-        return value
-
-    if _reimbursableGas == 0:
+def quote_reference(_gas, _price, margin, cap, floor, pot, txGasPrice, baseFee):
+    """Quoter._quote in plain Python integers, written from the Solidity. None means it reverts."""
+    if _gas == 0:
         return 0
-    gas_price = min(txGasPrice, checked(baseFee + MAX_PRIORITY_FEE_WEI))
-    product = checked(_reimbursableGas * gas_price)
-    gas_cost = checked(product * _tokenPerEth // WAD)
-    target = checked(gas_cost + min(targetRelayerProfit, _fee))
-    if target <= _fee:
+    if baseFee + TIP >= 2**256:
+        return None
+    gas_price = min(txGasPrice, baseFee + TIP)
+    if _gas * gas_price >= 2**256:
+        return None
+    cost = _gas * gas_price * _price // WAD
+    if cost >= 2**256:
+        return None
+    target = cost if margin == 0 else cost + margin
+    if target >= 2**256:
+        return None
+    if target <= floor:
         return 0
-    return min(min(target - _fee, maxSubsidyPerOperation), pot)
+    return min(min(target - floor, cap), pot)
+
+
+# The Solidity that the model emits, which is also what the extractor emits for Quoter._quote.
+QUOTE_SOURCE = """\
+// SPDX-License-Identifier: Apache-2.0
+// Generated by z3sol from Quoter._quote. Do not edit.
+pragma solidity ^0.8.27;
+
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
+library QuoterQuoteModel {
+  uint128 internal constant TIP = 2 gwei;
+  uint256 internal constant WAD = 1e18;
+
+  struct Inputs {
+    uint256 _gas;
+    uint256 _price;
+    uint128 margin;
+    uint128 cap;
+    uint256 floor;
+    uint256 pot;
+    uint256 txGasPrice;
+    uint256 baseFee;
+  }
+
+  function _quote(Inputs memory i) internal pure returns (uint256) {
+    if (i._gas == 0) {
+      return 0;
+    }
+    uint256 gasPrice = Math.min(i.txGasPrice, (i.baseFee + TIP));
+    uint256 cost = Math.mulDiv((i._gas * gasPrice), i._price, WAD);
+    uint256 target = _withMargin(i, cost, i.margin);
+    if (target <= i.floor) {
+      return 0;
+    }
+    return Math.min(Math.min((target - i.floor), i.cap), i.pot);
+  }
+
+  function _withMargin(Inputs memory i, uint256 _cost, uint256 _margin) internal pure returns (uint256) {
+    if (_margin == 0) {
+      return _cost;
+    }
+    return _cost + _margin;
+  }
+}
+
+contract QuoterQuoteHost {
+  function run(QuoterQuoteModel.Inputs memory i) external pure returns (uint256) {
+    return QuoterQuoteModel._quote(i);
+  }
+}
+"""

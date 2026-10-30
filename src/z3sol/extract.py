@@ -7,8 +7,8 @@ reads from outside itself, and gives it an input name. A key is one of:
 - a storage variable or immutable by its name (`$floor`, `TOKEN`), or a field of a storage struct (`$config.cap`),
   whether the function reads it directly or through a memory copy (`Config memory cfg = $config;` then `cfg.cap`);
 - a field of a storage struct in a mapping, at a key that is a parameter of the modeled function, through a memory copy
-  (`FlowPricing memory pricing = $flowPricing[_flow];` then `pricing.maxSubsidy`, as `$flowPricing[_flow].maxSubsidy`);
-- a field of a memory struct parameter of the modeled function (`_meter.frameGas`);
+  (`Rate memory rate = $rates[_kind];` then `rate.cap`, as `$rates[_kind].cap`);
+- a field of a memory struct parameter of the modeled function (`_meter.used`);
 - a field of `tx`, `block` or `msg` (`tx.gasprice`, `block.basefee`);
 - any other expression, such as an external view call, by its source text without whitespace
   (`TOKEN.balanceOf(address(this))`). An internal call in the read map is a cut point: its result is an input.
@@ -686,8 +686,8 @@ class _Extractor:
                         reads.add("call")
 
     def _named(self, node) -> Const:
-        """A constant, named by an identifier or a member access such as `OxideConstants.MAX_PRIORITY_FEE_WEI`, or an
-        enum member such as `SIPABase.Intent.Deposit`, which the emitted Solidity names by its full name."""
+        """A constant, named by an identifier or a member access such as `Fees.TIP`, or an enum member such as
+        `Kinds.Kind.Small`, which the emitted Solidity names by its full name."""
         decl = self.nodes.get(node.get("referencedDeclaration"))
         if decl is not None and decl["nodeType"] == "EnumValue":
             definition, index = self.enum_members[decl["id"]]

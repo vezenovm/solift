@@ -9,9 +9,9 @@ IToken constant OTHER = IToken(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
 address constant NOBODY = address(0);
 bool constant STRICT = true;
 
-// A gas price with the shapes of a subsidy's priced gas: an enum parameter, an address parameter compared with an
-// immutable and a constant, a struct parameter, locals assigned in branches, compound assignments, a named return, and
-// a quote that reads a mapping entry through a memory copy and cuts an internal call.
+// A priced amount of gas: an enum parameter, an address parameter compared with an immutable and a constant, a struct
+// parameter, locals assigned in branches, compound assignments, a named return, and a quote that reads a mapping entry
+// through a memory copy and cuts an internal call.
 contract Pricer {
   struct Meter {
     uint256 startGas;

@@ -36,7 +36,7 @@ class LinkError(Exception):
 @dataclass(frozen=True)
 class Link:
     """`setup` is the harness as `path:Contract`, with the path relative to the project root. `call` calls the contract
-    under test from the harness, such as `subsidy.exposedQuote(_fee, _reimbursableGas, _tokenPerEth)`. `adapters` maps
+    under test from the harness, such as `quoter.exposedQuote(_gas, _price)`. `adapters` maps
     an input name, or a tuple of names, to the Solidity statements that set it, such as a struct argument built from the
     inputs for its fields. `observed` maps an input name to the expression that the test reads it from. `parameters`
     maps more symbolic parameters of the check, which are not inputs, to their types: an adapter can use them to set

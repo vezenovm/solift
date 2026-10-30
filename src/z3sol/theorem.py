@@ -42,7 +42,7 @@ class TheoremError(Exception):
 class Terms:
     """A model's terms, by their Solidity names: `result`, `reverts`, `outside`, each input, and each local of the
     modeled function at the return that runs. `declared(name)` is a local's value where it is declared, before any
-    assignment. `free(name)` adds a variable that the theorem quantifies over, such as `gasToCover`. `call(name, *args)`
+    assignment. `free(name)` adds a variable that the theorem quantifies over, such as `shares`. `call(name, *args)`
     runs a function of the model on terms, and `at(**values)` gives the terms with inputs replaced, as for one
     configuration."""
 

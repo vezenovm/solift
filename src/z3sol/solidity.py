@@ -13,8 +13,8 @@ from z3sol.ops import TABLE
 
 
 def names(model: Model) -> tuple[str, str]:
-    """The library and host contract names: `DepositSubsidy._quoteSubsidy` gives `DepositSubsidyQuoteSubsidyModel`
-    and `DepositSubsidyQuoteSubsidyHost`, or the model's stem with the same suffixes."""
+    """The library and host contract names: `Quoter._quote` gives `QuoterQuoteModel` and `QuoterQuoteHost`, or the
+    model's stem with the same suffixes."""
     stem = (
         model.stem or model.contract + model.function.name.lstrip("_")[:1].upper() + model.function.name.lstrip("_")[1:]
     )

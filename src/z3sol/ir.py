@@ -26,7 +26,7 @@ class Src:
 @dataclass(frozen=True)
 class Type:
     """`uint<bits>`, `bool`, `address`, `enum`, or `literal`: a number literal, which takes the type of the operand next
-    to it. An enum has its Solidity name, such as `SIPABase.Intent`, and its number of members. A contract or interface
+    to it. An enum has its Solidity name, such as `Kinds.Kind`, and its number of members. A contract or interface
     value is its address."""
 
     kind: str
@@ -94,8 +94,8 @@ class Var(Expr):
 
 @dataclass(frozen=True, eq=False)
 class Const(Expr):
-    """A literal (`text` as written, such as `1e18`), an enum member (`text` such as `SIPABase.Intent.Deposit`, and its
-    index as the value), or a named constant (`name`, such as `MAX_PRIORITY_FEE_WEI`, with its declared type)."""
+    """A literal (`text` as written, such as `1e18`), an enum member (`text` such as `Kinds.Kind.Small`, and its
+    index as the value), or a named constant (`name`, such as `WAD`, with its declared type)."""
 
     value: int | bool
     type: Type = LITERAL
