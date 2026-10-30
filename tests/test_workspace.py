@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 
@@ -153,3 +154,38 @@ def test_an_overlay_entry_under_another_entry_is_refused_before_any_write(tmp_pa
     with pytest.raises(WorkspaceError, match="src/A.sol is under src"):
         Project(root, link=("src/A.sol",), copy=("src",), generated="test/gen").overlay(workspace)
     assert sorted(p.name for p in (root / "lib" / "new").iterdir()) == ["entry"]
+
+
+def test_the_overlay_adds_a_local_file_where_the_project_has_none(tmp_path):
+    harness = tmp_path / "Harness.sol"
+    harness.write_text("contract Harness {}\n")
+    project = Project(
+        git_project(tmp_path / "project"),
+        link=("foundry.toml",),
+        copy=("src",),
+        add={"test/Harness.sol": harness, "src/Added.sol": harness},
+    )
+    root = project.overlay(Workspace(tmp_path / "work"))
+    assert (root / "test" / "Harness.sol").read_text() == "contract Harness {}\n"
+    assert (root / "src" / "Added.sol").read_text() == "contract Harness {}\n"
+    assert not (tmp_path / "project" / "test").exists() and not (tmp_path / "project" / "src" / "Added.sol").exists()
+
+
+@pytest.mark.parametrize(
+    "path, message",
+    [
+        ("src/A.sol", "the added file src/A.sol is in the project"),
+        ("foundry.toml/x.sol", "the added file foundry.toml/x.sol is an overlay entry or under a linked one"),
+        ("src", "the added file src is an overlay entry or under a linked one"),
+        ("../x.sol", "the added file ../x.sol is not a relative path inside the project"),
+        ("/tmp/x.sol", "the added file /tmp/x.sol is not a relative path inside the project"),
+    ],
+)
+def test_an_added_file_that_the_project_has_or_a_link_holds_is_refused_before_any_write(tmp_path, path, message):
+    harness = tmp_path / "Harness.sol"
+    harness.write_text("contract Harness {}\n")
+    project = Project(git_project(tmp_path / "project"), link=("foundry.toml",), copy=("src",), add={path: harness})
+    workspace = Workspace(tmp_path / "work")
+    with pytest.raises(WorkspaceError, match=re.escape(message)):
+        project.overlay(workspace)
+    assert not (workspace.path / "root").exists()

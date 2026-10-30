@@ -7,10 +7,11 @@ none of its parent's locks, and `fresh` does not delete a workspace that another
 
 A project is the foundry project that holds the target. z3sol never writes to it. It builds an overlay root in the
 workspace instead: symlinks to the project's configuration and dependencies (`link`), copies of the sources that forge
-compiles as project files or that a mutant changes (`copy`), and the generated files. Forge reads a symlinked project
-file under its real path and then finds no AST for it, so project files are copied, not linked. A copy keeps the links
-inside it, so each write into the overlay refuses a link and a path that resolves outside the overlay. `guard` checks
-that nothing in the project changed during the run.
+compiles as project files or that a mutant changes (`copy`), local files at paths that the project does not have
+(`add`), such as the harness of a contract that the project does not test, and the generated files. Forge reads a
+symlinked project file under its real path and then finds no AST for it, so project files are copied, not linked. A
+copy keeps the links inside it, so each write into the overlay refuses a link and a path that resolves outside the
+overlay. `guard` checks that nothing in the project changed during the run.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import pathlib
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MARKER = ".z3sol-workspace"
 LOCK = ".z3sol-lock"
@@ -60,13 +61,15 @@ class Workspace:
 
 @dataclass(frozen=True)
 class Project:
-    """`root` is None until the command line gives it, for a project outside this repo. `generated` is the overlay
-    directory for the generated files. It must be inside the profile's test directory, so that forge builds them."""
+    """`root` is None until the command line gives it, for a project outside this repo. `add` maps a project path that
+    the project does not have to the local file that the overlay writes there. `generated` is the overlay directory for
+    the generated files. It must be inside the profile's test directory, so that forge builds them."""
 
     root: pathlib.Path | None = None
     profile: str | None = None
     link: tuple[str, ...] = ()
     copy: tuple[str, ...] = ()
+    add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
     generated: str = "test/z3sol"
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
@@ -80,6 +83,14 @@ class Project:
                     raise WorkspaceError(f"the overlay entry {entry} is under {other}")
         if len(set(entries)) != len(entries):
             raise WorkspaceError("an overlay entry is both linked and copied, or named twice")
+        for rel in self.add:
+            added = pathlib.PurePosixPath(rel)
+            if added.is_absolute() or ".." in added.parts:
+                raise WorkspaceError(f"the added file {rel} is not a relative path inside the project")
+            if added in entries or any(pathlib.PurePosixPath(link) in added.parents for link in self.link):
+                raise WorkspaceError(f"the added file {rel} is an overlay entry or under a linked one")
+            if os.path.lexists(self.root / rel):
+                raise WorkspaceError(f"the added file {rel} is in the project, which the overlay does not change")
         root = workspace.fresh(name)
         for rel in self.link:
             target = root / rel
@@ -94,6 +105,11 @@ class Project:
                 shutil.copytree(source, target, symlinks=True)
             else:
                 shutil.copy2(source, target)
+        for rel, source in self.add.items():
+            target = root / rel
+            _inside(root, target.parent)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write(root, target, pathlib.Path(source).read_text())
         for rel, content in (replace or {}).items():
             if not any(rel == c or rel.startswith(c.rstrip("/") + "/") for c in self.copy):
                 raise WorkspaceError(f"{rel} is not under a copied path, so the overlay cannot replace it")
