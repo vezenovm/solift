@@ -42,20 +42,36 @@ class Vector:
         return "reverts" if self.reverts else "pays" if self.result else "zero"
 
 
+class _Terms:
+    """A model's symbolic terms, built once and evaluated on each vector by substitution, so that the vectors check the
+    same terms that the theorems use."""
+
+    def __init__(self, model: Model):
+        self.model = model
+        self.inputs = symbols(model)
+        self.terms = terms(model, self.inputs)
+
+    def evaluate(self, values: dict) -> Vector:
+        model, t = self.model, self.terms
+        pairs = [
+            (self.inputs[v.name], z3.BoolVal(values[v.name]) if v.type == BOOL else z3.IntVal(values[v.name]))
+            for v in model.inputs
+        ]
+        reverts = z3.simplify(z3.substitute(t.reverts, *pairs))
+        if not (z3.is_true(reverts) or z3.is_false(reverts)):
+            raise VectorError(f"{model.name}: the revert condition does not evaluate on {values}")
+        if z3.is_true(reverts):
+            return Vector(values, True, False if model.function.returns == BOOL else 0)
+        value = z3.simplify(z3.substitute(t.value, *pairs))
+        if z3.is_true(value) or z3.is_false(value):
+            return Vector(values, False, z3.is_true(value))
+        if not z3.is_int_value(value):
+            raise VectorError(f"{model.name}: the result does not evaluate on {values}")
+        return Vector(values, False, value.as_long())
+
+
 def evaluate(model: Model, values: dict) -> Vector:
-    inputs = {v.name: z3.BoolVal(values[v.name]) if v.type == BOOL else z3.IntVal(values[v.name]) for v in model.inputs}
-    t = terms(model, inputs)
-    reverts = z3.simplify(t.reverts)
-    if not (z3.is_true(reverts) or z3.is_false(reverts)):
-        raise VectorError(f"{model.name}: the revert condition does not evaluate on {values}")
-    if z3.is_true(reverts):
-        return Vector(values, True, False if model.function.returns == BOOL else 0)
-    value = z3.simplify(t.value)
-    if z3.is_true(value) or z3.is_false(value):
-        return Vector(values, False, z3.is_true(value))
-    if not z3.is_int_value(value):
-        raise VectorError(f"{model.name}: the result does not evaluate on {values}")
-    return Vector(values, False, value.as_long())
+    return _Terms(model).evaluate(values)
 
 
 def _values(model: Model, inputs: dict, m: z3.ModelRef) -> dict:
@@ -66,10 +82,10 @@ def _values(model: Model, inputs: dict, m: z3.ModelRef) -> dict:
     return values
 
 
-def reaching(model: Model, outcome: str) -> Vector | None:
+def reaching(model: Model, outcome: str, built: _Terms | None = None) -> Vector | None:
     """An input with the outcome, from z3, or None when z3 finds none."""
-    inputs = symbols(model)
-    t = terms(model, inputs)
+    built = built or _Terms(model)
+    inputs, t = built.inputs, built.terms
     pays = t.value if z3.is_bool(t.value) else t.value > 0
     condition = {"reverts": t.reverts, "pays": z3.And(z3.Not(t.reverts), pays)}.get(
         outcome, z3.And(z3.Not(t.reverts), z3.Not(pays))
@@ -79,12 +95,12 @@ def reaching(model: Model, outcome: str) -> Vector | None:
     s.add(domain(model, inputs), condition)
     if s.check() != z3.sat:
         return None
-    return evaluate(model, _values(model, inputs, s.model()))
+    return built.evaluate(_values(model, inputs, s.model()))
 
 
-def boundary(model: Model) -> list[Vector]:
-    inputs = symbols(model)
-    t = terms(model, inputs)
+def boundary(model: Model, built: _Terms | None = None) -> list[Vector]:
+    built = built or _Terms(model)
+    inputs, t = built.inputs, built.terms
     if not t.comparisons:
         return []
     pays = t.value if z3.is_bool(t.value) else t.value > 0
@@ -96,7 +112,7 @@ def boundary(model: Model) -> list[Vector]:
                 s.set("timeout", BOUNDARY_TIMEOUT_MS)
                 s.add(domain(model, inputs), z3.Not(t.reverts), a == b + offset, wanted)
                 if s.check() == z3.sat:
-                    found.append(evaluate(model, _values(model, inputs, s.model())))
+                    found.append(built.evaluate(_values(model, inputs, s.model())))
                     break
     return found
 
@@ -123,8 +139,9 @@ def draw(rng: random.Random, bound: int | None, drawn: list[int]):
 def sample(model: Model, impossible: tuple[str, ...] = ()) -> list[Vector]:
     """The boundary vectors, then up to PER_OUTCOME random vectors for each outcome. `impossible` names the outcomes
     that no input reaches, which the vectors then do not require."""
-    found = boundary(model)
-    if not found and terms(model, symbols(model)).comparisons:
+    built = _Terms(model)
+    found = boundary(model, built)
+    if not found and built.terms.comparisons:
         raise VectorError(f"{model.name}: z3 found no input at the boundary of any comparison")
     rng = random.Random(model.name)
     kept = {outcome: [] for outcome in OUTCOMES}
@@ -134,16 +151,16 @@ def sample(model: Model, impossible: tuple[str, ...] = ()) -> list[Vector]:
             values[v.name] = draw(rng, None if v.type == BOOL else v.type.bound, drawn)
             if v.type != BOOL:
                 drawn.append(values[v.name])
-        vector = evaluate(model, values)
+        vector = built.evaluate(values)
         if len(kept[vector.outcome]) < PER_OUTCOME:
             kept[vector.outcome].append(vector)
     for outcome in OUTCOMES:
         if outcome in impossible:
-            vector = kept[outcome][0] if kept[outcome] else reaching(model, outcome)
+            vector = kept[outcome][0] if kept[outcome] else reaching(model, outcome, built)
             if vector is not None:
                 raise VectorError(f"{model.name}: the spec calls {outcome} impossible, but {vector.values} reaches it")
         elif not kept[outcome]:
-            vector = reaching(model, outcome)
+            vector = reaching(model, outcome, built)
             if vector is None or vector.outcome != outcome:
                 raise VectorError(f"{model.name}: neither random inputs nor z3 reached {outcome}")
             kept[outcome].append(vector)
