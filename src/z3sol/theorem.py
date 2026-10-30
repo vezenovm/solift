@@ -8,7 +8,8 @@ it proves:
   not proved). A theorem that must prove these, such as liveness, puts them in its goal instead.
 - `given`: a function of the terms that gives more hypotheses. It must not mention the model's reverts or outside:
   those go in `assume`, so that each result lists them. It sees the terms without `reverts`, `outside` and `at`, and
-  a called function gives it only its value.
+  a called function gives it only its value. This keeps a theorem from using them by mistake. It is not a sandbox: a
+  theorem file is Python, which can reach any object, so it is reviewed like other code.
 
 A theorem expected to prove needs a `witness`: a condition that, together with the hypotheses, z3 must satisfy, so a
 proof from hypotheses that never hold fails. A theorem can instead expect a counterexample, with the `issue` of the
@@ -174,9 +175,8 @@ def _mentions(term: z3.ExprRef, sub: z3.ExprRef) -> bool:
 
 class _Hypotheses:
     """The terms as `given` sees them: the result, the inputs, the locals, `declared`, `free`, and a called function's
-    value. It keeps no model and no Terms, so none of its attributes leads to the model's reverts or outside. `h[name]`
-    is an input, a local or a free variable, as for Terms, and `h.name` too unless the view has an attribute of that
-    name."""
+    value. None of its attributes or items is the model's reverts or outside, or the model or Terms. `h[name]` is an
+    input, a local or a free variable, as for Terms, and `h.name` too unless the view has an attribute of that name."""
 
     HIDDEN = ("reverts", "outside", "at", "model")
 

@@ -55,8 +55,11 @@ To pin z3sol from another project, install it by commit: `pip install git+https:
 ## What a run proves
 
 - The link: for every input, the contract and the emitted Solidity both succeed with the same result, or both revert.
-  Each input is a parameter of the Halmos check, set in the contract through the call or a read adapter, except
-  `tx.gasprice`, which Halmos already makes symbolic. Revert data, storage writes and events are not compared.
+  Each input is a parameter of the Halmos check, set in the contract through the call or a read adapter, except an
+  `observed` input, which the check reads from the deployed contract: `tx.gasprice`, which Halmos already makes
+  symbolic, a cut point, which takes the values that its own symbolic inputs give it, and an immutable that the
+  harness sets, such as a token address, which takes only that value. Revert data, storage writes and events are not
+  compared.
 - The operator rows and lemmas that the model uses, proved in the same build: each checked operator reverts exactly
   when the table says, `Math.min` is the smaller value, and `Math.mulDiv` is the floor of the product when both
   operands are below 2**128.
