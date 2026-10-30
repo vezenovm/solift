@@ -1,13 +1,14 @@
 import dataclasses
 
 import pytest
+import z3
 
 from tests.projects import QUOTER, QUOTER_READS, fixtures
 from z3sol import forge, ops
 from z3sol.extract import extract
 from z3sol.ir import UINT256, Const, Function, If, Model, Return, Var
 from z3sol.solidity import source
-from z3sol.vectors import VectorError, sample, vectors_source
+from z3sol.vectors import VectorError, boundary, sample, vectors_source
 from z3sol.workspace import Workspace
 
 
@@ -64,3 +65,13 @@ def test_z3_finds_an_input_for_an_outcome_that_no_random_input_reaches():
     )
     vectors = sample(Model("C", Function("f", (a,), UINT256, body)), impossible=("zero",))
     assert [v.values["a"] for v in vectors if v.reverts] == [123456789]
+
+
+def test_an_unknown_from_z3_never_counts_as_an_unreachable_outcome(monkeypatch):
+    a = Var("a", input=True)
+    model = Model("C", Function("f", (a,), UINT256, (Return(ops.make("add", ops.make("div", a, Const(4)), Const(1))),)))
+    monkeypatch.setattr(z3.Solver, "check", lambda self, *args: z3.unknown)
+    with pytest.raises(VectorError, match="z3 could not decide whether an input reaches zero"):
+        sample(model, impossible=("zero", "reverts"))
+    with pytest.raises(VectorError, match="z3 gave unknown at the boundary of a comparison"):
+        boundary(Model("C", Function("f", (a,), UINT256, (Return(ops.make("min", a, Const(4))),))))

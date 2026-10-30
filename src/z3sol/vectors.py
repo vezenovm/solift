@@ -83,7 +83,8 @@ def _values(model: Model, inputs: dict, m: z3.ModelRef) -> dict:
 
 
 def reaching(model: Model, outcome: str, built: _Terms | None = None) -> Vector | None:
-    """An input with the outcome, from z3, or None when z3 finds none."""
+    """An input with the outcome, from z3, or None when z3 proves that no input reaches it. A VectorError when z3
+    cannot decide."""
     built = built or _Terms(model)
     inputs, t = built.inputs, built.terms
     pays = t.value if z3.is_bool(t.value) else t.value > 0
@@ -93,7 +94,10 @@ def reaching(model: Model, outcome: str, built: _Terms | None = None) -> Vector 
     s = z3.Solver()
     s.set("timeout", BOUNDARY_TIMEOUT_MS)
     s.add(domain(model, inputs), condition)
-    if s.check() != z3.sat:
+    r = s.check()
+    if r == z3.unknown:
+        raise VectorError(f"{model.name}: z3 could not decide whether an input reaches {outcome}: {s.reason_unknown()}")
+    if r == z3.unsat:
         return None
     return built.evaluate(_values(model, inputs, s.model()))
 
@@ -107,13 +111,19 @@ def boundary(model: Model, built: _Terms | None = None) -> list[Vector]:
     found = []
     for a, b in t.comparisons:
         for offset in (-1, 0, 1):
+            undecided = False
             for wanted in (pays, z3.BoolVal(True)):
                 s = z3.Solver()
                 s.set("timeout", BOUNDARY_TIMEOUT_MS)
                 s.add(domain(model, inputs), z3.Not(t.reverts), a == b + offset, wanted)
-                if s.check() == z3.sat:
+                r = s.check()
+                if r == z3.sat:
                     found.append(built.evaluate(_values(model, inputs, s.model())))
                     break
+                undecided = undecided or r == z3.unknown
+            else:
+                if undecided:
+                    raise VectorError(f"{model.name}: z3 gave unknown at the boundary of a comparison, {a} vs {b}")
     return found
 
 
