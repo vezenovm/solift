@@ -4,7 +4,8 @@ The link proves the emitted Solidity equal to the bytecode, and Halmos proves th
 proves that smt.py composes the rows as the Solidity does: the vectors check that on samples. For each comparison and
 each min of the model, z3 finds inputs that do not revert where the two sides are equal and one apart, with inputs that
 pay first, so that an early return does not skip the comparison. Random inputs then cover each outcome: pays (a
-positive or true result), zero, and reverts. A generated forge test runs the emitted Solidity on each vector and
+positive or true result), zero, and reverts. z3 finds an input for an outcome that no random input reaches, such as a
+revert that only inputs near 2**256 reach. A generated forge test runs the emitted Solidity on each vector and
 compares whether it reverts, and its result, with the z3 terms.
 """
 
@@ -57,6 +58,30 @@ def evaluate(model: Model, values: dict) -> Vector:
     return Vector(values, False, value.as_long())
 
 
+def _values(model: Model, inputs: dict, m: z3.ModelRef) -> dict:
+    values = {}
+    for v in model.inputs:
+        x = m.eval(inputs[v.name], model_completion=True)
+        values[v.name] = z3.is_true(x) if v.type == BOOL else x.as_long()
+    return values
+
+
+def reaching(model: Model, outcome: str) -> Vector | None:
+    """An input with the outcome, from z3, or None when z3 finds none."""
+    inputs = symbols(model)
+    t = terms(model, inputs)
+    pays = t.value if z3.is_bool(t.value) else t.value > 0
+    condition = {"reverts": t.reverts, "pays": z3.And(z3.Not(t.reverts), pays)}.get(
+        outcome, z3.And(z3.Not(t.reverts), z3.Not(pays))
+    )
+    s = z3.Solver()
+    s.set("timeout", BOUNDARY_TIMEOUT_MS)
+    s.add(domain(model, inputs), condition)
+    if s.check() != z3.sat:
+        return None
+    return evaluate(model, _values(model, inputs, s.model()))
+
+
 def boundary(model: Model) -> list[Vector]:
     inputs = symbols(model)
     t = terms(model, inputs)
@@ -71,12 +96,7 @@ def boundary(model: Model) -> list[Vector]:
                 s.set("timeout", BOUNDARY_TIMEOUT_MS)
                 s.add(domain(model, inputs), z3.Not(t.reverts), a == b + offset, wanted)
                 if s.check() == z3.sat:
-                    m = s.model()
-                    values = {}
-                    for v in model.inputs:
-                        x = m.eval(inputs[v.name], model_completion=True)
-                        values[v.name] = z3.is_true(x) if v.type == BOOL else x.as_long()
-                    found.append(evaluate(model, values))
+                    found.append(evaluate(model, _values(model, inputs, s.model())))
                     break
     return found
 
@@ -117,9 +137,16 @@ def sample(model: Model, impossible: tuple[str, ...] = ()) -> list[Vector]:
         vector = evaluate(model, values)
         if len(kept[vector.outcome]) < PER_OUTCOME:
             kept[vector.outcome].append(vector)
-    missing = [outcome for outcome, vectors in kept.items() if not vectors and outcome not in impossible]
-    if missing:
-        raise VectorError(f"{model.name}: no random input reached {', '.join(missing)}")
+    for outcome in OUTCOMES:
+        if outcome in impossible:
+            vector = kept[outcome][0] if kept[outcome] else reaching(model, outcome)
+            if vector is not None:
+                raise VectorError(f"{model.name}: the spec calls {outcome} impossible, but {vector.values} reaches it")
+        elif not kept[outcome]:
+            vector = reaching(model, outcome)
+            if vector is None or vector.outcome != outcome:
+                raise VectorError(f"{model.name}: neither random inputs nor z3 reached {outcome}")
+            kept[outcome].append(vector)
     return found + [vector for outcome in OUTCOMES for vector in kept[outcome]]
 
 
