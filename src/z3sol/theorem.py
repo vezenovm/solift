@@ -19,6 +19,7 @@ Every result other than the expected one fails the run, and so does "unknown" fr
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -63,6 +64,9 @@ class Terms:
         return self.__getattr__(name)
 
     def free(self, name: str, kind: str = "int") -> z3.ExprRef:
+        """A variable named by an identifier, like the inputs, so that every solver reads its SMT-LIB name as it is."""
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise TheoremError(f"{name} is not an identifier")
         if name in self.inputs or name in self.locals:
             raise TheoremError(f"{name} is already an input or a local of {self.model.name}")
         if name not in self.free_variables:

@@ -210,3 +210,9 @@ def test_given_holds_no_way_back_to_the_model_or_its_terms(q, given):
 
     with pytest.raises((TheoremError, AttributeError)):
         prove(never_reverts, q)
+
+
+def test_a_free_variable_is_named_by_an_identifier(q):
+    with pytest.raises(TheoremError, match="gas limit is not an identifier"):
+        q.free("gas limit")
+    assert str(q.free("gasLimit")) == "gasLimit"
