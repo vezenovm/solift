@@ -11,20 +11,35 @@ Solidity Arithmetic Prover (working name). For each Solidity function of a spec,
 
 Nobody writes the formula. People write the theorems, the read map, and the test harness with its read adapters.
 
-Status: milestone M3. The acceptance run against Oxide covers the functions of Oxide's `formulas/subsidies.py`:
+Status: milestone M4. The acceptance run against Oxide covers the functions of Oxide's `formulas/subsidies.py`:
 `DepositSubsidy._quoteSubsidy`, `DepositSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`), `DepositSubsidy._pricedGas`,
 and `PlainWithdrawalSubsidy.quoteSubsidy` (cut at `_tokenWeiPerEth()`). It also covers two contracts that Oxide does not
 prove, with their own theorems and with harnesses in `acceptance/oxide/harness/`: `Caps.getCurrentAvailable`, the
 portal's deposit capacity, and `MigrationSubsidy._pricedGas` and `_quoteSubsidy`, which Oxide's registry exempts.
 Wiring the tool into Oxide's proof check, and deleting `subsidies.py` there, happens from an Oxide session.
 
-The extractor takes loop-free pure and view functions with checked `uint` arithmetic, comparisons, boolean logic,
-ternaries, `if` and early returns, locals assigned also in branches, compound assignments, named returns, addresses,
-enums, constants and immutables. Internal calls are inlined. `Math.min` and `Math.mulDiv` are operators backed by
-lemmas. Named arguments bind by name. It refuses loops, storage writes, `unchecked`, signed integers, width casts, tuple
-returns, exponentiation, `%`, `require`, assembly, a local that shadows another variable, a variable or constant named
-`i` (the inputs struct of the emitted Solidity), a constant with the name of a parameter, local or return, and a
-function without inputs, with the place in the source. The type of each operation must match the type in solc's AST.
+Two acceptance runs cover public contracts, each at a pinned commit, with harnesses in `acceptance/<project>/harness/`:
+
+- Resupply's lending pair, at the commit that the exploit of 2025-06-26 drained: the check that `borrow` makes,
+  `_updateExchangeRate` and then `_isSolvent`. The theorem that a solvent borrower's debt is within twice the
+  loan-to-value limit fails with the exploit as its counterexample, an oracle price above 1e36, and proves on the
+  fixed source.
+- Morpho Blue v1.0.0: `_isHealthy`, with the same theorem, which proves, and a supply then a withdraw in its share math.
+  Three of the theorems are rules of Morpho's Certora specs: `supplyWithdraw`, `checkSummaryMulDivUp` and
+  `checkSummaryMulDivDown`.
+
+The extractor takes loop-free functions with checked `uint` arithmetic, comparisons, boolean logic, ternaries, `if` and
+early returns, `require`, `assert` and `revert`, locals assigned also in branches, compound assignments, named returns,
+addresses, enums, constants and immutables, and `uint256(x)` of a narrower `x`. Internal calls are inlined, also a
+library call on a value (`x.mulDivDown(y, d)`). `Math.min` and `Math.mulDiv` are operators backed by lemmas. Named
+arguments bind by name. A target can name one of several functions of one name by its parameter types, and a parameter
+of a user-defined value type, such as Morpho's `Id`, that only read map keys use is not an input. A function can write
+storage and emit events: the model is its value and its revert, it lists the writes and events it leaves out, and the
+extractor refuses a write that could change either (`extract.py`). It refuses loops, `unchecked`, signed integers,
+narrowing casts, tuple returns, exponentiation, `%`, assembly, a local that shadows another variable, a variable or
+constant named `i` (the inputs struct of the emitted Solidity), a constant with the name of a parameter, local or
+return, and a function without inputs, with the place in the source. The type of each operation must match the type
+in solc's AST.
 
 ## Run
 
@@ -38,6 +53,8 @@ git submodule update --init
 .venv/bin/python -m examples.quoter                     # one spec on the test fixtures
 .venv/bin/python -m examples.pricer                     # three specs in one run
 Z3SOL_FORGE=aztec-forge .venv/bin/python -m acceptance.oxide --root <oxide>/l1-contracts
+.venv/bin/python -m acceptance.resupply --root <resupply>    # setup in acceptance/resupply/__main__.py
+.venv/bin/python -m acceptance.morpho --root <morpho-blue>   # setup in acceptance/morpho/__main__.py
 ```
 
 A spec (`examples/quoter/spec.py`) names the target function, its read map, its link to the harness, and its theorems.
@@ -60,8 +77,8 @@ To pin z3sol from another project, install it by commit: `pip install git+https:
   Each input is a parameter of the Halmos check, set in the contract through the call or a read adapter, except an
   `observed` input, which the check reads from the deployed contract: `tx.gasprice`, which Halmos already makes
   symbolic, a cut point, which takes the values that its own symbolic inputs give it, and an immutable that the
-  harness sets, such as a token address, which takes only that value. Revert data, storage writes and events are not
-  compared.
+  harness sets, such as a token address, which takes only that value. The check reads the inputs before the call.
+  Revert data, storage writes and events are not compared.
 - The operator rows and lemmas that the model uses, proved in the same build: each checked operator reverts exactly
   when the table says, `Math.min` is the smaller value, and `Math.mulDiv` is the floor of the product when both
   operands are below 2**128.
