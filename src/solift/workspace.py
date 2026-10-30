@@ -24,6 +24,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
+from solift import forge
+
 MARKER = ".solift-workspace"
 LOCK = ".solift-lock"
 # The lock files this process holds, open for as long as it runs: the process id and the descriptor of each. A forked
@@ -63,14 +65,48 @@ class Workspace:
 class Project:
     """`root` is None until the command line gives it, for a project outside this repo. `add` maps a project path that
     the project does not have to the local file that the overlay writes there. `generated` is the overlay directory for
-    the generated files. It must be inside the profile's test directory, so that forge builds them."""
+    the generated files. It must be inside the profile's test directory, so that forge builds them.
+
+    `Project.foundry()` leaves `link`, `copy` and `generated` as None, which `resolve` infers from the project's foundry
+    configuration once the root is known. A field given as `()` stays empty."""
 
     root: pathlib.Path | None = None
     profile: str | None = None
-    link: tuple[str, ...] = ()
-    copy: tuple[str, ...] = ()
+    link: tuple[str, ...] | None = ()
+    copy: tuple[str, ...] | None = ()
     add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
-    generated: str = "test/solift"
+    generated: str | None = "test/solift"
+
+    @classmethod
+    def foundry(
+        cls,
+        root: pathlib.Path | None = None,
+        profile: str | None = None,
+        link: tuple[str, ...] | None = None,
+        copy: tuple[str, ...] | None = None,
+        add: dict[str, pathlib.Path] | None = None,
+        generated: str | None = None,
+    ) -> Project:
+        """A conventional Foundry project, whose fields `resolve` infers: it links foundry.toml, remappings.txt and the
+        library directories, copies the source directory, and writes the generated files to `<test>/solift`."""
+        return cls(root, profile, link, copy, add or {}, generated)
+
+    def resolve(self) -> Project:
+        """The project with each inferred field set from `forge config --json` under its profile. A field that names a
+        path the project does not have is left out of `link`, and `copy` holds the source directory if it exists."""
+        if self.link is not None and self.copy is not None and self.generated is not None:
+            return self
+        config = forge.config(self.root, self.profile)
+        exists = [p for p in ("foundry.toml", "remappings.txt", *config["libs"]) if (self.root / p).exists()]
+        src, test = str(pathlib.PurePosixPath(config["src"])), pathlib.PurePosixPath(config["test"])
+        return Project(
+            root=self.root,
+            profile=self.profile,
+            link=self.link if self.link is not None else tuple(dict.fromkeys(exists)),
+            copy=self.copy if self.copy is not None else ((src,) if (self.root / src).is_dir() else ()),
+            add=self.add,
+            generated=self.generated if self.generated is not None else f"{test}/solift",
+        )
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
         """Builds the overlay root, with `replace` (a project path to new content) applied to the copies. An entry under

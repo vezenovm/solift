@@ -26,15 +26,32 @@ def binary() -> str:
     return os.environ.get("SOLIFT_FORGE", "forge")
 
 
-def environment(out: pathlib.Path, cache: pathlib.Path, profile: str | None = None, allow_paths=()) -> dict:
+def _clean(profile: str | None) -> dict:
+    """The caller's environment without its FOUNDRY_ variables, with the profile."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("FOUNDRY_")}
-    env["FOUNDRY_OUT"] = str(out)
-    env["FOUNDRY_CACHE_PATH"] = str(cache)
     if profile:
         env["FOUNDRY_PROFILE"] = profile
+    return env
+
+
+def environment(out: pathlib.Path, cache: pathlib.Path, profile: str | None = None, allow_paths=()) -> dict:
+    env = _clean(profile)
+    env["FOUNDRY_OUT"] = str(out)
+    env["FOUNDRY_CACHE_PATH"] = str(cache)
     if allow_paths:
         env["FOUNDRY_ALLOW_PATHS"] = "[" + ",".join(str(p) for p in allow_paths) + "]"
     return env
+
+
+def config(root: pathlib.Path, profile: str | None = None) -> dict:
+    """The project's foundry configuration under the profile, as `forge config --json` gives it. It writes nothing."""
+    command = [binary(), "config", "--json", "--root", str(root)]
+    result = subprocess.run(command, env=_clean(profile), capture_output=True, text=True, check=False)
+    try:
+        return json.loads(result.stdout) if not result.returncode else None
+    except json.JSONDecodeError:
+        pass
+    raise BuildError(f"{' '.join(command)} failed:\n{result.stdout}\n{result.stderr}")
 
 
 def build(

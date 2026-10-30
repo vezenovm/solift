@@ -18,6 +18,7 @@ row and lemma that the model uses, which this build proves on its own bytecode a
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 import re
 from dataclasses import dataclass, field
 
@@ -34,8 +35,24 @@ class LinkError(Exception):
 
 
 @dataclass(frozen=True)
+class Harness:
+    """A harness kept next to the spec, outside the project, as the setup of a link. The run adds `path` to the overlay
+    at `at`, a path in the overlay that is by default `<generated>/harness/<file name>`, and the link test inherits
+    `contract`. Its imports resolve from that place, so a file that it imports by a relative path goes in
+    `Project.add` too."""
+
+    path: pathlib.Path
+    contract: str
+    at: str | None = None
+
+    def destination(self, generated: str) -> str:
+        return self.at or f"{generated}/harness/{pathlib.Path(self.path).name}"
+
+
+@dataclass(frozen=True)
 class Link:
-    """`setup` is the harness as `path:Contract`, with the path relative to the project root. `call` calls the contract
+    """`setup` is the harness as `path:Contract`, with the path relative to the project root, or a `Harness` that the
+    run adds to the overlay. `call` calls the contract
     under test from the harness, such as `quoter.exposedQuote(_gas, _price)`. `adapters` maps
     an input name, or a tuple of names, to the Solidity statements that set it, such as a struct argument built from the
     inputs for its fields. `observed` maps an input name to the expression that the test reads it from. `parameters`
@@ -43,7 +60,7 @@ class Link:
     what the contract reads, and an observed expression reads the input that results, as for a cut point such as a
     price that the contract computes from a feed. `imports` are more import directives that the adapters need."""
 
-    setup: str
+    setup: str | Harness
     call: str
     adapters: dict = field(default_factory=dict)
     observed: dict = field(default_factory=dict)

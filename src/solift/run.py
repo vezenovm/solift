@@ -36,7 +36,7 @@ import z3
 from solift import forge, solvers
 from solift.extract import ExtractionError, extract
 from solift.halmos import HalmosEngine
-from solift.link import Link, LinkError, generate, operators_test, placed
+from solift.link import Harness, Link, LinkError, generate, operators_test, placed
 from solift.solidity import names
 from solift.theorem import Terms, TheoremError, prove, theorem
 from solift.vectors import VectorError, sample, vectors_source
@@ -138,6 +138,10 @@ def run(
     record["specs"] = [c.record for c in checked]
     try:
         record["versions"] = _tool_versions(engine)
+        project, prepared = _prepared(specs)
+        for c, spec in zip(checked, prepared, strict=True):
+            c.spec = spec
+        record["project"] = _project(project)
         build = (workspace.fresh("build-out"), workspace.fresh("build-cache"))
         root = project.overlay(workspace, replace=replace)
         infos = forge.build(root, *build, project.profile, allow)
@@ -203,6 +207,27 @@ def run(
         for t in c.record["theorems"]:
             t["link"] = status
     return _finish(record, checked, guard, clock)
+
+
+def _prepared(specs: list[Spec]) -> tuple[Project, list[Spec]]:
+    """The specs' project with its inferred fields resolved and each `Harness` added to its overlay, and the specs on
+    it with each harness named as `path:Contract`. Specs may share a harness, and two harnesses at one place fail."""
+    project = specs[0].project.resolve()
+    add, setups = dict(project.add), []
+    for spec in specs:
+        setup = spec.link.setup
+        if isinstance(setup, Harness):
+            at, source = setup.destination(project.generated), pathlib.Path(setup.path).resolve()
+            if at in add and pathlib.Path(add[at]).resolve() != source:
+                raise WorkspaceError(f"two harnesses go to {at}: {add[at]} and {setup.path}")
+            add[at] = source
+            setup = f"{at}:{setup.contract}"
+        setups.append(setup)
+    project = dataclasses.replace(project, add=add)
+    return project, [
+        dataclasses.replace(spec, project=project, link=dataclasses.replace(spec.link, setup=setup))
+        for spec, setup in zip(specs, setups, strict=True)
+    ]
 
 
 def _link(models, shared, root, workspace, build, project, allow, engine, record) -> None:
@@ -272,7 +297,7 @@ class _Clock:
 def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     """The terms of each spec's model, by spec name, from one build of the project: for checks that use the models
     without a run, such as a check of each deployed configuration. Raises the first extraction error."""
-    project = specs[0].project
+    project = specs[0].project.resolve()
     guard = project.guard(workspace)
     root = project.overlay(workspace)
     out, cache = workspace.fresh("ast-out"), workspace.fresh("ast-cache")
@@ -402,6 +427,9 @@ def _project(project: Project) -> dict:
         "commit": commit,
         "dirty": bool(git("status", "--porcelain")) if commit else None,
         "profile": project.profile,
+        "link": list(project.link or ()),
+        "copy": list(project.copy or ()),
+        "generated": project.generated,
         "added": added,
     }
 

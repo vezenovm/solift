@@ -123,8 +123,22 @@ ENVIRONMENT = {
 ASSIGNMENTS = {"=": None, "+=": "add", "-=": "sub", "*=": "mul", "/=": "div", "%=": "mod"}
 
 
+@dataclass(frozen=True)
+class Missing:
+    """A read that the read map does not name: its key as the read map would name it, what it is, and its place."""
+
+    key: str
+    what: str
+    src: Src
+
+
 class ExtractionError(Exception):
-    pass
+    """An error with the place in the source. `missing` is the read, when the error is a read that the read map does not
+    name: discover.py adds it to the read map and extracts again."""
+
+    def __init__(self, message: str, missing: Missing | None = None):
+        super().__init__(message)
+        self.missing = missing
 
 
 @dataclass(frozen=True)
@@ -141,6 +155,14 @@ def extract(build_infos: list[dict], target: str, reads: dict[str, str]) -> Extr
     if len(infos) != 1:
         raise ExtractionError(f"{len(infos)} compile jobs hold {path}, not one")
     return _Extractor(infos[0], reads).extract(target)
+
+
+def declared(build_infos: list[dict], target: str) -> set[str]:
+    """The names that the target function declares: its parameters, its returns and its locals."""
+    path = target.rpartition(":")[0]
+    info = next(info for info in build_infos if path in info["output"]["sources"])
+    node = _Extractor(info, {}).target(target)
+    return {n["name"] for n in _subtree(node) if n.get("nodeType") == "VariableDeclaration" and n.get("name")}
 
 
 def _normal(text: str) -> str:
@@ -209,38 +231,16 @@ class _Extractor:
         path, start, length = self._place(node)
         return self.contents[path][start : start + length].decode()
 
-    def fail(self, node, message: str):
-        raise ExtractionError(f"{self.src(node)}: {message}")
+    def fail(self, node, message: str, missing: Missing | None = None):
+        raise ExtractionError(f"{self.src(node)}: {message}", missing)
 
     # The target.
 
     def extract(self, target: str) -> Extraction:
+        node = self.target(target)
         path, _, qualified = target.rpartition(":")
-        contract_name, _, function_part = qualified.partition(".")
-        signature = re.fullmatch(r"(\w+)(?:\(([^()]*)\))?", function_part)
-        if signature is None:
-            raise ExtractionError(f"{target} names no function as Contract.function or Contract.function(types)")
-        function_name, types = signature.groups()
-        wanted = None if types is None else [t.strip() for t in types.split(",") if t.strip()]
+        contract_name = qualified.partition(".")[0]
         unit = self.sources[path]["ast"]
-        contracts = [n for n in unit["nodes"] if n["nodeType"] == "ContractDefinition" and n["name"] == contract_name]
-        if len(contracts) != 1:
-            raise ExtractionError(f"{path} has no contract {contract_name}")
-        candidates = []
-        for base_id in contracts[0]["linearizedBaseContracts"]:
-            base = self.nodes[base_id]
-            candidates = [
-                n
-                for n in base["nodes"]
-                if n["nodeType"] == "FunctionDefinition"
-                and n["name"] == function_name
-                and (wanted is None or [_parameter_type(p) for p in n["parameters"]["parameters"]] == wanted)
-            ]
-            if candidates:
-                break
-        if len(candidates) != 1:
-            raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_part}, not one")
-        node = candidates[0]
         function = self._function(node, top=True)
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
@@ -271,6 +271,35 @@ class _Extractor:
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}
         return Extraction(model, sources)
+
+    def target(self, target: str) -> dict:
+        """The FunctionDefinition node that the target names."""
+        path, _, qualified = target.rpartition(":")
+        contract_name, _, function_part = qualified.partition(".")
+        signature = re.fullmatch(r"(\w+)(?:\(([^()]*)\))?", function_part)
+        if signature is None:
+            raise ExtractionError(f"{target} names no function as Contract.function or Contract.function(types)")
+        function_name, types = signature.groups()
+        wanted = None if types is None else [t.strip() for t in types.split(",") if t.strip()]
+        unit = self.sources[path]["ast"]
+        contracts = [n for n in unit["nodes"] if n["nodeType"] == "ContractDefinition" and n["name"] == contract_name]
+        if len(contracts) != 1:
+            raise ExtractionError(f"{path} has no contract {contract_name}")
+        candidates = []
+        for base_id in contracts[0]["linearizedBaseContracts"]:
+            base = self.nodes[base_id]
+            candidates = [
+                n
+                for n in base["nodes"]
+                if n["nodeType"] == "FunctionDefinition"
+                and n["name"] == function_name
+                and (wanted is None or [_parameter_type(p) for p in n["parameters"]["parameters"]] == wanted)
+            ]
+            if candidates:
+                break
+        if len(candidates) != 1:
+            raise ExtractionError(f"{contract_name} has {len(candidates)} functions named {function_part}, not one")
+        return candidates[0]
 
     def _check_names(self, node, function: Function, reads: tuple[Read, ...]) -> None:
         inputs = [v.name for v in function.params] + [r.var.name for r in reads]
@@ -573,6 +602,8 @@ class _Extractor:
             if isinstance(target, tuple):
                 self.fail(node, f"the struct copy {node['name']} is used other than by field")
             return self._named(node)
+        if kind in ("MemberAccess", "IndexAccess"):
+            self._unmapped_storage(node)
         if kind == "MemberAccess":
             return self._named(node)
         if kind == "TupleExpression":
@@ -598,6 +629,16 @@ class _Extractor:
         if kind == "Assignment":
             self.fail(node, "an assignment inside an expression")
         self.fail(node, f"a {kind} expression is not supported")
+
+    def _unmapped_storage(self, node) -> None:
+        """Refuses a read of storage that the read map does not name and that has no other form, such as a mapping
+        entry `$balances[_who]` or `position[id][borrower].collateral`, with the read as missing."""
+        root = _root(node)
+        decl = self.nodes.get(root.get("referencedDeclaration")) if root else None
+        if decl is not None and decl.get("stateVariable") and decl.get("mutability") != "constant":
+            key = _normal(self.text(node))
+            missing = Missing(key, "a storage read", self.src(node))
+            self.fail(node, f"reads the storage {key}, which the read map does not name", missing)
 
     def _make(self, node, op: str, *operands, scope: dict) -> Expr:
         return self._op(node, op, *(self._expr(operand, scope) for operand in operands))
@@ -649,7 +690,7 @@ class _Extractor:
                 return None
         entry = self.read_map.get(_normal(key))
         if entry is None:
-            self.fail(node, f"reads {what} {key}, which the read map does not name")
+            self.fail(node, f"reads {what} {key}, which the read map does not name", Missing(key, what, self.src(node)))
         if copy in self.written_copies:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if state is not None:
@@ -803,7 +844,9 @@ class _Extractor:
             and decl["visibility"] in ("internal", "private")
         )
         if not internal:
-            self.fail(node, f"an external call that the read map does not name: {self.text(node)}")
+            text = self.text(node)
+            missing = Missing(_normal(text), "an external call", self.src(node))
+            self.fail(node, f"an external call that the read map does not name: {text}", missing)
         written, value = set(self.written), self.statement_value
         function = self._callee(decl, node)
         # The arguments run before the call, so they see the writes made before it only.

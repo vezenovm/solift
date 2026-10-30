@@ -13,7 +13,7 @@ bytecode only where _isHealthy calls them, so the record lists them as callees.
 
 import z3
 
-from acceptance.morpho.project import PROJECT
+from acceptance.morpho.project import PROJECT, SETUP
 from solift.link import Link
 from solift.run import Spec
 
@@ -33,7 +33,7 @@ HEALTHY = Spec(
         "market[id].totalBorrowShares": "totalBorrowShares",
     },
     link=Link(
-        setup="test/MorphoSetup.sol:MorphoSetup",
+        setup=SETUP,
         call="morpho.exposedIsHealthy(marketParams, id, borrower, collateralPrice)",
         adapters={
             "lltv": "MarketParams memory marketParams = MarketParams(NONE, NONE, NONE, NONE, lltv);",

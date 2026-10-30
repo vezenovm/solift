@@ -1,0 +1,121 @@
+import dataclasses
+import json
+import pathlib
+import sys
+
+import pytest
+
+from examples.quoter.spec import SPEC
+from solift.cli import SpecError, entrypoint, load_specs
+from solift.link import Harness
+from solift.run import _prepared, run
+from solift.workspace import Project, Workspace, WorkspaceError
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def specs_dir(tmp_path, monkeypatch):
+    """A directory of spec modules, as the current directory of the command line."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    yield tmp_path
+    for name in [n for n in sys.modules if n.startswith("userspecs")]:
+        del sys.modules[name]
+
+
+def write(directory: pathlib.Path, name: str, text: str) -> None:
+    (directory / "userspecs").mkdir(exist_ok=True)
+    (directory / "userspecs" / "__init__.py").write_text("")
+    (directory / "userspecs" / f"{name}.py").write_text(text)
+
+
+def test_a_module_gives_its_spec_its_specs_or_the_attribute_it_names(specs_dir):
+    write(specs_dir, "one", "from examples.quoter.spec import SPEC\n")
+    write(specs_dir, "many", "from examples.pricer.spec import SPECS\nOTHER = SPECS[:1]\n")
+    write(specs_dir, "both", "from examples.pricer.spec import SPECS\nSPEC = SPECS[0]\n")
+    assert [s.name for s in load_specs("userspecs.one")] == ["quoter"]
+    assert [s.name for s in load_specs("userspecs.many")] == ["pricer-priced", "pricer-quote-for"]
+    assert [s.name for s in load_specs("userspecs.many:OTHER")] == ["pricer-priced"]
+    with pytest.raises(SpecError, match="must have exactly one of SPEC and SPECS"):
+        load_specs("userspecs.both")
+    with pytest.raises(SpecError, match="has no MISSING"):
+        load_specs("userspecs.one:MISSING")
+    assert not list(specs_dir.rglob("__pycache__"))
+
+
+def test_a_module_that_fails_to_import_or_names_no_spec_is_an_error(specs_dir):
+    write(specs_dir, "broken", "import no_such_module\n")
+    write(specs_dir, "notspec", "SPEC = 3\n")
+    other = "dataclasses.replace(SPEC, project=dataclasses.replace(SPEC.project, profile='other'))"
+    write(specs_dir, "split", f"import dataclasses\nfrom examples.quoter.spec import SPEC\nSPECS = [SPEC, {other}]\n")
+    with pytest.raises(SpecError, match="cannot import userspecs.broken: ModuleNotFoundError"):
+        load_specs("userspecs.broken")
+    with pytest.raises(SpecError, match="is not a Spec or a nonempty list of them"):
+        load_specs("userspecs.notspec")
+    with pytest.raises(SpecError, match="do not share one project"):
+        load_specs("userspecs.split:SPECS")
+    with pytest.raises(SystemExit):
+        entrypoint(["run", "userspecs.broken"])
+
+
+def test_the_command_line_runs_a_module_and_prints_the_reads_of_a_target(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(ROOT)
+    work = tmp_path / "work"
+    assert entrypoint(["run", "examples.quoter.spec", "--no-link", "--workspace", str(work)]) == 0
+    record = json.loads((work / "results.json").read_text())
+    assert record["ok"] and record["link"] is None
+    capsys.readouterr()
+    target = "tests/fixtures/contracts/Quoter.sol:Quoter._quote"
+    assert entrypoint(["reads", target, "--workspace", str(tmp_path / "reads"), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["complete"] and len(data["reads"]) == 6
+
+
+def test_a_missing_forge_fails_the_build_with_a_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLIFT_FORGE", "no-such-forge")
+    record = run(SPEC, Workspace(tmp_path / "work"), link=False)
+    assert not record["ok"]
+    assert record["failures"][0].startswith("build: ") and "no-such-forge" in record["failures"][0]
+    assert "tracebacks" not in record
+
+
+def test_a_foundry_project_infers_its_overlay_from_the_profile(tmp_path):
+    (tmp_path / "foundry.toml").write_text(
+        '[profile.default]\nsrc = "src"\n\n[profile.deploy]\nsrc = "contracts"\ntest = "checks"\nlibs = ["deps"]\n'
+    )
+    (tmp_path / "remappings.txt").write_text("dep/=deps/dep/\n")
+    for directory in ("src", "contracts", "checks", "deps"):
+        (tmp_path / directory).mkdir()
+    default = Project.foundry(root=tmp_path).resolve()
+    assert (default.link, default.copy, default.generated) == (
+        ("foundry.toml", "remappings.txt"),
+        ("src",),
+        "test/solift",
+    )
+    deploy = Project.foundry(root=tmp_path, profile="deploy").resolve()
+    assert deploy.link == ("foundry.toml", "remappings.txt", "deps")
+    assert (deploy.copy, deploy.generated) == (("contracts",), "checks/solift")
+    kept = Project.foundry(root=tmp_path, copy=("src", "contracts"), link=()).resolve()
+    assert (kept.link, kept.copy) == ((), ("src", "contracts"))
+    assert Project(root=tmp_path).resolve() == Project(root=tmp_path)
+
+
+def test_a_harness_goes_into_the_overlay_once_and_two_harnesses_at_one_place_fail(tmp_path):
+    harness = tmp_path / "VaultSetup.sol"
+    harness.write_text("// the harness\n")
+    project = Project(
+        root=ROOT, link=("foundry.toml", "lib"), copy=("tests/fixtures",), generated="tests/fixtures/test/solift"
+    )
+    link = dataclasses.replace(SPEC.link, setup=Harness(harness, "VaultSetup"))
+    a, b = (dataclasses.replace(SPEC, name=name, link=link, project=project) for name in ("a", "b"))
+    resolved, (pa, pb) = _prepared([a, b])
+    at = "tests/fixtures/test/solift/harness/VaultSetup.sol"
+    assert resolved.add == {at: harness.resolve()}
+    assert pa.link.setup == pb.link.setup == f"{at}:VaultSetup" and pa.project == resolved
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "VaultSetup.sol").write_text("// another harness\n")
+    c = dataclasses.replace(a, link=dataclasses.replace(link, setup=Harness(other / "VaultSetup.sol", "VaultSetup")))
+    with pytest.raises(WorkspaceError, match="two harnesses go to"):
+        _prepared([a, c])
