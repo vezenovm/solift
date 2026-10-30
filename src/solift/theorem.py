@@ -78,7 +78,7 @@ class Terms:
         self.inputs = symbols(model)
         t = terms(model, self.inputs)
         self._value, self._reverts, self._outside, self._locals = t.value, t.reverts, t.outside, t.locals
-        self._declared, self._anywhere = t.declared, t.anywhere
+        self._declared, self._anywhere, self._leaves = t.declared, t.anywhere, t.lemma
         self._lemma = _uses_lemma(model, model.function)
         self.domain = domain(model, self.inputs)
         self.free_variables: dict[str, z3.ExprRef] = {}
@@ -99,7 +99,7 @@ class Terms:
             self.evaluations.append(Evaluation(what, lemma, obligation, self.witnessing))
 
     def _model(self) -> None:
-        self._evaluated("model", self._lemma, self._outside)
+        self._evaluated("model", self._lemma, self._leaves)
 
     def _model_locals(self) -> None:
         """A local's value is a term also on the paths where its statement does not run, so a theorem that reads one
@@ -180,7 +180,7 @@ class Terms:
         called = terms_of_call(self.model, function, self.inputs, args)
         params = [(p, a if z3.is_expr(a) else z3.IntVal(a)) for p, a in zip(function.params, args, strict=True)]
         outside = [z3.Not(_in_range(p.type.bound, a)) for p, a in params if p.type != BOOL]
-        self._evaluated(f"call {name}", _uses_lemma(self.model, function), z3.Or(called.outside, *outside))
+        self._evaluated(f"call {name}", _uses_lemma(self.model, function), z3.Or(called.lemma, *outside))
         return called
 
     def at(self, **values) -> _Fixed:
@@ -198,9 +198,10 @@ class Terms:
         def fixed(term: z3.ExprRef) -> z3.ExprRef:
             return z3.substitute(term, *pairs) if pairs else term
 
-        value, reverts, out, anywhere = (fixed(x) for x in (self._value, self._reverts, self._outside, self._anywhere))
+        value, reverts, out = (fixed(x) for x in (self._value, self._reverts, self._outside))
         values = {k: fixed(v) for k, v in self._locals.items()}
-        self._evaluated("at", self._lemma, z3.Or(out, *outside))
+        leaves, anywhere = fixed(self._leaves), fixed(self._anywhere)
+        self._evaluated("at", self._lemma, z3.Or(leaves, *outside))
         obligation = z3.Or(anywhere, *outside)
         return _Fixed(value, reverts, out, values, lambda: self._evaluated("at locals", self._lemma, obligation))
 

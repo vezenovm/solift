@@ -387,3 +387,26 @@ def test_inside_assumes_away_only_mulDiv_operands_at_or_above_half_width():
 
     result = prove(live, q)
     assert result.verdict == "COUNTEREXAMPLE" and result.counterexample["a"] < 5
+
+
+def test_a_result_after_a_revert_on_its_path_does_not_establish_the_lemma_domain():
+    """uint256 b = a - 5; return Math.mulDiv(b, 1, 2): at a < 5 the sub reverts, and the result's term gives mulDiv a
+    numerator below zero, through the result, `at` and a callee alike."""
+    a, b, x = Var("a", input=True), Var("b"), Var("x")
+    halve = Function("halve", (x,), UINT256, (Let(b, ops.make("sub", x, Const(5))),
+                                              Return(ops.make("mulDiv", b, Const(1), Const(2)))))  # fmt: skip
+    q = Terms(Model("C", Function("f", (a,), UINT256, (Return(Call("halve", (a,), UINT256)),)), callees=(halve,)))
+    goals = {
+        "result": lambda q: z3.Implies(q.a < 5, q.result < 0),
+        "at": lambda q: z3.Implies(q.a < 5, q.at(a=q.a).value < 0),
+        "call": lambda q: z3.Implies(q.a < 5, q.call("halve", q.a).value < 0),
+    }
+    found = {}
+    for name, goal in goals.items():
+        goal.__doc__ = f"below 5, the {name} is below zero"
+        found[name] = prove(theorem(witness=lambda q: q.a == 0)(goal), q)
+    assert {n: (r.verdict, r.lemma_domain) for n, r in found.items()} == {
+        "result": ("PROVED", "not-established"),
+        "at": ("PROVED", "not-established"),
+        "call": ("PROVED", "not-established"),
+    }

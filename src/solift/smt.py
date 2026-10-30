@@ -26,9 +26,13 @@ class Terms:
     """`locals` holds the value of each local of the modeled function, and of its named return variable, where the
     function returns. `declared` holds each local's value where it is declared. A local that a return does not reach
     takes there the value of a return that does. `comparisons` holds the condition under which each comparison and each
-    min runs and its two operand values, for the boundary vectors. `anywhere` holds where an operation leaves its lemma
-    domain whether or not it runs: a local's value is a term also where its statement does not run, so a theorem that
-    reads a local rests on the lemma there too."""
+    min runs and its two operand values, for the boundary vectors.
+
+    Three terms say where an operation leaves its lemma's domain. `outside` is where an operation that runs reaches the
+    table's outside, which `inside` assumes away. `lemma` is where an operation that runs reaches it or takes an operand
+    out of the uint256 range, which an operand after a revert on its path can be: the obligation of a theorem that
+    reads the result. `anywhere` is the same whether or not the operation runs: a local's value is a term also where its
+    statement does not run, so a theorem that reads a local rests on the lemma there too."""
 
     value: z3.ExprRef
     reverts: z3.BoolRef
@@ -37,6 +41,7 @@ class Terms:
     declared: dict[str, z3.ExprRef] = field(default_factory=dict)
     comparisons: list[tuple[z3.BoolRef, z3.ExprRef, z3.ExprRef]] = field(default_factory=list)
     anywhere: z3.BoolRef = FALSE
+    lemma: z3.BoolRef = FALSE
 
 
 def symbols(model: Model) -> dict[str, z3.ExprRef]:
@@ -53,7 +58,9 @@ def domain(model: Model, inputs: dict[str, z3.ExprRef]) -> z3.BoolRef:
 def terms(model: Model, inputs: dict[str, z3.ExprRef]) -> Terms:
     run = _Run(model, inputs)
     value, reverts, outside = run.call(model.function, {}, top=True)
-    return Terms(value, reverts, outside, run.locals, run.declared, run.comparisons, _any(run.anywhere))
+    return Terms(
+        value, reverts, outside, run.locals, run.declared, run.comparisons, _any(run.anywhere), _any(run.lemmas)
+    )
 
 
 def terms_of_call(model: Model, function: Function, inputs: dict[str, z3.ExprRef], args) -> Terms:
@@ -63,8 +70,9 @@ def terms_of_call(model: Model, function: Function, inputs: dict[str, z3.ExprRef
     env = {}
     for param, arg in zip(function.params, args, strict=True):
         env[param.name] = arg if z3.is_expr(arg) else z3.BoolVal(arg) if param.type == BOOL else z3.IntVal(arg)
-    value, reverts, outside = _Run(model, inputs).call(function, env)
-    return Terms(value, reverts, outside, {})
+    run = _Run(model, inputs)
+    value, reverts, outside = run.call(function, env)
+    return Terms(value, reverts, outside, {}, anywhere=_any(run.anywhere), lemma=_any(run.lemmas))
 
 
 def _or(a, b):
@@ -109,6 +117,7 @@ class _Run:
         self.declared: dict[str, z3.ExprRef] = {}
         self.comparisons: list[tuple[z3.BoolRef, z3.ExprRef, z3.ExprRef]] = []
         self.anywhere: list[z3.BoolRef] = []
+        self.lemmas: list[z3.BoolRef] = []
         self.stack: list[str] = []
         # The condition under which the expression being evaluated runs, from the modeled function's start, and the
         # condition at the start of each function on the stack.
@@ -224,7 +233,9 @@ class _Run:
         if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
             self.comparisons.append((self.guard, values[0], values[1]))
         if operator.outside:
-            self.anywhere.append(_anywhere(operator, values))
+            leaves = _anywhere(operator, values)
+            self.anywhere.append(leaves)
+            self.lemmas.append(_and(self.guard, leaves))
         reverts = [p[1] for p in parts] + ([operator.reverts(*values)] if operator.reverts else [])
         outside = [p[2] for p in parts] + ([operator.outside(*values)] if operator.outside else [])
         return operator.value(*values), _any(reverts), _any(outside)
