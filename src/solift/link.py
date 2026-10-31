@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
 from solift.ops import PROOFS, TABLE
-from solift.solidity import names
+from solift.solidity import imports, names
 from solift.solidity import source as model_source
 
 RESERVED = {"i", "host", "codeOk", "codeOut", "modelOk", "modelOut"}
@@ -99,7 +99,7 @@ class Generated:
 
 def generate(model: Model, link: Link, operators: bool = True) -> Generated:
     """The model, its link test, and with `operators` the test of each row and lemma it uses. A run of several models
-    writes one operators test for all of them instead (`operators_test`)."""
+    writes the operators tests of all of them instead (`operators_test`)."""
     stem = names(model)[0].removesuffix("Model")
     match = re.fullmatch(r"\s*(\w+)\.(\w+)\((.*)\)\s*", link.call, re.S)
     if match is None:
@@ -176,7 +176,7 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         f"pragma solidity {model.pragma};",
         "",
         f'import {{{setup}}} from "{setup_path}";',
-        *model.imports,
+        *imports(model),
         *link.imports,
         f'import {{{library}, {host}}} from "./{stem}.sol";',
         "",
@@ -224,26 +224,44 @@ def _compare(model: Model, link: Link) -> list[str]:
     return lines
 
 
-def _proofs(models) -> list:
-    used = []
-    for model in models:
-        for function in (model.function, *model.callees):
-            for e in walk(function):
-                if isinstance(e, Op):
-                    for name in TABLE[e.op].proofs:
-                        if PROOFS[name] not in used:
-                            used.append(PROOFS[name])
-    return used
+def _proofs(model: Model):
+    """Each row and lemma that the model uses, with whether it is of a Math call."""
+    for function in (model.function, *model.callees):
+        for e in walk(function):
+            if isinstance(e, Op):
+                operator = TABLE[e.op]
+                for name in operator.proofs:
+                    yield PROOFS[name], operator.kind == "library"
 
 
 def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -> Generated:
-    """The test of each operator-table row and lemma that the models use, as `{stem}Operators.t.sol`. It has no
-    checks, and no file, when the models use none."""
-    proofs = _proofs(models)
-    if not proofs:
-        return Generated({}, ())
+    """The test of each operator-table row and lemma that the models use. A row or lemma of a Math call is proved on
+    each copy of OpenZeppelin's Math that a model calls it from, as two copies can be two versions. The test of the
+    first copy is `{stem}Operators.t.sol`, and it also holds the rows of the other operators. The test of the second
+    copy is `{stem}2Operators.t.sol`, and so on. A test that has no row or lemma has no checks and no file."""
+    copies = list(dict.fromkeys(model.math for model in models if model.math)) or [""]
+    # The proofs of each copy's test, and the models that use them.
+    tests: dict[str, tuple[list, list]] = {math: ([], []) for math in copies}
+    for model in models:
+        for proof, library in _proofs(model):
+            proofs, users = tests[model.math if library and model.math else copies[0]]
+            if proof not in proofs:
+                proofs.append(proof)
+            if model not in users:
+                users.append(model)
+    files, checks = {}, ()
+    for n, (math, (proofs, users)) in enumerate(tests.items()):
+        if proofs:
+            test = _operators_test(users, f"{stem}{n + 1 if n else ''}", test_import, math, proofs)
+            files.update(test.files)
+            checks += test.checks
+    return Generated(files, checks)
+
+
+def _operators_test(models, stem: str, test_import: str, math: str, proofs: list) -> Generated:
+    """The test `{stem}Operators.t.sol` of the proofs, with Math imported from `math`, for the models that use
+    them."""
     first = models[0]
-    imports = list(dict.fromkeys(line for model in models for line in model.imports))
     used = ", ".join(model.name for model in models)
     wrappers = [p.wrapper for p in proofs if p.wrapper]
     lines = [
@@ -252,7 +270,7 @@ def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -
         f"pragma solidity {first.pragma};",
         "",
         f'import {{Test}} from "{test_import}";',
-        *imports,
+        *([f'import {{Math}} from "{math}";'] if math else []),
         "",
         f"contract {stem}CheckedOperators {{",
         "\n".join(wrappers).rstrip("\n"),

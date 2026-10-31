@@ -39,6 +39,12 @@ def names(model: Model) -> tuple[str, str]:
     return stem + "Model", stem + "Host"
 
 
+def imports(model: Model) -> tuple[str, ...]:
+    """The import directives of the model's Solidity: of Math, then the others."""
+    math = (f'import {{Math}} from "{model.math}";',) if model.math else ()
+    return math + model.imports
+
+
 def source(model: Model) -> str:
     library, host = names(model)
     lines = [
@@ -50,8 +56,8 @@ def source(model: Model) -> str:
         lines.append(f"// The model leaves out these writes and events. The link compares {compares} and the revert.")
         lines += [f"//   {effect}" for effect in model.effects]
     lines += [f"pragma solidity {model.pragma};", ""]
-    if model.imports:
-        lines += [*model.imports, ""]
+    if imports(model):
+        lines += [*imports(model), ""]
     lines.append(f"library {library} {{")
     constants = _constants(model)
     for name, const in constants.items():

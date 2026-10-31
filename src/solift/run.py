@@ -2,12 +2,13 @@
 result with the versions it rests on.
 
 The specs of one run share a project. The run builds it once, runs the vectors of every model in one forge test, and
-links every model in one Halmos run, with one test of the operator-table rows and lemmas that the models use. The three
-share one build directory, so solc compiles each project file once. The record holds the time of each stage. Each stage
-runs even when an earlier one fails, except that a spec without a model has nothing to check, so one run shows every
-failure. An error in a stage, such as an exception in a theorem's code or a missing forge, is a failure of that stage,
-with its traceback in the record when it is not one of solift's own errors. The run fails when a result is not the
-expected one, and when the project changed during the run.
+links every model in one Halmos run, with a test of the operator-table rows and lemmas that the models use for each
+copy of OpenZeppelin's Math that they call (link.operators_test). The three share one build directory, so solc
+compiles each project file once. The record holds the time of each stage. Each stage runs even when an earlier one
+fails, except that a spec without a model has nothing to check, so one run shows every failure. An error in a stage,
+such as an exception in a theorem's code or a missing forge, is a failure of that stage, with its traceback in the
+record when it is not one of solift's own errors. The run fails when a result is not the expected one, and when the
+project changed during the run.
 
 The record is JSON. `schema` numbers its format. Next to the results, it holds what they rest on: the versions of the
 tools, the sha256 of each solc standard-JSON input of the build, of each theorem's query, of the spec's Python files

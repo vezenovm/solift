@@ -6,7 +6,7 @@ from examples.pricer.spec import SPECS as PRICER_SPECS
 from examples.quoter.spec import QUOTER, SPEC
 from solift import forge
 from solift.extract import extract
-from solift.link import Link, generate
+from solift.link import Harness, Link, generate
 from solift.run import Spec, run, summary, vector_failures
 from solift.workspace import Workspace
 
@@ -372,3 +372,96 @@ def test_a_balance_that_the_harness_deals_links_to_its_model(tmp_path):
     (result,) = record["specs"]
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+
+
+SMALLER = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.27;
+
+import {{Test}} from "forge-std/Test.sol";
+import {{Math}} from "{math}";
+
+contract {name} {{
+  function smaller(uint256 _a, uint256 _b) external pure returns (uint256) {{
+    return Math.min(_a, _b);
+  }}
+}}
+
+contract {name}Setup is Test {{
+  {name} internal smaller;
+
+  function setUp() public virtual {{
+    smaller = new {name}();
+  }}
+}}
+"""
+
+
+def test_two_specs_whose_targets_import_math_from_two_files_prove_its_lemma_on_each(tmp_path):
+    """One target imports the project's OpenZeppelin Math and the other a copy of it at another path, which the overlay
+    adds. Each copy could be another version, so the run proves the lemma of each on that copy."""
+    utils = SPEC.project.root / "lib/openzeppelin-contracts/contracts/utils"
+    copy = "tests/fixtures/math-copy"
+    added = {f"{copy}/utils/{rel}": utils / rel for rel in ("Panic.sol", "math/Math.sol", "math/SafeCast.sol")}
+    project = dataclasses.replace(SPEC.project, add={**SPEC.project.add, **added})
+    specs = []
+    for name, math in (("Smaller", "@openzeppelin/contracts/utils/math/Math.sol"),
+                       ("CopiedSmaller", f"{copy}/utils/math/Math.sol")):  # fmt: skip
+        harness = tmp_path / f"{name}.sol"
+        harness.write_text(SMALLER.format(name=name, math=math))
+        at = f"{project.generated}/harness/{name}.sol"
+        link = Link(setup=Harness(harness, f"{name}Setup"), call="smaller.smaller(_a, _b)")
+        specs.append(Spec(name=name, target=f"{at}:{name}.smaller", reads={}, link=link, project=project))
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    assert [r["path"] for r in (s["versions"]["OpenZeppelin"] for s in record["specs"])] == [
+        "lib/openzeppelin-contracts/contracts/utils/math/Math.sol",
+        f"{copy}/utils/math/Math.sol",
+    ]
+    assert {(r["contract"], r["check"], r["verdict"]) for r in record["link"]["shared"]} == {
+        ("SoliftOperators", "check_lemma_minIsTheSmallerValue", "PASS"),
+        ("Solift2Operators", "check_lemma_minIsTheSmallerValue", "PASS"),
+    }
+    for result in record["specs"]:
+        assert [(r["check"], r["verdict"]) for r in result["link"]] == [("check_link", "PASS")]
+
+
+SIDED = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.27;
+
+import {{Test}} from "forge-std/Test.sol";
+
+enum Side {{
+  Buy,
+  Sell
+}}
+
+contract {name} {{
+  function bump(Side _side, uint256 _x) external pure returns (uint256) {{
+    return _side == Side.Buy ? _x + 1 : _x;
+  }}
+}}
+
+contract {name}Setup is Test {{
+  {name} internal sided;
+
+  function setUp() public virtual {{
+    sided = new {name}();
+  }}
+}}
+"""
+
+
+def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_path):
+    """Each target takes the enum that its own file declares, and the operators test imports neither."""
+    specs = []
+    for name in ("Sided", "OtherSided"):
+        harness = tmp_path / f"{name}.sol"
+        harness.write_text(SIDED.format(name=name))
+        at = f"{SPEC.project.generated}/harness/{name}.sol"
+        link = Link(setup=Harness(harness, f"{name}Setup"), call="sided.bump(_side, _x)")
+        specs.append(Spec(name=name, target=f"{at}:{name}.bump", reads={}, link=link, project=SPEC.project))
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
