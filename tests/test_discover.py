@@ -122,3 +122,10 @@ def test_a_write_that_can_revert_is_an_output_and_one_on_some_paths_gets_its_val
     nothing = discover(build, f"{EFFECTS}.nothing")
     assert not nothing.complete and "returns no value" in nothing.diagnostic
     assert [e.kind for e in nothing.effects] == ["event"]
+
+
+def test_the_balance_of_an_address_is_a_read_that_the_skeleton_sets_with_deal(build):
+    found = discover(build, "tests/fixtures/contracts/Balances.sol:Balances.share")
+    assert found.complete
+    assert [(m.key, m.what) for m, _ in found.reads] == [("address(this).balance", "the balance of an address")]
+    assert "'balance': 'vm.deal(address(<the contract in the harness>), balance);'," in report(found)

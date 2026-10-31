@@ -6,8 +6,8 @@ over exact integers, and proves with Halmos that the model it proves them on mat
 For each function of a spec, solift:
 
 1. extracts an integer model from the solc AST, with each outside read (storage, an external view call, a `block`
-   field, a cut internal call) as a named input, and each storage write or external call argument that you name as
-   an output;
+   field, a balance, a cut internal call) as a named input, and each storage write or external call argument that you
+   name as an output;
 2. emits the model as pure Solidity, and proves with Halmos that it returns, reverts and sets its outputs as the
    contract does. Both sides share their structure, so Halmos checks an equivalence, not the property;
 3. proves your theorems, written in Python, on the model with z3, and with yices and cvc5 when z3 cannot decide.

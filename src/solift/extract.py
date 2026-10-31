@@ -13,6 +13,7 @@ reads from outside itself, and gives it an input name. A key is one of:
 - a field of a storage struct parameter of the modeled function (`_spender.left`);
 - a field of a memory struct parameter of the modeled function (`_meter.used`);
 - a field of `tx`, `block` or `msg` (`tx.gasprice`, `block.basefee`);
+- the balance of an address (`address(this).balance`), which no external call that can change state may precede;
 - any other expression, such as an external view call, by its source text without whitespace
   (`TOKEN.balanceOf(address(this))`). An internal call in the read map is a cut point: its result is an input.
 
@@ -27,10 +28,10 @@ of the table in ops.py. A constant becomes its value, with its name and declared
 contract or interface value is its address, and `address(x)` of one is the same value. `uint<n>(x)` of an unsigned x
 widens it, or keeps its low n bits. Locals can be assigned, also in branches, and a named return starts at zero. A
 function can return several values, and a tuple declaration or assignment (`(, uint256 y) = limits(a, b);`,
-`(x, y) = (y, x);`) takes them apart into locals. `require`, `assert` and `revert` revert. A parameter of a
-user-defined value type, such as Morpho's `Id`, or of a signed integer type, that the function uses only inside read
-map keys or as an argument of an effect, is not an input. Anything else stops the extraction with an error that names
-the construct and its place in the source.
+`(x, y) = (y, x);`) takes them apart into locals. `type(uint<n>).max` and `.min` are constants. `require`, `assert`
+and `revert` revert. A parameter of a user-defined value type, such as Morpho's `Id`, or of a signed integer type,
+that the function uses only inside read map keys or as an argument of an effect, is not an input. Anything else stops
+the extraction with an error that names the construct and its place in the source.
 
 The model is the function's value and whether it reverts, which is what the link compares, and its outputs: the writes
 and the external call arguments that the output map names, as `{"$total": "total"}` or
@@ -933,6 +934,8 @@ class _Extractor:
         """Refuses a part of a write or an event that could revert: the model leaves it out."""
         kind = node["nodeType"]
         type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+        if kind == "MemberAccess" and self._type_bound(node) is not None:
+            return
         if type_string.startswith("function"):
             pass
         elif kind in ("Identifier", "Literal"):
@@ -947,7 +950,7 @@ class _Extractor:
         elif kind == "TupleExpression" and len(node["components"]) == 1 and not node.get("isInlineArray"):
             return self._cannot_revert(node["components"][0], scope)
         elif kind == "FunctionCall" and node["kind"] == "typeConversion" and len(node["arguments"]) == 1:
-            if re.fullmatch(r"uint\d+|address", type_string):
+            if re.fullmatch(r"uint\d+|address( payable)?|contract [\w.]+", type_string):
                 return self._cannot_revert(node["arguments"][0], scope)
         self.fail(node, f"{self.text(node)} in a write or an event: the model leaves it out, so it must not revert")
 
@@ -1058,6 +1061,7 @@ class _Extractor:
         key = None
         what = None
         copy = state = pointer = None
+        balance = False
         root = _root(node) if kind in ("MemberAccess", "IndexAccess") else None
         through = scope.get(root.get("referencedDeclaration")) if root is not None else None
         below = isinstance(through, tuple) and through[0] in ("copy", "param", "pointer")
@@ -1070,6 +1074,8 @@ class _Extractor:
                 what = "a field of the storage parameter"
             copy = root["referencedDeclaration"] if through[0] == "copy" else None
             pointer = through if through[0] == "pointer" else None
+        elif kind == "MemberAccess" and node["memberName"] == "balance" and _address(node["expression"]):
+            key, what, balance = _normal(self.text(node)), "the balance of an address", True
         elif kind == "MemberAccess" and node["expression"]["nodeType"] == "Identifier":
             base = node["expression"]
             declared = self.nodes.get(base.get("referencedDeclaration"))
@@ -1107,6 +1113,8 @@ class _Extractor:
             self._state_read(state, node)
         if pointer is not None:
             self._storage_read(pointer[2], node)
+        if balance:
+            self._balance_read(node, scope)
         if fallback or below:
             # The indexes below a copy, a parameter or a pointer are any expressions, as in other read map keys.
             self._fallback_read(node, scope)
@@ -1172,6 +1180,15 @@ class _Extractor:
         for reads in self.reading:
             reads.add(decl["id"])
 
+    def _balance_read(self, node, scope: dict) -> None:
+        """Records a read of an address's balance, which an external call can change, and the reads of the address."""
+        if EXTERNAL in self.written:
+            self.fail(node, f"reads {self.text(node)} after an external call, which could change it")
+        self._cannot_revert(node["expression"], scope)
+        self._fallback_read(node["expression"], scope)
+        for reads in self.reading:
+            reads.add("balance")
+
     def _storage_read(self, state, node) -> None:
         """Records a read through a memory copy or a storage pointer of the storage variable `state`, or of a storage
         parameter of the modeled function (None), which could be any storage, so it must not follow any write."""
@@ -1233,7 +1250,10 @@ class _Extractor:
 
     def _named(self, node) -> Const:
         """A constant, named by an identifier or a member access such as `Fees.TIP`, or an enum member such as
-        `Kinds.Kind.Small`, which the emitted Solidity names by its full name."""
+        `Kinds.Kind.Small`, which the emitted Solidity names by its full name, or `type(uint<n>).max` or `.min`."""
+        bound = self._type_bound(node)
+        if bound is not None:
+            return bound
         decl = self.nodes.get(node.get("referencedDeclaration"))
         if decl is not None and decl["nodeType"] == "EnumValue":
             definition, index = self.enum_members[decl["id"]]
@@ -1242,6 +1262,24 @@ class _Extractor:
         if decl is None or decl["nodeType"] != "VariableDeclaration" or decl.get("mutability") != "constant":
             self.fail(node, f"{self.text(node)} is not a constant, a local, a parameter or a read")
         return self._constant(decl)
+
+    def _type_bound(self, node) -> Const | None:
+        """`type(uint<n>).max` or `.min` as a constant, as written, or None for any other expression."""
+        base = node.get("expression") or {}
+        callee = base.get("expression") or {}
+        if not (
+            node["nodeType"] == "MemberAccess"
+            and node["memberName"] in ("max", "min")
+            and base.get("nodeType") == "FunctionCall"
+            and callee.get("name") == "type"
+            and callee.get("referencedDeclaration", 0) < 0
+        ):
+            return None
+        type_ = self._type(node)
+        if type_.kind != "uint":
+            self.fail(node, f"{self.text(node)} is not the bound of an unsigned type")
+        value = type_.bound - 1 if node["memberName"] == "max" else 0
+        return Const(value, type_, text=_normal(self.text(node)), src=self.src(node))
 
     def _constant(self, decl) -> Const:
         self.used.add(self._place(decl)[0])
@@ -1369,7 +1407,9 @@ class _Extractor:
         self.written = set(written)
         args = tuple(self._expr(arg, scope) for arg in arguments)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
-        stale = sorted(self.nodes[r]["name"] for r in reads - {"call", "any"} if r in written or EXTERNAL in written)
+        stale = sorted(self.nodes[r]["name"] for r in reads - MARKERS if r in written or EXTERNAL in written)
+        if "balance" in reads and EXTERNAL in written:
+            self.fail(node, f"calls {decl['name']}, which reads a balance, after an external call that could change it")
         if stale or (reads & {"call", "any"} and written):
             what = ", ".join(stale) if stale else "storage through a call" if "call" in reads else "a storage parameter"
             self.fail(node, f"calls {decl['name']}, which reads {what}, after a write: the model misses the write")
@@ -1494,9 +1534,16 @@ def _subtree(node):
 
 
 EXTERNAL = "external call"
+# The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
+# parameter, and a balance.
+MARKERS = {"call", "any", "balance"}
 _KEYS = "each key of an output must be an input or a field of tx, block or msg"
 _SIGNED = re.compile(r"int\d*")
 _BEFORE = "name its place in the read map too"
+
+
+def _address(node) -> bool:
+    return node.get("typeDescriptions", {}).get("typeString") in ("address", "address payable")
 
 
 def _before(output: Output) -> Missing | None:

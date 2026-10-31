@@ -181,11 +181,16 @@ def skeleton(found: Discovery, function: str) -> str:
         lines.append(f"    {missing.key!r}: {name!r},  # {missing.what}, {missing.src}")
     lines.append("},")
     adapters, observed = [], []
+    balances = {m.key for m, _ in found.reads if m.what == "the balance of an address"}
     for key, name in found.read_map.items():
         if key in OBSERVED:
             observed.append(f"    {name!r}: {OBSERVED[key]!r},")
         elif key in CHEATCODES:
             adapters.append(f"    {name!r}: {CHEATCODES[key].format(name=name)!r},")
+        elif key in balances:
+            holder = key.removesuffix(".balance")
+            holder = "address(<the contract in the harness>)" if holder == "address(this)" else holder
+            adapters.append(f"    {name!r}: 'vm.deal({holder}, {name});',")
         else:
             adapters.append(f"    {name!r}: '/* set {name}, which the target reads as {key} */',")
     params = ", ".join(v.name for v in found.model.function.params) if found.model is not None else "..."

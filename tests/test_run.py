@@ -347,3 +347,28 @@ def test_max_and_a_mulDiv_rounded_down_prove_their_lemmas_and_a_signed_parameter
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert record["specs"][0]["theorems"][0]["lemma_domain"] == "established"
+
+
+def test_a_balance_that_the_harness_deals_links_to_its_model(tmp_path):
+    spec = Spec(
+        name="balances-share",
+        target="tests/fixtures/contracts/Balances.sol:Balances.share",
+        reads={"address(this).balance": "held"},
+        link=Link(
+            setup="tests/fixtures/test/BalancesSetup.sol:BalancesSetup",
+            call="balances.share(_amount)",
+            adapters={"held": "vm.deal(address(balances), held);"},
+        ),
+        project=SPEC.project,
+    )
+
+    @spec.theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+    def a_share_is_at_most_the_pot_or_the_cap(q):
+        """A share is at most the ether held, or the uint128 cap when the amount asked is above it."""
+        return z3.Or(q.result <= q.held, q.result == 2**128 - 1)
+
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert result["vectors"]["agree"] == result["vectors"]["count"] > 0

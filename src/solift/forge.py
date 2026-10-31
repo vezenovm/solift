@@ -2,8 +2,10 @@
 
 The binary is configurable (`SOLIFT_FORGE`, default `forge`), because some toolchains ship it under another name. A
 build writes only to the output and cache directories that the caller passes, through FOUNDRY_OUT and
-FOUNDRY_CACHE_PATH, which take precedence over the profile. Other FOUNDRY_ variables of the caller's environment are
-dropped, so that the profile and these settings are the whole configuration.
+FOUNDRY_CACHE_PATH, which take precedence over the profile. Dynamic test linking is off: with it, as forge 1.8 has by
+default, forge compiles `new C()` of a source contract in a test as `vm.deployCode`, a cheatcode that Halmos 0.3.3
+does not support, so a harness that deploys the contract would fail its setUp. Other FOUNDRY_ variables of the
+caller's environment are dropped, so that the profile and these settings are the whole configuration.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ def environment(out: pathlib.Path, cache: pathlib.Path, profile: str | None = No
     env = _clean(profile)
     env["FOUNDRY_OUT"] = str(out)
     env["FOUNDRY_CACHE_PATH"] = str(cache)
+    env["FOUNDRY_DYNAMIC_TEST_LINKING"] = "false"
     if allow_paths:
         env["FOUNDRY_ALLOW_PATHS"] = "[" + ",".join(str(p) for p in allow_paths) + "]"
     return env

@@ -189,7 +189,7 @@ The README says what a run proves and what it trusts.
 | `if`, early returns, `require`, `assert`, `revert` | loops |
 | locals, also assigned in branches; compound assignments; named returns | modifiers |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
-| addresses, enums, constants, immutables, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
+| addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
 | `Math.min`, `Math.max` and `Math.mulDiv`, also with `Math.Rounding.Floor`, backed by lemmas | other `Math` functions, `Math.mulDiv` rounded up (Halmos cannot prove its `mulmod` at a symbolic denominator) |
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
@@ -209,6 +209,7 @@ A key names a value that the function reads from outside itself, and maps it to 
 | `$balances[_who]`, `position[id][borrower].collateral` | any other storage read, by its source text |
 | `_meter.used`, `_spender.left` | a field of a memory or storage struct parameter of the target |
 | `tx.gasprice`, `block.timestamp`, `msg.sender` | a field of `tx`, `block` or `msg` |
+| `address(this).balance`, `_who.balance` | the balance of an address, which no external call that can change state may precede |
 | `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
 | `_price()` | an internal call: a cut point, whose result becomes an input |
 
@@ -228,6 +229,7 @@ way: as an argument of `call`, through an adapter, or as an `observed` value.
 | several fields at once | one adapter for a tuple of inputs: `("margin", "cap"): "quoter.setConfig(margin, cap);"` |
 | an external view call | an adapter that sets a stub: `"held": "asset.set(held);"` |
 | `block.timestamp`, `block.number`, `block.basefee` | a cheatcode: `"time": "vm.warp(time);"`, `vm.roll`, `vm.fee` |
+| the balance of an address | `vm.deal`: `"held": "vm.deal(address(pool), held);"` |
 | `tx.gasprice` | `observed={"gasPrice": "tx.gasprice"}`: Halmos makes it symbolic, and no cheatcode sets it |
 | a field of a struct parameter | an adapter that builds the argument: `"Pricer.Meter memory meter = Pricer.Meter(...);"` |
 | a cut point | `parameters={"answer": "uint128"}` for the symbolic value that sets it, an adapter that uses it, and `observed` for the input that results: `"price": "vault.exposedPrice()"` |

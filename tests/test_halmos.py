@@ -250,3 +250,9 @@ def test_a_halmos_process_that_fails_after_a_passing_report_fails_the_run():
     assert judge(checks, {**report(result("check_a", 1)), "exitcode": 1}, "", returncode=1).problems == (
         "Halmos exited with 1",
     )
+
+
+def test_forge_builds_without_dynamic_test_linking(tmp_path):
+    """forge 1.8 compiles `new C()` in a test as vm.deployCode when dynamic test linking is on, which Halmos 0.3.3
+    does not support, so every build of a run turns it off."""
+    assert forge.environment(tmp_path / "out", tmp_path / "cache")["FOUNDRY_DYNAMIC_TEST_LINKING"] == "false"
