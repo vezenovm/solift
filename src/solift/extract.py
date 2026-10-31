@@ -6,15 +6,20 @@ reads from outside itself, and gives it an input name. A key is one of:
 
 - a storage variable or immutable by its name (`$floor`, `TOKEN`), or a field of a storage struct (`$config.cap`),
   whether the function reads it directly or through a memory copy (`Config memory cfg = $config;` then `cfg.cap`);
-- a field of a storage struct in a mapping, at a key that is a parameter of the modeled function, through a memory copy
-  (`Rate memory rate = $rates[_kind];` then `rate.cap`, as `$rates[_kind].cap`);
+- a field of a storage struct in a mapping, at a key that is a parameter of the modeled function or a field of `tx`,
+  `block` or `msg`, through a memory copy or a storage pointer (`Rate storage rate = $rates[_kind];` then `rate.cap`,
+  as `$rates[_kind].cap`), also a nested field (`rate.config.cap`, as `$rates[_kind].config.cap`) and a pointer passed
+  to a callee;
+- a field of a storage struct parameter of the modeled function (`_spender.left`);
 - a field of a memory struct parameter of the modeled function (`_meter.used`);
 - a field of `tx`, `block` or `msg` (`tx.gasprice`, `block.basefee`);
 - any other expression, such as an external view call, by its source text without whitespace
   (`TOKEN.balanceOf(address(this))`). An internal call in the read map is a cut point: its result is an input.
 
 A read map entry that the function does not read is an error, except a field of `tx`, `block` or `msg`: every
-transaction has it, so it is an input even where the function ignores it, and a theorem can name it.
+transaction has it, so it is an input even where the function ignores it, and a theorem can name it. A key names one
+value for the whole call, so a local in it, also below a pointer, must be one that only its declaration assigns, the
+same one at each read of the key, in the modeled function or in a callee that runs once.
 
 Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`): each callee becomes a function of
 the model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
@@ -216,6 +221,16 @@ class _Extractor:
         self.effects: list[Effect] = []
         self.callee_reads: dict[int, set] = {}
         self.callee_writes: dict[int, set] = {}
+        # The storage that each storage struct parameter of a callee stands for, by the callee's declaration id: its
+        # place, and what it names (_identity).
+        self.bindings: dict[int, dict[str, tuple[str, tuple]]] = {}
+        # The locals and parameters that an assignment changes after their declaration; what each read map key names;
+        # the callees that name their own locals in a read map key; and each call of a callee, by its caller (None for
+        # the modeled function), which counts how many times a callee runs.
+        self.assigned: set[int] = set()
+        self.key_identities: dict[str, tuple] = {}
+        self.keyed: set[int] = set()
+        self.calls: list[tuple[int | None, int]] = []
         self.reading: list[set] = []
         self.writing: list[set] = []
         self.statement_value: int | None = None
@@ -259,7 +274,9 @@ class _Extractor:
         path, _, qualified = target.rpartition(":")
         contract_name = qualified.partition(".")[0]
         unit = self.sources[path]["ast"]
+        self.assigned = _assigned(node)
         function = self._function(node, top=True)
+        self._run_once()
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
                 continue
@@ -354,7 +371,8 @@ class _Extractor:
 
     # Functions and statements.
 
-    def _function(self, node, top: bool) -> Function:
+    def _function(self, node, top: bool, bindings: dict | None = None) -> Function:
+        """The function. `bindings` gives each storage struct parameter of a callee the storage of its argument."""
         name = node["name"]
         if node["kind"] != "function" or not node["implemented"]:
             self.fail(node, f"{name} is not an implemented function")
@@ -374,6 +392,9 @@ class _Extractor:
             scope["return"] = results
         params = []
         for p in node["parameters"]["parameters"]:
+            if _storage_struct(p):
+                scope[p["id"]] = ("pointer", p["name"], None, (p["id"],)) if top else ("pointer", *bindings[p["id"]])
+                continue
             if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
                 if not top:
                     self.fail(p, f"the struct parameter {p['name']} of a called function")
@@ -453,11 +474,17 @@ class _Extractor:
         init = node.get("initialValue")
         type_string = decl["typeDescriptions"]["typeString"]
         if type_string.startswith("struct ") and decl.get("storageLocation") == "memory":
-            prefix = self._struct_copy(init, scope) if init is not None else None
-            if prefix is None:
+            path = self._storage_path(init, scope) if init is not None else None
+            if path is None:
                 self.fail(init or node, "a memory struct that is not a copy of a storage struct")
-            self._state_read(self.nodes[_root(init)["referencedDeclaration"]], init)
-            scope[decl["id"]] = ("copy", prefix)
+            self._storage_read(path[1], init)
+            scope[decl["id"]] = ("copy", *path, self._identity(init, scope))
+            return None
+        if _storage_struct(decl):
+            path = self._storage_path(init, scope) if init is not None else None
+            if path is None:
+                self.fail(init or node, f"a storage pointer to {self.text(init or node)}: {_STORAGE}")
+            scope[decl["id"]] = ("pointer", *path, self._identity(init, scope))
             return None
         var = self._local(decl, scope)
         if init is None:
@@ -507,18 +534,38 @@ class _Extractor:
         if decl["name"] == "i":
             self.fail(decl, "i names the inputs struct of the emitted Solidity")
 
-    def _struct_copy(self, init, scope: dict) -> str | None:
-        """The read map prefix of a memory copy of a storage struct: `$config`, or `$pricing[_flow]` for an entry of a
-        mapping at a parameter of the modeled function."""
-        state = self._state_variable(init)
-        if state is not None:
-            return state["name"]
-        if init["nodeType"] == "IndexAccess":
-            state = self._state_variable(init["baseExpression"])
-            index = init.get("indexExpression")
-            key = scope.get(index.get("referencedDeclaration")) if index else None
-            if state is not None and isinstance(key, Var) and key.input:
-                return f"{state['name']}[{key.name}]"
+    def _storage_path(self, node, scope: dict) -> tuple[str, dict | None] | None:
+        """The read map prefix of the storage that `node` names, and the storage variable that holds it, or None for a
+        storage parameter of the modeled function: a storage variable (`$config`), an entry of a mapping at a key that
+        names one entry for the whole call (`$spenders[_who]`, `$spenders[msg.sender]`), a storage pointer, or a field
+        of one of these (`spender.config`)."""
+        kind = node["nodeType"]
+        if kind == "Identifier":
+            entry = scope.get(node.get("referencedDeclaration"))
+            if isinstance(entry, tuple) and entry[0] == "pointer":
+                return entry[1], entry[2]
+            state = self._state_variable(node)
+            return (state["name"], state) if state is not None and state.get("mutability") == "mutable" else None
+        if kind == "IndexAccess" and _mapping(node) and node.get("indexExpression") is not None:
+            base, key = self._storage_path(node["baseExpression"], scope), self._key(node["indexExpression"], scope)
+            return (f"{base[0]}[{key}]", base[1]) if base is not None and key is not None else None
+        if kind == "MemberAccess":
+            base = self._storage_path(node["expression"], scope)
+            return (f"{base[0]}.{node['memberName']}", base[1]) if base is not None else None
+        return None
+
+    def _key(self, node, scope: dict) -> str | None:
+        """A mapping key that names one entry for the whole call: an input of the modeled function, also of a
+        user-defined value type, or a field of `tx`, `block` or `msg`."""
+        if node["nodeType"] == "Identifier":
+            entry = scope.get(node.get("referencedDeclaration"))
+            if isinstance(entry, Var) and entry.input:
+                return entry.name
+            return entry[1] if isinstance(entry, tuple) and entry[0] == "opaque" else None
+        if node["nodeType"] == "MemberAccess" and node["expression"]["nodeType"] == "Identifier":
+            base = node["expression"]
+            if base["name"] in ("tx", "block", "msg") and base.get("referencedDeclaration", 0) < 0:
+                return _normal(self.text(node))
         return None
 
     def _expression_statement(self, expression, scope: dict) -> Stmt | None:
@@ -562,14 +609,18 @@ class _Extractor:
         target = self.nodes.get(root.get("referencedDeclaration")) if root else None
         if target is not None and target.get("stateVariable"):
             self._write(expression, scope, "write")
-            self.written.add(target["id"])
-            for writes in self.writing:
-                writes.add(target["id"])
+            self._wrote(target)
             return None
         local = scope.get(root.get("referencedDeclaration")) if root else None
+        if isinstance(local, tuple) and local[0] == "pointer" and root is not lhs:
+            if local[2] is None:
+                self.fail(expression, f"a write through the storage parameter {root['name']}: it could be any storage")
+            self._write(expression, scope, "write", self._through(local, root, lhs))
+            self._wrote(local[2])
+            return None
         if isinstance(local, tuple):
             if local[0] != "copy" or root is lhs:
-                self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy")
+                self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy or storage")
             self._write(expression, scope, "copy")
             self.written_copies.add(root["referencedDeclaration"])
             return None
@@ -615,12 +666,23 @@ class _Extractor:
                 self._assignable(rhs, part, var.type)
         return Unpack(tuple(vars_), value, False, self.src(expression))
 
-    def _write(self, expression, scope: dict, kind: str) -> None:
+    def _write(self, expression, scope: dict, kind: str, place: str | None = None) -> None:
         if expression["operator"] != "=":
             self.fail(expression, f"a write with {expression['operator']}: its value can revert")
         self._cannot_revert(expression["leftHandSide"], scope)
         self._cannot_revert(expression["rightHandSide"], scope)
-        self._effect(expression, kind, _normal(self.text(expression["leftHandSide"])))
+        self._effect(expression, kind, place or _normal(self.text(expression["leftHandSide"])))
+
+    def _wrote(self, state) -> None:
+        """Records a write to the storage variable `state`, here and in each callee being extracted."""
+        self.written.add(state["id"])
+        for writes in self.writing:
+            writes.add(state["id"])
+
+    def _through(self, entry: tuple, root, node) -> str:
+        """The read map key of `node`, a place that a copy, a struct parameter or a pointer `root` leads to:
+        `$spenders[_who].config.cap` for `spender.config.cap`."""
+        return entry[1] + _normal(self.text(node))[len(root["name"]) :]
 
     def _effect(self, node, kind: str, place: str) -> None:
         self.effects.append(Effect(kind, place, " ".join(self.text(node).split()), self.src(node)))
@@ -689,7 +751,7 @@ class _Extractor:
             if isinstance(target, Var):
                 return target
             if isinstance(target, tuple):
-                self.fail(node, f"the struct copy {node['name']} is used other than by field")
+                self.fail(node, f"the struct {node['name']} is used other than by field")
             return self._named(node)
         if kind in ("MemberAccess", "IndexAccess"):
             self._unmapped_storage(node)
@@ -759,16 +821,23 @@ class _Extractor:
         kind = node["nodeType"]
         key = None
         what = None
-        copy = state = None
-        if kind == "MemberAccess" and node["expression"]["nodeType"] == "Identifier":
+        copy = state = pointer = None
+        root = _root(node) if kind in ("MemberAccess", "IndexAccess") else None
+        through = scope.get(root.get("referencedDeclaration")) if root is not None else None
+        below = isinstance(through, tuple) and through[0] in ("copy", "param", "pointer")
+        if below:
+            if node["typeDescriptions"]["typeString"].startswith(("struct ", "mapping(")):
+                self.fail(node, f"{self.text(node)} is read other than by a field or an entry")
+            key = self._through(through, root, node)
+            what = "a field of the struct parameter" if through[0] == "param" else "a storage field"
+            if through[0] == "pointer" and through[2] is None:
+                what = "a field of the storage parameter"
+            copy = root["referencedDeclaration"] if through[0] == "copy" else None
+            pointer = through if through[0] == "pointer" else None
+        elif kind == "MemberAccess" and node["expression"]["nodeType"] == "Identifier":
             base = node["expression"]
-            target = scope.get(base.get("referencedDeclaration"))
             declared = self.nodes.get(base.get("referencedDeclaration"))
-            if isinstance(target, tuple) and target[0] in ("copy", "param"):
-                what = "a storage field" if target[0] == "copy" else "a field of the struct parameter"
-                key = f"{target[1]}.{node['memberName']}"
-                copy = base["referencedDeclaration"] if target[0] == "copy" else None
-            elif declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
+            if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
                 key, what, state = f"{declared['name']}.{node['memberName']}", "a storage field", declared
             elif base["name"] in ("tx", "block", "msg") and base.get("referencedDeclaration", 0) < 0:
                 key, what = self.text(node), "an environment field"
@@ -780,6 +849,9 @@ class _Extractor:
                 key, what, state = declared["name"], f"the {declared['mutability']} variable", declared
         fallback = key is None
         if fallback:
+            if kind == "Identifier" and node.get("referencedDeclaration") in scope:
+                # A local or a parameter, though the read map may name a storage variable of the same name.
+                return None
             key = self.text(node)
             if _normal(key) not in self.read_map:
                 return None
@@ -788,16 +860,68 @@ class _Extractor:
             self.fail(node, f"reads {what} {key}, which the read map does not name", Missing(key, what, self.src(node)))
         if node.get("typeDescriptions", {}).get("typeString", "").startswith("tuple("):
             self.fail(node, f"the read {key} gives several values, and a read map entry names one")
+        self._stable(key, node, scope)
         if copy in self.written_copies:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if state is not None:
             self._state_read(state, node)
-        if fallback:
+        if pointer is not None:
+            self._storage_read(pointer[2], node)
+        if fallback or below:
+            # The indexes below a copy, a parameter or a pointer are any expressions, as in other read map keys.
             self._fallback_read(node, scope)
         if _normal(key) not in self.reads:
             var = Var(entry[1], self._type(node), input=True, src=self.src(node))
             self.reads[_normal(key)] = Read(var, entry[0])
         return self.reads[_normal(key)].var
+
+    def _stable(self, key: str, node, scope: dict) -> None:
+        """A read map key names one value for the whole call. So it changes nothing, a local that it names, or a
+        parameter of a callee, is one that only its declaration assigns, in a callee that runs once (_run_once), and
+        each read of the key names the same things (_identity)."""
+        for n in _subtree(node):
+            kind = n.get("nodeType")
+            if kind == "Assignment" or (kind == "UnaryOperation" and n["operator"] in ("++", "--", "delete")):
+                self.fail(n, f"the read {key} changes {self.text(n)}: {_LOCALS}")
+            var = scope.get(n.get("referencedDeclaration")) if kind == "Identifier" else None
+            if isinstance(var, Var) and not var.input:
+                if n["referencedDeclaration"] in self.assigned:
+                    self.fail(n, f"the read {key} names {n['name']}, which an assignment changes: {_LOCALS}")
+                if self.stack:
+                    self.keyed.add(self.stack[-1])
+        identity = self._identity(node, scope)
+        if self.key_identities.setdefault(_normal(key), identity) != identity:
+            self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
+
+    def _identity(self, node, scope: dict) -> tuple:
+        """What an expression names, beyond its text: the declaration of each identifier and of each member, a copy or
+        a pointer as the identity of its place, so that a read through it is the read of that place, and each literal,
+        whose text loses its spaces in a read map key."""
+        names = []
+        for n in _subtree(node):
+            if n.get("nodeType") == "Literal":
+                names.append(("literal", n.get("hexValue")))
+            elif n.get("nodeType") == "MemberAccess":
+                names.append(("member", n["memberName"], n.get("referencedDeclaration")))
+            elif n.get("nodeType") == "Identifier":
+                entry = scope.get(n.get("referencedDeclaration"))
+                if isinstance(entry, tuple) and entry[0] in ("copy", "pointer"):
+                    names.extend(entry[3])
+                else:
+                    names.append(n.get("referencedDeclaration"))
+        return tuple(names)
+
+    def _run_once(self) -> None:
+        """Refuses a callee that names its own locals or parameters in a read map key and runs more than once in the
+        call, as one input would stand for the value at each run."""
+
+        def runs(callee: int) -> int:
+            return sum(1 if caller is None else runs(caller) for caller, c in self.calls if c == callee)
+
+        for callee in sorted(self.keyed):
+            if runs(callee) > 1:
+                name = self.nodes[callee]["name"]
+                self.fail(self.nodes[callee], f"{name} runs {runs(callee)} times in the call: {_LOCALS}")
 
     def _state_read(self, decl, node) -> None:
         """Records a read of the storage variable `decl`, which must not follow a write to it."""
@@ -806,12 +930,28 @@ class _Extractor:
         for reads in self.reading:
             reads.add(decl["id"])
 
+    def _storage_read(self, state, node) -> None:
+        """Records a read through a memory copy or a storage pointer of the storage variable `state`, or of a storage
+        parameter of the modeled function (None), which could be any storage, so it must not follow any write."""
+        if state is not None:
+            return self._state_read(state, node)
+        if self.written:
+            self.fail(node, "reads a storage parameter after a write, which could have changed it")
+        for reads in self.reading:
+            reads.add("any")
+
     def _fallback_read(self, node, scope: dict) -> None:
         """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
-        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage."""
+        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. No
+        call may take a memory value of the function, which an internal call could change, nor call `gasleft`."""
+        if self._calls_gasleft(node, set()):
+            self.fail(node, f"the read {self.text(node)} calls gasleft, whose value changes during the call")
         for n in _subtree(node):
             ref = n.get("referencedDeclaration")
             if n.get("nodeType") == "Identifier":
+                entry = scope.get(ref)
+                if isinstance(entry, tuple) and entry[0] == "pointer":
+                    self._storage_read(entry[2], n)
                 declared = self.nodes.get(ref)
                 if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
                     self._state_read(declared, n)
@@ -826,11 +966,28 @@ class _Extractor:
                     self.fail(n, f"the read {self.text(node)} makes a call that the extractor cannot resolve")
                 if decl["stateMutability"] not in ("view", "pure"):
                     self.fail(n, f"the read {self.text(node)} calls {decl['name']}, which can change state")
+                internal = decl["visibility"] in ("internal", "private") or callee["nodeType"] == "Identifier"
+                given = [*n["arguments"], *([callee["expression"]] if callee["nodeType"] == "MemberAccess" else [])]
+                if internal and any(" memory" in a["typeDescriptions"].get("typeString", "") for a in given):
+                    self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
                 if decl["stateMutability"] != "pure" or decl["visibility"] not in ("internal", "private"):
                     if self.written:
                         self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
                     for reads in self.reading:
                         reads.add("call")
+
+    def _calls_gasleft(self, node, seen: set) -> bool:
+        """Whether an expression or a function calls `gasleft`, also through the functions that it calls."""
+        for n in _subtree(node):
+            ref = n.get("referencedDeclaration")
+            if n.get("nodeType") == "Identifier" and n["name"] == "gasleft" and (ref or 0) < 0:
+                return True
+            decl = self.nodes.get(ref) if n.get("nodeType") in ("Identifier", "MemberAccess") else None
+            if decl is not None and decl["nodeType"] == "FunctionDefinition" and decl["id"] not in seen:
+                seen.add(decl["id"])
+                if self._calls_gasleft(decl, seen):
+                    return True
+        return False
 
     def _named(self, node) -> Const:
         """A constant, named by an identifier or a member access such as `Fees.TIP`, or an enum member such as
@@ -944,15 +1101,25 @@ class _Extractor:
             text = self.text(node)
             missing = Missing(_normal(text), "an external call", self.src(node))
             self.fail(node, f"an external call that the read map does not name: {text}", missing)
+        # A storage struct argument is no value of the model: the callee reads the fields of its argument's storage.
+        bindings = {}
+        for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
+            if _storage_struct(param):
+                path = self._storage_path(arg, scope)
+                if path is None:
+                    self.fail(arg, f"the storage argument {self.text(arg)}: {_STORAGE}")
+                bindings[param["id"]] = (*path, self._identity(arg, scope))
+        pairs = zip(decl["parameters"]["parameters"], arguments, strict=True)
+        arguments = [arg for param, arg in pairs if param["id"] not in bindings]
         written, value = set(self.written), self.statement_value
-        function = self._callee(decl, node)
+        function = self._callee(decl, node, bindings)
         # The arguments run before the call, so they see the writes made before it only.
         self.written = set(written)
         args = tuple(self._expr(arg, scope) for arg in arguments)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
-        stale = sorted(self.nodes[r]["name"] for r in reads - {"call"} if r in written)
-        if stale or ("call" in reads and written):
-            what = ", ".join(stale) if stale else "storage through a call"
+        stale = sorted(self.nodes[r]["name"] for r in reads - {"call", "any"} if r in written)
+        if stale or (reads & {"call", "any"} and written):
+            what = ", ".join(stale) if stale else "storage through a call" if "call" in reads else "a storage parameter"
             self.fail(node, f"calls {decl['name']}, which reads {what}, after a write: the model misses the write")
         if writes and node["id"] != value:
             self.fail(node, f"{decl['name']} writes storage, so its call must be the whole value of a statement")
@@ -976,17 +1143,26 @@ class _Extractor:
             self.fail(node, f"the named arguments {', '.join(node['names'])} are not the parameters of {decl['name']}")
         return [by_name[name] for name in params]
 
-    def _callee(self, decl, call) -> Function:
+    def _callee(self, decl, call, bindings: dict) -> Function:
+        """The model function of a callee. A callee with storage struct parameters is one function for the storage
+        that its first call binds them to, so a call that binds other storage is refused."""
         if decl["id"] in self.stack:
             self.fail(call, f"{decl['name']} calls itself")
+        self.calls.append((self.stack[-1] if self.stack else None, decl["id"]))
+        bound = {self.nodes[param]["name"]: (path[0], path[2]) for param, path in bindings.items()}
+        if decl["id"] in self.bindings and self.bindings[decl["id"]] != bound:
+            first = ", ".join(f"{k} = {v[0]}" for k, v in self.bindings[decl["id"]].items())
+            self.fail(call, f"calls {decl['name']} on other storage than its first call ({first})")
         if decl["id"] not in self.callees:
             if any(f.name == decl["name"] for f in self.callees.values()):
                 self.fail(call, f"two callees are named {decl['name']}")
+            self.bindings[decl["id"]] = bound
+            self.assigned |= _assigned(decl)
             self.stack.append(decl["id"])
             self.used.add(self._place(decl)[0])
             self.reading.append(set())
             self.writing.append(set())
-            function = self._function(decl, top=False)
+            function = self._function(decl, top=False, bindings=bindings)
             self.callee_reads[decl["id"]] = self.reading.pop()
             self.callee_writes[decl["id"]] = self.writing.pop()
             self.stack.pop()
@@ -1056,6 +1232,22 @@ def _subtree(node):
             yield from _subtree(value)
 
 
+_STORAGE = (
+    "a storage pointer must be to a storage struct, at mapping keys that name one entry for the whole call (inputs, or "
+    "fields of tx, block or msg), or to a field of one"
+)
+
+
+def _mapping(node) -> bool:
+    """Whether an index access is to an entry of a mapping, which no key makes revert, unlike an array index."""
+    return node["baseExpression"]["typeDescriptions"]["typeString"].startswith("mapping(")
+
+
+def _storage_struct(decl) -> bool:
+    """Whether a declaration is a storage pointer to a struct, as `Spender storage spender`."""
+    return decl["typeDescriptions"]["typeString"].startswith("struct ") and decl.get("storageLocation") == "storage"
+
+
 def _written(type_: Type) -> str:
     return f"({type_.solidity})" if type_.kind == "tuple" else type_.solidity
 
@@ -1065,6 +1257,25 @@ def _parameter_type(param) -> str:
     a contract or a user-defined value type, such as `MarketParams`."""
     text = re.sub(r" (memory|storage|calldata)( pointer| ref)?$", "", param["typeDescriptions"]["typeString"])
     return re.sub(r"^(struct|enum|contract) ", "", text).rpartition(".")[2]
+
+
+_LOCALS = (
+    "a read map key names one value for the whole call, so it must change nothing, and each local in it must be one "
+    "that only its declaration assigns, in a function that runs once"
+)
+
+
+def _assigned(node) -> set[int]:
+    """The declarations that an assignment in `node` changes: an identifier on its left, also in a tuple."""
+    targets = [n["leftHandSide"] for n in _subtree(node) if n.get("nodeType") == "Assignment"]
+    assigned = set()
+    while targets:
+        target = targets.pop()
+        if target is not None and target["nodeType"] == "TupleExpression":
+            targets.extend(target["components"])
+        elif target is not None and target["nodeType"] == "Identifier":
+            assigned.add(target["referencedDeclaration"])
+    return assigned
 
 
 def _root(node):
