@@ -6,7 +6,7 @@ import z3
 
 from solift import forge, ops
 from solift.extract import ExtractionError, extract
-from solift.ir import uint
+from solift.ir import Op, uint, walk
 from solift.smt import symbols, terms
 from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
@@ -87,7 +87,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("loop", {}, r"OutOfScope.sol:12:5: a loop"),
         ("storageWrite", {}, r"OutOfScope.sol:19:5: a write with \+=: its value can revert"),
         ("uncheckedBlock", {}, r"OutOfScope.sol:24:5: an unchecked block"),
-        ("signedParameter", {}, r"OutOfScope.sol:29:28: a signed integer"),
+        ("signedParameter", {}, r"OutOfScope.sol:30:12: a signed integer"),
         ("cast", {"msg.sender": "sender"}, r"OutOfScope.sol:34:12: a type conversion: uint160\(msg.sender\)"),
         (
             "tupleOfAnExternalCall",
@@ -100,7 +100,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("unmappedRead", {}, r"reads an environment field block.timestamp, which the read map does not name"),
         ("modulo", {}, r"OutOfScope.sol:63:12: mod is not in the operator table"),
         ("narrowArithmetic", {}, r"OutOfScope.sol:67:12: add at uint128: arithmetic narrower than uint256"),
-        ("mathMax", {}, r"Math.max with 2 arguments has no lemma"),
+        ("mathAverage", {}, r"Math.average with 2 arguments has no lemma"),
         ("recursion", {}, r"recursion calls itself"),
         ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
         ("requireCall", {}, r"OutOfScope.sol:88:21: the message of require is not a string literal or an error"),
@@ -583,3 +583,31 @@ def test_an_immutable_is_read_after_an_external_call_which_cannot_change_it(buil
     model = extract(build, f"{EFFECTS}.swapperAfterACall", {"SWAPPER": "swapper"}).model
     assert [(e.kind, e.place) for e in model.effects] == [("call", "SWAPPER.buy(msg.sender,1)")]
     assert evaluate_vector(model, {"swapper": 7}) == (False, 7)
+
+
+ROUNDED = "tests/fixtures/contracts/Rounded.sol:Rounded"
+
+
+def test_math_max_and_a_mulDiv_rounded_down_are_operators_with_their_lemmas(build):
+    model = extract(build, f"{ROUNDED}.share", {}).model
+    assert sorted({e.op for e in walk(model.function) if isinstance(e, Op)}) == ["max", "mulDiv"]
+    # Either value can be the larger.
+    assert evaluate_vector(model, {"_x": 7, "_y": 3, "_d": 2}) == (False, 10)
+    assert evaluate_vector(model, {"_x": 1, "_y": 3, "_d": 2}) == (False, 4)
+    assert evaluate_vector(model, {"_x": 6, "_y": 3, "_d": 0}) == (True, 0)
+    assert "Math.max(Math.mulDiv(i._x, i._y, i._d), Math.mulDiv(i._y, i._y, i._d))" in source(model)
+    with pytest.raises(ExtractionError, match=r"Math.mulDiv with the rounding Math.Rounding.Ceil has no lemma"):
+        extract(build, f"{ROUNDED}.roundedUp", {})
+    with pytest.raises(ExtractionError, match=r"Math.mulDiv with the rounding _rounding has no lemma"):
+        extract(build, f"{ROUNDED}.roundedBy", {})
+
+
+def test_a_signed_parameter_that_only_an_effect_takes_is_no_input(build):
+    model = extract(
+        build, f"{ROUNDED}.swap", {}, {"POOL.exchange(0,_out,_dx,minDy)": (None, None, None, "minOut")}
+    ).model
+    assert [v.name for v in model.inputs] == ["_dx"]
+    assert evaluate_vector(model, {"_dx": 1000}) == (False, (990, 990))
+    assert evaluate_vector(model, {"_dx": 101}) == (False, (99, 99))
+    with pytest.raises(ExtractionError, match=r"Rounded.sol:\d+:12: a signed integer"):
+        extract(build, f"{ROUNDED}.signedValue", {})

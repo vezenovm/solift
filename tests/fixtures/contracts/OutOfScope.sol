@@ -67,8 +67,8 @@ contract OutOfScope {
     return _a + _a;
   }
 
-  function mathMax(uint256 _a, uint256 _b) internal pure returns (uint256) {
-    return Math.max(_a, _b);
+  function mathAverage(uint256 _a, uint256 _b) internal pure returns (uint256) {
+    return Math.average(_a, _b);
   }
 
   function recursion(uint256 _a) internal pure returns (uint256) {

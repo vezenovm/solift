@@ -7,6 +7,7 @@
     div      a / b                  a / b (floor)       b == 0
     mulDiv   Math.mulDiv(x, y, d)   x * y / d (floor)   d == 0 or x * y / d >= 2**256    x >= 2**128 or y >= 2**128
     min      Math.min(a, b)         If(a < b, a, b)     never
+    max      Math.max(a, b)         If(a > b, a, b)     never
     lt ... ne                       a < b ... a != b    never
     not      !a                     Not(a)              never
     and, or  a && b, a || b         And(a, b), Or(a, b) never
@@ -25,9 +26,10 @@ and library calls take operands of any unsigned width. `eq` and `ne` also compar
 members of one enum, and `ite` selects between two values of one such type. z3 sees an address or an enum member as its
 integer value.
 
-Halmos proves on the bytecode each row that can revert, and the two OpenZeppelin facts that the min and mulDiv rows rest
-on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, and `Math.mulDiv(x, y, d)` is `x * y / d` when `x` and `y` are below
-2**128. A model's `outside` is the inputs where a mulDiv operand reaches 2**128, where the second fact is not proved.
+Halmos proves on the bytecode each row that can revert, and the OpenZeppelin facts that the min, max and mulDiv rows
+rest on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, `Math.max(a, b)` is `a > b ? a : b`, and
+`Math.mulDiv(x, y, d)` is `x * y / d` when `x` and `y` are below 2**128. A model's `outside` is the inputs where a
+mulDiv operand reaches 2**128, where the mulDiv fact is not proved.
 """
 
 from __future__ import annotations
@@ -118,6 +120,14 @@ TABLE = {
             "library",
             lambda a, b: z3.If(a < b, a, b),
             proofs=("check_lemma_minIsTheSmallerValue",),
+        ),
+        Operator(
+            "max",
+            2,
+            "Math.max({0}, {1})",
+            "library",
+            lambda a, b: z3.If(a > b, a, b),
+            proofs=("check_lemma_maxIsTheLargerValue",),
         ),
         Operator("lt", 2, "{0} < {1}", "compare", lambda a, b: a < b),
         Operator("le", 2, "{0} <= {1}", "compare", lambda a, b: a <= b),
@@ -348,6 +358,14 @@ PROOFS = {
             check="""\
   function check_lemma_minIsTheSmallerValue(uint256 _a, uint256 _b) public pure {
     assert(Math.min(_a, _b) == (_a < _b ? _a : _b));
+  }
+""",
+        ),
+        Proof(
+            "check_lemma_maxIsTheLargerValue",
+            check="""\
+  function check_lemma_maxIsTheLargerValue(uint256 _a, uint256 _b) public pure {
+    assert(Math.max(_a, _b) == (_a > _b ? _a : _b));
   }
 """,
         ),

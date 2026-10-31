@@ -46,7 +46,7 @@ class Terms:
     """`locals` holds the value of each local of the modeled function, and of its named return variable, where the
     function returns. `declared` holds each local's value where it is declared. A local that a return does not reach
     takes there the value of a return that does. `comparisons` holds the condition under which each comparison and each
-    min runs and its two operand values, for the boundary vectors.
+    min or max runs and its two operand values, for the boundary vectors.
 
     Three terms say where an operation leaves its lemma's domain. `outside` is where an operation that runs reaches the
     table's outside, which `inside` assumes away. `lemma` is where an operation that runs reaches it or takes an operand
@@ -282,7 +282,7 @@ class _Run:
         operator = TABLE[e.op]
         if e.op == "narrow":
             return values[0] % e.type.bound, parts[0][1], parts[0][2]
-        if (operator.kind == "compare" or e.op == "min") and all(arg.type != BOOL for arg in e.args):
+        if (operator.kind == "compare" or e.op in ("min", "max")) and all(arg.type != BOOL for arg in e.args):
             self.comparisons.append((self.guard, values[0], values[1]))
         if operator.outside:
             leaves = _anywhere(operator, values)

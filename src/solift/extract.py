@@ -22,14 +22,15 @@ value for the whole call, so a local in it, also below a pointer, must be one th
 same one at each read of the key, in the modeled function or in a callee that runs once.
 
 Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`): each callee becomes a function of the
-model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
-value, with its name and declared type, and an enum member its index. A contract or interface value is its address, and
-`address(x)` of one is the same value. `uint<n>(x)` of an unsigned x widens it, or keeps its low n bits. Locals can be
-assigned, also in branches, and a named return starts at zero. A function can return several values, and a tuple
-declaration or assignment (`(, uint256 y) = limits(a, b);`, `(x, y) = (y, x);`) takes them apart into locals. `require`,
-`assert` and `revert` revert. A parameter of a user-defined value type, such as Morpho's `Id`, that the function uses
-only inside read map keys or as an argument of an effect, is not an input. Anything else stops the extraction with an
-error that names the construct and its place in the source.
+model. OpenZeppelin's `Math.min`, `Math.max`, and `Math.mulDiv` with or without `Math.Rounding.Floor`, become operators
+of the table in ops.py. A constant becomes its value, with its name and declared type, and an enum member its index. A
+contract or interface value is its address, and `address(x)` of one is the same value. `uint<n>(x)` of an unsigned x
+widens it, or keeps its low n bits. Locals can be assigned, also in branches, and a named return starts at zero. A
+function can return several values, and a tuple declaration or assignment (`(, uint256 y) = limits(a, b);`,
+`(x, y) = (y, x);`) takes them apart into locals. `require`, `assert` and `revert` revert. A parameter of a
+user-defined value type, such as Morpho's `Id`, or of a signed integer type, that the function uses only inside read
+map keys or as an argument of an effect, is not an input. Anything else stops the extraction with an error that names
+the construct and its place in the source.
 
 The model is the function's value and whether it reverts, which is what the link compares, and its outputs: the writes
 and the external call arguments that the output map names, as `{"$total": "total"}` or
@@ -100,7 +101,10 @@ from solift.ir import (
 )
 
 MATH_PATH = "utils/math/Math.sol"
-MATH_OPERATORS = {"min": ("min", 2), "mulDiv": ("mulDiv", 3)}
+MATH_OPERATORS = {"min": ("min", 2), "max": ("max", 2), "mulDiv": ("mulDiv", 3)}
+# The operator of Math.mulDiv with a Rounding: Floor is the floor, as without one. Ceil adds one where
+# mulmod(x, y, d) > 0, which Halmos cannot prove equal to x * y % d at a symbolic d, so it has no lemma.
+ROUNDINGS = {"Floor": "mulDiv"}
 BINARY = {
     "+": "add",
     "-": "sub",
@@ -524,7 +528,9 @@ class _Extractor:
                     self.fail(p, f"the struct parameter {p['name']} of a called function")
                 scope[p["id"]] = ("param", p["name"])
                 continue
-            if top and self._user_value_type(p):
+            if top and (self._user_value_type(p) or _SIGNED.fullmatch(p["typeDescriptions"]["typeString"])):
+                # A parameter of a type that the model has no value of: only a read map key or an argument of an
+                # effect may name it.
                 scope[p["id"]] = ("opaque", p["name"])
                 continue
             var = Var(p["name"], self._type(p), input=top, src=self.src(p))
@@ -978,6 +984,8 @@ class _Extractor:
             target = scope.get(node.get("referencedDeclaration"))
             if isinstance(target, Var):
                 return target
+            if isinstance(target, tuple) and target[0] == "opaque":
+                self.fail(node, f"the parameter {node['name']} is a value here, and the model has no value of its type")
             if isinstance(target, tuple):
                 self.fail(node, f"the struct {node['name']} is used other than by field")
             return self._named(node)
@@ -1329,6 +1337,8 @@ class _Extractor:
             path = self._place(owner)[0]
             if path.endswith(MATH_PATH):
                 op = MATH_OPERATORS.get(decl["name"])
+                if decl["name"] == "mulDiv" and len(arguments) == 4:
+                    op, arguments = (self._rounding(arguments[3]), 3), arguments[:3]
                 if op is None or len(arguments) != op[1]:
                     self.fail(node, f"Math.{decl['name']} with {len(arguments)} arguments has no lemma")
                 self.math_path = path
@@ -1373,6 +1383,15 @@ class _Extractor:
         for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
+
+    def _rounding(self, node) -> str:
+        """The operator of Math.mulDiv with a rounding, which must be Math.Rounding.Floor, as written."""
+        decl = self.nodes.get(node.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "EnumValue" or decl["name"] not in ROUNDINGS:
+            self.fail(
+                node, f"Math.mulDiv with the rounding {self.text(node)} has no lemma: it takes Math.Rounding.Floor"
+            )
+        return ROUNDINGS[decl["name"]]
 
     def _arguments(self, node, decl, bound: bool = False) -> list:
         """The argument nodes of a call in the order of the callee's parameters, also for named arguments such as
@@ -1476,6 +1495,7 @@ def _subtree(node):
 
 EXTERNAL = "external call"
 _KEYS = "each key of an output must be an input or a field of tx, block or msg"
+_SIGNED = re.compile(r"int\d*")
 _BEFORE = "name its place in the read map too"
 
 

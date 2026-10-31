@@ -2,8 +2,8 @@
 
 The link proves the emitted Solidity equal to the bytecode, and Halmos proves the rows of the operator table. Nothing
 proves that smt.py composes the rows as the Solidity does: the vectors check that on samples. For each comparison and
-each min of the model, z3 finds inputs that do not revert, under which the comparison runs, where the two sides are
-equal and one apart, with inputs that pay first. Random inputs then cover each outcome: pays (a positive or true
+each min or max of the model, z3 finds inputs that do not revert, under which the comparison runs, where the two sides
+are equal and one apart, with inputs that pay first. Random inputs then cover each outcome: pays (a positive or true
 result, or for several returns a positive or true value), zero, and reverts. z3 finds an input for an outcome that no
 random input reaches, such as a revert that only inputs near 2**256 reach. An outcome or a boundary that z3 proves no
 input reaches is recorded as unreachable, and an "unknown" from z3 is an error. A generated forge test runs the emitted

@@ -91,7 +91,8 @@ rest of your project untouched ([docs/overlay.md](docs/overlay.md)).
   result and the same outputs, or both revert. Revert data, events, and the writes and calls that are not outputs are
   not compared.
 - **The lemmas** that the model uses, in the same build: each checked operator reverts exactly when the table says,
-  and `Math.mulDiv(x, y, d)` is `x * y / d` rounded down when `x` and `y` are below 2**128.
+  `Math.min` and `Math.max` are the smaller and the larger value, and `Math.mulDiv(x, y, d)` is `x * y / d` rounded
+  down when `x` and `y` are below 2**128.
 - **The theorems**, each with its assumptions listed, starting with the input types. A theorem that is expected to
   prove needs a witness, so that its hypotheses can hold, and an expected counterexample needs a reason.
 
@@ -110,11 +111,11 @@ function makes as a statement is assumed not to revert and not to call back into
 ## What it takes
 
 Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
-calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min` and
-`Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link compares
-after the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed integers,
-`**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call that does not fit can go in
-the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
+calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min`, `Math.max`
+and `Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link
+compares after the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed
+values, `**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call that does not fit
+can go in the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
 
 ## Proof performance
 
@@ -148,8 +149,8 @@ more power than these:
 ## Roadmap
 
 Coverage: generated names that never clash with the source's, constant expressions, arithmetic below `uint256`, `%`,
-and library summaries through the operator table. Then, as projects need them: `unchecked`, modifiers, `**`, bounded
-loops.
+and library summaries through the operator table. Then, as projects need them: `unchecked`, modifiers, `**`,
+`Math.mulDiv` rounded up (once Halmos can prove its `mulmod` at a symbolic denominator), bounded loops.
 
 Past arithmetic:
 
