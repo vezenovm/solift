@@ -74,6 +74,31 @@ def test_the_command_line_runs_a_module_and_prints_the_reads_of_a_target(tmp_pat
     assert data["complete"] and len(data["reads"]) == 6
 
 
+def test_reads_takes_the_overlay_entries_and_prints_a_failed_build_without_a_traceback(tmp_path, capsys):
+    config = '[profile.default]\nsrc = "src"\nremappings = ["@mylib/=.deps/mylib/src/"]\n'
+    (tmp_path / "foundry.toml").write_text(config)
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".deps/mylib/src").mkdir(parents=True)
+    header = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n"
+    (tmp_path / ".deps/mylib/src/Lib.sol").write_text(
+        header + "library Lib {\n  function twice(uint256 x) internal pure returns (uint256) {\n"
+        "    return 2 * x;\n  }\n}\n"
+    )
+    (tmp_path / "src/Vault.sol").write_text(
+        header + 'import {Lib} from "@mylib/Lib.sol";\n\ncontract Vault {\n  uint256 public total;\n\n'
+        "  function quote(uint256 a) public view returns (uint256) {\n    return Lib.twice(a) + total;\n  }\n}\n"
+    )
+    reads = ["reads", "src/Vault.sol:Vault.quote", "--root", str(tmp_path), "--workspace", str(tmp_path / "work")]
+    assert entrypoint(reads) == 0
+    assert "1 reads, complete" in capsys.readouterr().out
+    assert entrypoint([*reads, "--link", "foundry.toml"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "Traceback" not in err
+    assert "the overlay links foundry.toml and copies src: pass --link or --copy" in err
+    assert entrypoint([*reads, "--link", "foundry.toml", "--link", ".deps"]) == 0
+    assert entrypoint([*reads, "--copy", "src", "--copy", ".deps"]) == 0
+
+
 def test_a_missing_forge_fails_the_build_with_a_record(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLIFT_FORGE", "no-such-forge")
     record = run(SPEC, Workspace(tmp_path / "work"), link=False)
@@ -86,20 +111,24 @@ def test_a_foundry_project_infers_its_overlay_from_the_profile(tmp_path):
     (tmp_path / "foundry.toml").write_text(
         '[profile.default]\nsrc = "src"\n\n[profile.deploy]\nsrc = "contracts"\ntest = "checks"\nlibs = ["deps"]\n'
     )
-    (tmp_path / "remappings.txt").write_text("dep/=deps/dep/\n")
-    for directory in ("src", "contracts", "checks", "deps"):
+    (tmp_path / "remappings.txt").write_text(
+        "dep/=deps/dep/\n@own/=src/own/\nctx:@vendor/=.vendor/v/\n@up/=../up/\n@gone/=gone/x/\n"
+    )
+    for directory in ("src", "contracts", "checks", "deps", ".vendor"):
         (tmp_path / directory).mkdir()
     default = Project.foundry(root=tmp_path).resolve()
     assert (default.link, default.copy, default.generated) == (
-        ("foundry.toml", "remappings.txt"),
+        ("foundry.toml", "remappings.txt", "deps", ".vendor"),
         ("src",),
         "test/solift",
     )
     deploy = Project.foundry(root=tmp_path, profile="deploy").resolve()
-    assert deploy.link == ("foundry.toml", "remappings.txt", "deps")
+    assert deploy.link == ("foundry.toml", "remappings.txt", "deps", "src", ".vendor")
     assert (deploy.copy, deploy.generated) == (("contracts",), "checks/solift")
     kept = Project.foundry(root=tmp_path, copy=("src", "contracts"), link=()).resolve()
     assert (kept.link, kept.copy) == ((), ("src", "contracts"))
+    copied = Project.foundry(root=tmp_path, copy=("src", ".vendor")).resolve()
+    assert copied.link == ("foundry.toml", "remappings.txt", "deps")
     assert Project(root=tmp_path).resolve() == Project(root=tmp_path)
     assert Project.foundry(root=pathlib.Path(".")).root == pathlib.Path(".").resolve()
 

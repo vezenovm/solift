@@ -69,10 +69,11 @@ SPEC = Spec(
 Each input needs an adapter or an `observed` expression. Otherwise the link refuses to generate.
 
 `Project.foundry()` reads the project's foundry config (`forge config --json`, under the profile) when the run starts:
-it links `foundry.toml`, `remappings.txt` and the library directories, copies the source directory, and writes the
-generated files to `<test>/solift`. Pass `link=`, `copy=`, `add=` or `generated=` to set one yourself. For a layout it
-cannot infer, such as a profile whose source directory only imports the contracts, build the `Project` by hand
-(`acceptance/resupply/project.py`):
+it links `foundry.toml`, `remappings.txt`, the library directories and the top directory of each remapping's target
+(`.deps` for `@lib/=.deps/lib/src/`), copies the source directory, and writes the generated files to `<test>/solift`.
+Pass `link=`, `copy=`, `add=` or `generated=` to set one yourself; `solift reads` takes `--link` and `--copy`. For a
+layout it cannot infer, such as a profile whose source directory only imports the contracts, build the `Project` by
+hand (`acceptance/resupply/project.py`):
 
 ```python
 PROJECT = Project(

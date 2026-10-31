@@ -4,9 +4,10 @@
 a Python module: `ATTR` names a Spec or a list of them, and without it the module has exactly one of `SPEC` and
 `SPECS`. The module is found from the current directory, as `python -m` finds it, and imports without writing bytecode.
 
-`solift reads TARGET [--root PATH] [--profile NAME] [--copy PATH ...] [--json]` builds the project and prints the read
-map that the target needs, a link skeleton, the internal calls that a read map entry can cut, and the writes and
-events that the model leaves out (discover.py).
+`solift reads TARGET [--root PATH] [--profile NAME] [--link PATH ...] [--copy PATH ...] [--json]` builds the project and
+prints the read map that the target needs, a link skeleton, the internal calls that a read map entry can cut, and the
+writes and events that the model leaves out (discover.py). `--link` and `--copy` set the overlay's entries in place of
+the ones that `Project.foundry` infers. A build that fails prints forge's output and the overlay's entries.
 
 A spec module can also run itself with `sys.exit(main(SPEC))` and `python -m <module>`, with the options of `run`.
 `--root` is the project root, for specs whose project lives outside their repo. The forge binary comes from
@@ -27,7 +28,7 @@ from collections.abc import Sequence
 from solift import forge
 from solift.discover import as_json, discover, report
 from solift.run import Spec, run, summary
-from solift.workspace import Project, Workspace
+from solift.workspace import Project, Workspace, WorkspaceError
 
 
 class SpecError(Exception):
@@ -52,6 +53,7 @@ def entrypoint(argv: list[str] | None = None) -> int:
     reads.add_argument("target", help="the function, as path:Contract.function")
     reads.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the foundry project")
     reads.add_argument("--profile", help="the foundry profile to build with")
+    reads.add_argument("--link", action="append", help="a project path to link (default: config, libs, remappings)")
     reads.add_argument("--copy", action="append", help="a project path to copy (default: the source directory)")
     reads.add_argument("--workspace", type=pathlib.Path, default=pathlib.Path("build") / "reads")
     reads.add_argument("--json", action="store_true", help="print JSON")
@@ -122,11 +124,22 @@ def _run(specs: list[Spec], args, parser: argparse.ArgumentParser) -> int:
 
 def _reads(args) -> int:
     root = args.root.resolve()
-    project = Project.foundry(root=root, profile=args.profile, copy=tuple(args.copy) if args.copy else None).resolve()
-    workspace = Workspace(args.workspace)
-    guard = project.guard(workspace)
-    overlay = project.overlay(workspace)
-    infos = forge.build(overlay, workspace.fresh("out"), workspace.fresh("cache"), project.profile, (root,))
+    link, copy = (tuple(paths) if paths else None for paths in (args.link, args.copy))
+    try:
+        project = Project.foundry(root=root, profile=args.profile, link=link, copy=copy).resolve()
+        workspace = Workspace(args.workspace)
+        guard = project.guard(workspace)
+        overlay = project.overlay(workspace)
+    except (forge.BuildError, WorkspaceError) as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    try:
+        infos = forge.build(overlay, workspace.fresh("out"), workspace.fresh("cache"), project.profile, (root,))
+    except forge.BuildError as err:
+        entries = f"links {', '.join(project.link) or 'nothing'} and copies {', '.join(project.copy) or 'nothing'}"
+        print(f"error: {err}", file=sys.stderr)
+        print(f"the overlay {entries}: pass --link or --copy for a path that the build needs", file=sys.stderr)
+        return 1
     found = discover(infos, args.target)
     print(json.dumps(as_json(found), indent=2) if args.json else report(found))
     changes = guard.changes()
