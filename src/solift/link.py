@@ -12,7 +12,7 @@ outputs, or both revert. An output is a write or an external call argument that 
 reads it after the call through its `post` expression, such as a getter of the harness or what a stub recorded. Revert
 data, the other storage writes and calls, and events are not compared. The test reads the observed inputs before it
 calls the contract, so that each is the value that the contract reads, also when the call writes storage: the model
-reads nothing that the function wrote (extract.py).
+reads nothing that the function wrote (the extract package).
 
 The generated files are the model library and host (solidity.py), the link test, and a test of each operator-table
 row and lemma that the model uses, which this build proves on its own bytecode and OpenZeppelin version.
