@@ -611,3 +611,29 @@ def test_a_signed_parameter_that_only_an_effect_takes_is_no_input(build):
     assert evaluate_vector(model, {"_dx": 101}) == (False, (99, 99))
     with pytest.raises(ExtractionError, match=r"Rounded.sol:\d+:12: a signed integer"):
         extract(build, f"{ROUNDED}.signedValue", {})
+
+
+BALANCES = "tests/fixtures/contracts/Balances.sol:Balances"
+
+
+def test_the_balance_of_an_address_is_a_read_and_the_bounds_of_a_type_are_constants(build):
+    model = extract(build, f"{BALANCES}.share", {"address(this).balance": "held"}).model
+    assert [(r.source, r.var.type.solidity) for r in model.reads] == [("address(this).balance", "uint256")]
+    assert evaluate_vector(model, {"_amount": 2**256 - 1, "held": 7}) == (False, 7)
+    assert evaluate_vector(model, {"_amount": 9, "held": 7}) == (False, 2**128 - 1)
+    text = source(model)
+    assert "uint256 internal constant ALL = type(uint256).max;" in text
+    assert ": type(uint128).max" in text
+    who = extract(build, f"{BALANCES}.balanceOf", {"_who.balance": "held"}).model
+    assert evaluate_vector(who, {"_who": 3, "held": 5}) == (False, 5)
+
+
+def test_a_balance_after_an_external_call_or_of_a_local_that_changes_is_refused_and_an_interface_cannot_revert(build):
+    with pytest.raises(ExtractionError, match=r"reads address\(this\).balance after an external call"):
+        extract(build, f"{BALANCES}.balanceAfterACall", {"address(this).balance": "held"})
+    with pytest.raises(ExtractionError, match=r"Balances.sol:\d+:21: the read who.balance names who, which an"):
+        extract(build, f"{BALANCES}.balancesOfTwo", {"who.balance": "held"})
+    with pytest.raises(ExtractionError, match=r"calls pot, which reads a balance, after an external call"):
+        extract(build, f"{BALANCES}.potAfterACall", {"address(this).balance": "held"})
+    model = extract(build, f"{BALANCES}.approveAll", {}).model
+    assert [(e.kind, e.place) for e in model.effects] == [("call", "_payer.approve(IERC20(_token),type(uint256).max)")]
