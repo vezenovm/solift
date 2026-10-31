@@ -44,7 +44,7 @@ def quote() -> Model:
         Function("_quote", (gas, price), UINT256, body),
         reads=reads,
         callees=(with_margin,),
-        imports=('import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";',),
+        math="@openzeppelin/contracts/utils/math/Math.sol",
         pragma="^0.8.27",
         spdx="Apache-2.0",
     )

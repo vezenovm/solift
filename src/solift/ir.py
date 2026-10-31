@@ -301,16 +301,18 @@ class Output:
 @dataclass(frozen=True)
 class Model:
     """`function` is the modeled function. Its parameters and the reads are the inputs. `callees` are the internal
-    functions that it calls. `imports` are the import directives that the emitted Solidity needs, `pragma` its version
-    pragma and `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted
-    contracts instead of the contract and function names (solidity.names). `effects` are the writes, external calls
-    and events of the function and its callees, which the model leaves out. `outputs` are those it has as values, which
-    the modeled function returns after its own."""
+    functions that it calls. `math` is the path that the emitted Solidity imports OpenZeppelin's Math from, when the
+    model calls it, and `imports` are the other import directives that it needs. `pragma` is its version pragma and
+    `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted contracts
+    instead of the contract and function names (solidity.names). `effects` are the writes, external calls and events
+    of the function and its callees, which the model leaves out. `outputs` are those it has as values, which the
+    modeled function returns after its own."""
 
     contract: str
     function: Function
     reads: tuple[Read, ...] = ()
     callees: tuple[Function, ...] = ()
+    math: str = ""
     imports: tuple[str, ...] = ()
     pragma: str = "^0.8.0"
     spdx: str = "UNLICENSED"

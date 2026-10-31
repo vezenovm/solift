@@ -260,7 +260,8 @@ A link check fails on anything but PASS, on a path stopped at the loop bound or 
 limit, on a missing or undeclared check, on a result from a file other than the generated one, on two results for one
 check, when Halmos exits with a failure, and when Halmos skips a contract. The same build proves the operator rows and
 the lemmas that the models use: `Math.min` is the smaller value, `Math.max` the larger, and `Math.mulDiv(x, y, d)` is
-`x * y / d` rounded down when `x` and `y` are below 2**128 and `d` is not 0.
+`x * y / d` rounded down when `x` and `y` are below 2**128 and `d` is not 0. Specs whose targets import Math from two
+files have the rows and lemmas of each file proved on that file, in a test of their own.
 
 ### How far a theorem reaches
 

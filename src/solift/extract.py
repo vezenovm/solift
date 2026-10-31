@@ -228,7 +228,6 @@ class _Extractor:
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
         self.paths = {s["id"]: path for path, s in self.sources.items()}
         self.nodes: dict[int, dict] = {}
-        self.enums: dict[str, dict] = {}
         self.enum_members: dict[int, tuple[dict, int]] = {}
         for s in self.sources.values():
             self._index(s["ast"])
@@ -280,7 +279,6 @@ class _Extractor:
                 if node["nodeType"] == "EnumDefinition":
                     for index, member in enumerate(node["members"]):
                         self.enum_members[member["id"]] = (node, index)
-                    self.enums[node["canonicalName"]] = node
             for value in node.values():
                 self._index(value)
         elif isinstance(node, list):
@@ -326,17 +324,17 @@ class _Extractor:
             raise ExtractionError(f"{qualified} has no inputs: its result is a constant")
         self._check_names(node, function, reads)
         _check_constants((function, *self.callees.values()))
-        imports = []
-        if self.math_path is not None:
-            imports.append(f'import {{Math}} from "{self._import_of(unit, self.math_path)}";')
-        for symbol, source in sorted(self.enum_imports.items()):
-            imports.append(f'import {{{symbol}}} from "{self._import_of(unit, source)}";')
+        imports = tuple(
+            f'import {{{symbol}}} from "{self._import_of(unit, source)}";'
+            for symbol, source in sorted(self.enum_imports.items())
+        )
         model = Model(
             contract=contract_name,
             function=function,
             reads=reads,
             callees=tuple(self.callees.values()),
-            imports=tuple(imports),
+            math="" if self.math_path is None else self._import_of(unit, self.math_path),
+            imports=imports,
             pragma=self._pragma(unit),
             spdx=unit.get("license") or "UNLICENSED",
             effects=tuple(self.effects),
@@ -1489,9 +1487,11 @@ class _Extractor:
             self.fail(node, "a signed integer")
         if type_string in ("address", "address payable") or re.fullmatch(r"contract \w+", type_string):
             return ADDRESS
-        match = re.fullmatch(r"enum ([\w.]+)", type_string)
-        if match and match.group(1) in self.enums:
-            return self._enum(self.enums[match.group(1)])
+        # The type string names an enum by its canonical name, which two files can share, and the identifier by the id
+        # of its definition.
+        match = re.fullmatch(r"t_enum\$_\w+_\$(\d+)", node["typeDescriptions"].get("typeIdentifier") or "")
+        if match and self.nodes.get(int(match.group(1)), {}).get("nodeType") == "EnumDefinition":
+            return self._enum(self.nodes[int(match.group(1))])
         self.fail(node, f"the type {type_string} is not supported")
 
     def _enum(self, definition) -> Type:
