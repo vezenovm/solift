@@ -48,6 +48,16 @@ def test_a_construct_that_the_extractor_refuses_ends_the_discovery(build):
     assert "incomplete: tests/fixtures/contracts/OutOfScope.sol:12:5: a loop" in report(found)
 
 
+def test_a_target_in_a_file_that_the_build_lacks_ends_the_discovery_with_the_path(build):
+    found = discover(build, "tests/fixtures/contracts/Quoterr.sol:Quoter._quote")
+    assert not found.complete
+    assert found.diagnostic.startswith("the build has no source tests/fixtures/contracts/Quoterr.sol: check the path")
+    assert report(found) == f"== {found.target}: 0 reads, incomplete: {found.diagnostic}"
+    with pytest.raises(ExtractionError, match="the build has no source tests/fixtures/contracts/Quoterr.sol"):
+        extract(build, "tests/fixtures/contracts/Quoterr.sol:Quoter._quote", {})
+    assert discover(build, "Quoter._quote").diagnostic == "Quoter._quote names no function as path:Contract.function"
+
+
 def test_the_skeleton_sets_an_environment_field_with_its_cheatcode_and_observes_the_gas_price(build):
     found = discover(build, QUOTE)
     text = skeleton(found, "_quote")
