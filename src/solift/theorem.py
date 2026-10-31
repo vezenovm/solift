@@ -67,7 +67,8 @@ class Evaluation:
 
 class Terms:
     """A model's terms, by their Solidity names: `result`, `reverts`, `outside`, each input, and each local of the
-    modeled function at the return that runs. `declared(name)` is a local's value where it is declared, before any
+    modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for each
+    value (`q.result[1]`). `declared(name)` is a local's value where it is declared, before any
     assignment. `free(name, kind)` adds a variable that the theorem quantifies over, such as `shares`. `call(name,
     *args)` runs a function of the model on terms, and `at(**values)` gives the terms with inputs replaced, as for one
     configuration. Each theorem proves on its own `scoped()` view, which records its free variables and the runs of the
@@ -195,7 +196,9 @@ class Terms:
             if var.type != BOOL:
                 outside.append(z3.Not(_in_range(var.type.bound, pairs[-1][1])))
 
-        def fixed(term: z3.ExprRef) -> z3.ExprRef:
+        def fixed(term):
+            if isinstance(term, tuple):
+                return tuple(fixed(part) for part in term)
             return z3.substitute(term, *pairs) if pairs else term
 
         value, reverts, out = (fixed(x) for x in (self._value, self._reverts, self._outside))

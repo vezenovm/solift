@@ -91,6 +91,7 @@ def test_the_run_declares_the_link_and_each_row_and_lemma_that_the_model_uses():
         ({"call": "exposedQuote(_gas)"}, "is not target.function"),
         ({"parameters": {"pot": "uint256"}}, "the link parameter pot has the name of an input"),
         ({"parameters": {"host": "uint256"}}, "host has a name that the generated test uses"),
+        ({"parameters": {"codeResult1": "uint256"}}, "codeResult1 has a name that the generated test uses"),
     ],
 )
 def test_a_link_that_does_not_set_each_input_exactly_once_is_refused(change, message):

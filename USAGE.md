@@ -19,7 +19,7 @@ map entry can cut, and the writes and events that the model leaves out. `--json`
 
 It stops at the first construct the extractor refuses, with its place in the source, and says "incomplete". The
 function must be loop-free and use checked `uint` arithmetic: the extractor refuses loops, `unchecked`, signed
-integers, narrowing casts, tuple returns, `**`, `%` and assembly. A function can write storage when nothing after the
+integers, narrowing casts, `**`, `%` and assembly. A function can write storage when nothing after the
 write reads what it changed. To cut out a call that does not fit, add its source text to the read map: its result
 becomes an input. [What the extractor takes](#what-the-extractor-takes) has the full list.
 
@@ -96,7 +96,7 @@ def redeem_at_most_the_assets(q):
 
 The docstring is the statement. A theorem returns a z3 condition on `q`, which has:
 
-- `result` and `reverts`;
+- `result` and `reverts`; for a function of several returns, `result` is a tuple (`q.result[1]`);
 - each input, parameter and local, by name;
 - `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
   `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
@@ -155,7 +155,8 @@ The README says what a run proves and what it trusts.
 |---|---|
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
 | `if`, early returns, `require`, `assert`, `revert` | loops |
-| locals, also assigned in branches; compound assignments; named returns | tuple returns, modifiers |
+| locals, also assigned in branches; compound assignments; named returns | modifiers |
+| several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
 | addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
 | `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |

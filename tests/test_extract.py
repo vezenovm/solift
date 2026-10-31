@@ -89,8 +89,12 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("uncheckedBlock", {}, r"OutOfScope.sol:24:5: an unchecked block"),
         ("signedParameter", {}, r"OutOfScope.sol:29:28: a signed integer"),
         ("cast", {}, r"OutOfScope.sol:34:12: a type conversion: uint128\(_a\)"),
-        ("tupleReturn", {}, r"tupleReturn returns 2 values, not one"),
-        ("tupleDeclaration", {}, r"OutOfScope.sol:42:5: a tuple declaration"),
+        (
+            "tupleOfAnExternalCall",
+            {"this.pair(_a)": "p"},
+            r"OutOfScope.sol:38:13: the read this.pair\(_a\) gives several values, and a read map entry names one",
+        ),
+        ("tupleAssignmentToStorage", {}, r"OutOfScope.sol:42:6: a tuple assignment to \$total, which is not a local"),
         ("exponentiation", {}, r"OutOfScope.sol:47:12: exponentiation"),
         ("assembly_", {}, r"OutOfScope.sol:52:5: inline assembly"),
         ("unmappedRead", {}, r"reads an environment field block.timestamp, which the read map does not name"),
@@ -338,3 +342,53 @@ def test_a_target_of_several_functions_of_one_name_gives_its_parameter_types(bui
     # Its callee, the other value, has a parameter of the user-defined type, which only the modeled function can have.
     with pytest.raises(ExtractionError, match=r"Libraries.sol:33:18: the type Key is not supported"):
         extract(build, f"{LIBRARIES}.value(Key,address)", {"$positions[key][who].collateral": "c"})
+
+
+TUPLES = "tests/fixtures/contracts/Tuples.sol:Tuples"
+
+
+def test_a_function_of_several_returns_is_a_tuple_and_a_tuple_declaration_takes_it_apart(build):
+    limits = extract(build, f"{TUPLES}.limits", {}).model
+    assert limits.function.returns.solidity == "uint256, uint256"
+    assert [v.name for v in limits.function.named] == ["sum", "low"]
+    assert evaluate_vector(limits, {"_a": 3, "_b": 5}) == (False, (8, 3))
+    assert evaluate_vector(limits, {"_a": 2**256 - 1, "_b": 1}) == (True, (0, 0))
+    text = source(limits)
+    assert "function limits(Inputs memory i) internal pure returns (uint256 sum, uint256 low) {" in text
+    assert "function run(TuplesLimitsModel.Inputs memory i) external pure returns (uint256, uint256) {" in text
+    pullable = extract(build, f"{TUPLES}.pullable", {}).model
+    assert [f.name for f in pullable.callees] == ["limits"]
+    assert evaluate_vector(pullable, {"_a": 3, "_b": 5}) == (False, 3)
+    assert "    (, uint256 low) = limits(i, i._a, i._b);\n" in source(pullable)
+    forwarded = extract(build, f"{TUPLES}.forwarded", {}).model
+    assert evaluate_vector(forwarded, {"_a": 7, "_b": 2}) == (False, (9, 2))
+
+
+def test_a_tuple_assignment_evaluates_the_whole_tuple_before_it_assigns(build):
+    model = extract(build, f"{TUPLES}.split", {"$cap": "cap"}).model
+    assert model.function.returns.solidity == "uint256, bool"
+    assert evaluate_vector(model, {"_a": 9, "cap": 4}) == (False, (5, True))
+    assert evaluate_vector(model, {"_a": 9, "cap": 9}) == (False, (1, False))
+    assert evaluate_vector(model, {"_a": 8, "cap": 9}) == (False, (0, False))
+    text = source(model)
+    assert "    (uint256 half, uint256 rest) = _halves(i, i._a);\n    (half, rest) = (rest, half);\n" in text
+    assert "    return (half - rest, false);\n" in text
+
+
+def test_a_function_of_several_returns_returns_its_named_values_and_zero_for_one_without_a_name(build):
+    partly = extract(build, f"{TUPLES}.partlyNamed", {}).model
+    assert evaluate_vector(partly, {"_a": 4}) == (False, (5, 0))
+    assert "returns (uint256 first, uint256) {" in source(partly)
+    early = extract(build, f"{TUPLES}.earlyReturn", {}).model
+    assert evaluate_vector(early, {"_a": 4}) == (False, (4, True))
+    assert evaluate_vector(early, {"_a": 14}) == (False, (4, False))
+    assert "      return (first, true);\n" in source(early)
+    with pytest.raises(ExtractionError, match=r"Tuples.sol:\d+:9: a tuple assignment to x twice"):
+        extract(build, f"{TUPLES}.assignedTwice", {})
+
+
+def evaluate_vector(model, values):
+    from solift.vectors import evaluate as vector
+
+    found = vector(model, values)
+    return found.reverts, found.result

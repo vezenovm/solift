@@ -1,5 +1,7 @@
 import dataclasses
 
+import z3
+
 from examples.pricer.spec import SPECS as PRICER_SPECS
 from examples.quoter.spec import QUOTER, SPEC
 from solift import forge
@@ -152,3 +154,33 @@ def test_a_function_that_writes_storage_links_to_its_model_and_its_vectors_agree
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
     assert len(result["model"]["effects"]) == 4
+
+
+def test_a_function_of_several_returns_links_value_by_value_and_a_theorem_reads_each_value(tmp_path):
+    setup = "tests/fixtures/test/TuplesSetup.sol:TuplesSetup"
+    split = Spec(
+        name="tuples-split",
+        target="tests/fixtures/contracts/Tuples.sol:Tuples.split",
+        reads={"$cap": "cap"},
+        link=Link(setup=setup, call="tuples.split(_a)", adapters={"cap": "tuples.setCap(cap);"}),
+        project=SPEC.project,
+    )
+
+    @split.theorem(assume=("no-revert",), witness=lambda q: q.result[1])
+    def over_the_cap_pays_the_excess(q):
+        """Above the cap, the first value is the excess and the second is true."""
+        return z3.Implies(q._a > q.cap, z3.And(q.result[0] == q._a - q.cap, q.result[1]))
+
+    pullable = Spec(
+        name="tuples-pullable",
+        target="tests/fixtures/contracts/Tuples.sol:Tuples.pullable",
+        reads={},
+        link=Link(setup=setup, call="tuples.pullable(_a, _b)"),
+        project=SPEC.project,
+    )
+    record = run([split, pullable], Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}
+        assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+    assert record["specs"][0]["theorems"][0]["verdict"] == "PROVED"

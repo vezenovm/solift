@@ -20,9 +20,11 @@ Internal calls are inlined, also a library call on a value (`x.mulDivDown(y, d)`
 the model. OpenZeppelin's `Math.min` and `Math.mulDiv` become operators of the table in ops.py. A constant becomes its
 value, with its name and declared type, and an enum member its index. A contract or interface value is its address, and
 `address(x)` of one is the same value. `uint256(x)` of a narrower unsigned x is x. Locals can be assigned, also in
-branches, and a named return starts at zero. `require`, `assert` and `revert` revert. A parameter of a user-defined
-value type, such as Morpho's `Id`, that the function uses only inside read map keys is not an input. Anything else stops
-the extraction with an error that names the construct and its place in the source.
+branches, and a named return starts at zero. A function can return several values, and a tuple declaration or
+assignment (`(, uint256 y) = limits(a, b);`, `(x, y) = (y, x);`) takes them apart into locals. `require`, `assert` and
+`revert` revert. A parameter of a user-defined value type, such as Morpho's `Id`, that the function uses only inside
+read map keys is not an input. Anything else stops the extraction with an error that names the construct and its place
+in the source.
 
 The model is the function's value and whether it reverts, which is what the link compares. It leaves out the
 function's storage writes and events (`Model.effects`), so the extractor refuses one that could change either:
@@ -68,10 +70,15 @@ from solift.ir import (
     Revert,
     Src,
     Stmt,
+    Tuple,
     Type,
+    Unpack,
     Var,
+    declared_locals,
     enum,
+    parts,
     reserved,
+    tuple_of,
     uint,
     walk,
 )
@@ -322,9 +329,7 @@ class _Extractor:
                 self.fail(node, f"the input name {read.var.name} of {read.source} is a word that Solidity reserves")
         if len(set(inputs)) != len(inputs):
             self.fail(node, f"two inputs have the same name: {', '.join(inputs)}")
-        locals_ = [stmt.var.name for stmt in _lets(function.body)]
-        if function.result is not None:
-            locals_.append(function.result.name)
+        locals_ = [v.name for v in declared_locals(function.body)] + [v.name for v in function.named]
         for name in locals_:
             if name in inputs:
                 self.fail(node, f"the local {name} has the name of an input")
@@ -356,17 +361,17 @@ class _Extractor:
         if node["modifiers"]:
             self.fail(node["modifiers"][0], f"{name} has a modifier")
         returns = node["returnParameters"]["parameters"]
-        if len(returns) != 1:
-            self.fail(node["returnParameters"], f"{name} returns {len(returns)} values, not one")
-        return_type = self._type(returns[0])
+        if not returns:
+            self.fail(node["returnParameters"], f"{name} returns no value")
+        return_type = tuple_of(tuple(self._type(r) for r in returns))
         for p in (*node["parameters"]["parameters"], *returns):
             self._not_inputs_name(p)
         scope = {}
-        result = None
-        if returns[0]["name"]:
-            result = Var(returns[0]["name"], return_type, src=self.src(returns[0]))
-            scope[returns[0]["id"]] = result
-            scope["return"] = result
+        results = ()
+        if any(r["name"] for r in returns):
+            results = tuple(Var(r["name"], self._type(r), src=self.src(r)) if r["name"] else None for r in returns)
+            scope.update({r["id"]: v for r, v in zip(returns, results, strict=True) if v is not None})
+            scope["return"] = results
         params = []
         for p in node["parameters"]["parameters"]:
             if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
@@ -381,7 +386,7 @@ class _Extractor:
             scope[p["id"]] = var
             params.append(var)
         body = self._block(node["body"]["statements"], scope, return_type)
-        return Function(name, tuple(params), return_type, body, self.src(node), result)
+        return Function(name, tuple(params), return_type, body, self.src(node), results)
 
     def _user_value_type(self, param) -> bool:
         name = param.get("typeName") or {}
@@ -412,7 +417,7 @@ class _Extractor:
                 if node.get("expression") is None:
                     if "return" not in scope:
                         self.fail(node, "a return without a value")
-                    out.append(Return(scope["return"], self.src(node)))
+                    out.append(Return(self._named_results(scope["return"], return_type), self.src(node)))
                     continue
                 self.statement_value = node["expression"]["id"]
                 value = self._expr(node["expression"], scope)
@@ -432,10 +437,18 @@ class _Extractor:
                 self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
         return tuple(out)
 
-    def _declaration(self, node, scope: dict) -> Let | None:
+    def _named_results(self, results: tuple, return_type: Type) -> Expr:
+        """The value of a bare `return;`: the named return variables, and zero for a value without a name."""
+        values = tuple(
+            v if v is not None else Const(False, BOOL, text="false") if t == BOOL else Const(0, t, text="0")
+            for v, t in zip(results, parts(return_type), strict=True)
+        )
+        return values[0] if len(values) == 1 else Tuple(values, return_type)
+
+    def _declaration(self, node, scope: dict) -> Let | Unpack | None:
         declarations = node["declarations"]
-        if len(declarations) != 1 or declarations[0] is None:
-            self.fail(node, "a tuple declaration")
+        if len(declarations) != 1:
+            return self._unpack(node, scope)
         decl = declarations[0]
         init = node.get("initialValue")
         type_string = decl["typeDescriptions"]["typeString"]
@@ -446,10 +459,7 @@ class _Extractor:
             self._state_read(self.nodes[_root(init)["referencedDeclaration"]], init)
             scope[decl["id"]] = ("copy", prefix)
             return None
-        self._not_inputs_name(decl)
-        var = Var(decl["name"], self._type(decl), src=self.src(decl))
-        if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
-            self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
+        var = self._local(decl, scope)
         if init is None:
             if var.type.kind not in ("uint", "bool"):
                 self.fail(node, f"a local of type {var.type.solidity} declared without a value")
@@ -460,6 +470,38 @@ class _Extractor:
             self._assignable(init, value.type, var.type)
         scope[decl["id"]] = var
         return Let(var, value, self.src(node))
+
+    def _local(self, decl, scope: dict) -> Var:
+        self._not_inputs_name(decl)
+        var = Var(decl["name"], self._type(decl), src=self.src(decl))
+        if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
+            self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
+        return var
+
+    def _unpack(self, node, scope: dict) -> Unpack:
+        """A tuple declaration, as `(, uint256 y) = limits(a, b);`."""
+        init = node.get("initialValue")
+        if init is None:
+            self.fail(node, "a tuple declaration without a value")
+        self.statement_value = init["id"]
+        value = self._expr(init, scope)
+        declarations = node["declarations"]
+        self._parts(init, value, len(declarations))
+        vars_ = tuple(None if decl is None else self._local(decl, scope) for decl in declarations)
+        for var, part in zip(vars_, parts(value.type), strict=True):
+            if var is not None:
+                self._assignable(init, part, var.type)
+        for decl, var in zip(declarations, vars_, strict=True):
+            if var is not None:
+                scope[decl["id"]] = var
+        names = [v.name for v in vars_ if v is not None]
+        if len(set(names)) != len(names):
+            self.fail(node, "a tuple declaration declares one name twice")
+        return Unpack(vars_, value, True, self.src(node))
+
+    def _parts(self, node, value: Expr, count: int) -> None:
+        if value.type.kind != "tuple" or len(value.type.parts) != count:
+            self.fail(node, f"{self.text(node)} is not a tuple of {count} values")
 
     def _not_inputs_name(self, decl) -> None:
         if decl["name"] == "i":
@@ -512,8 +554,10 @@ class _Extractor:
         negated = dataclasses.replace(ops.make("not", cond), src=self.src(call))
         return If(negated, (Revert(self.src(call)),), (), self.src(call))
 
-    def _assignment(self, expression, scope: dict) -> Assign | None:
+    def _assignment(self, expression, scope: dict) -> Assign | Unpack | None:
         lhs = expression["leftHandSide"]
+        if lhs["nodeType"] == "TupleExpression" and len(lhs["components"]) != 1:
+            return self._tuple_assignment(expression, scope)
         root = _root(lhs)
         target = self.nodes.get(root.get("referencedDeclaration")) if root else None
         if target is not None and target.get("stateVariable"):
@@ -543,6 +587,33 @@ class _Extractor:
             value = self._op(expression, ASSIGNMENTS[operator], var, value)
         self._assignable(rhs, value.type, var.type)
         return Assign(var, value, self.src(expression))
+
+    def _tuple_assignment(self, expression, scope: dict) -> Unpack:
+        """An assignment of a tuple to declared locals, as `(x, y) = (y, x);`. A part of storage is refused: the model
+        leaves storage writes out, and the order of the writes of one tuple is solc's."""
+        if expression["operator"] != "=":
+            self.fail(expression, f"a tuple assignment with {expression['operator']}")
+        vars_ = []
+        for component in expression["leftHandSide"]["components"]:
+            if component is None:
+                vars_.append(None)
+                continue
+            var = scope.get(component.get("referencedDeclaration")) if component["nodeType"] == "Identifier" else None
+            if not isinstance(var, Var):
+                self.fail(component, f"a tuple assignment to {self.text(component)}, which is not a local")
+            if var.input:
+                self.fail(component, f"an assignment to the input {var.name}")
+            if var in vars_:
+                self.fail(component, f"a tuple assignment to {var.name} twice: solc does not fix which value it keeps")
+            vars_.append(var)
+        rhs = expression["rightHandSide"]
+        self.statement_value = rhs["id"]
+        value = self._expr(rhs, scope)
+        self._parts(rhs, value, len(vars_))
+        for var, part in zip(vars_, parts(value.type), strict=True):
+            if var is not None:
+                self._assignable(rhs, part, var.type)
+        return Unpack(tuple(vars_), value, False, self.src(expression))
 
     def _write(self, expression, scope: dict, kind: str) -> None:
         if expression["operator"] != "=":
@@ -585,12 +656,16 @@ class _Extractor:
         self.fail(node, f"{self.text(node)} in a write or an event: the model leaves it out, so it must not revert")
 
     def _assignable(self, node, source: Type, target: Type) -> None:
+        if source.kind == "tuple" and target.kind == "tuple" and len(source.parts) == len(target.parts):
+            for a, b in zip(source.parts, target.parts, strict=True):
+                self._assignable(node, a, b)
+            return
         if source == target or (source.kind == "literal" and target.kind == "uint"):
             return
         if source.kind == "uint" and target.kind == "uint" and source.bits <= target.bits:
             return
-        given = "literal" if source.kind == "literal" else source.solidity
-        self.fail(node, f"a {given} value where {target.solidity} is expected")
+        given = "literal" if source.kind == "literal" else _written(source)
+        self.fail(node, f"a {given} value where {_written(target)} is expected")
 
     # Expressions.
 
@@ -621,9 +696,15 @@ class _Extractor:
         if kind == "MemberAccess":
             return self._named(node)
         if kind == "TupleExpression":
-            if node.get("isInlineArray") or len(node["components"]) != 1:
-                self.fail(node, "a tuple")
-            return self._expr(node["components"][0], scope)
+            components = node["components"]
+            if node.get("isInlineArray"):
+                self.fail(node, "an inline array")
+            if len(components) == 1:
+                return self._expr(components[0], scope)
+            if any(c is None for c in components):
+                self.fail(node, "a tuple with an empty part outside the left of an assignment")
+            args = tuple(self._expr(c, scope) for c in components)
+            return Tuple(args, Type("tuple", parts=tuple(a.type for a in args)), src)
         if kind == "BinaryOperation":
             operator = node["operator"]
             if operator == "**":
@@ -705,6 +786,8 @@ class _Extractor:
         entry = self.read_map.get(_normal(key))
         if entry is None:
             self.fail(node, f"reads {what} {key}, which the read map does not name", Missing(key, what, self.src(node)))
+        if node.get("typeDescriptions", {}).get("typeString", "").startswith("tuple("):
+            self.fail(node, f"the read {key} gives several values, and a read map entry names one")
         if copy in self.written_copies:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if state is not None:
@@ -973,6 +1056,10 @@ def _subtree(node):
             yield from _subtree(value)
 
 
+def _written(type_: Type) -> str:
+    return f"({type_.solidity})" if type_.kind == "tuple" else type_.solidity
+
+
 def _parameter_type(param) -> str:
     """A parameter's type as a target names it: `uint256`, `address`, or the last part of the name of a struct, an enum,
     a contract or a user-defined value type, such as `MarketParams`."""
@@ -992,9 +1079,8 @@ def _check_constants(functions) -> None:
     names = {"i"}
     for function in functions:
         names.update(p.name for p in function.params)
-        names.update(stmt.var.name for stmt in _lets(function.body))
-        if function.result is not None:
-            names.add(function.result.name)
+        names.update(v.name for v in declared_locals(function.body))
+        names.update(v.name for v in function.named)
     for function in functions:
         for e in walk(function):
             if isinstance(e, Const) and e.name in names:
@@ -1004,12 +1090,3 @@ def _check_constants(functions) -> None:
                     f"{e.src}: the constant {e.name} has the name of a parameter, local or return of the emitted "
                     "Solidity, which would shadow it there"
                 )
-
-
-def _lets(stmts):
-    for stmt in stmts:
-        if isinstance(stmt, Let):
-            yield stmt
-        elif isinstance(stmt, If):
-            yield from _lets(stmt.then)
-            yield from _lets(stmt.orelse)

@@ -3,9 +3,10 @@
 `terms` runs the function's statements in order. `reached` is the condition under which a statement runs. An expression
 gives (value, reverts, outside), and a statement's reverts and outside count only where it is reached. Each return adds
 (reached, value), and a revert statement reverts where it is reached. After an `if`, each local that a branch assigned
-takes the value of the branch that ran. A function that ends without a return returns its named return variable, or 0
+takes the value of the branch that ran. A function that ends without a return returns its named return variables, or 0
 or false, as Solidity does. An internal call runs the callee's statements on the argument values, and gives the callee's
-value, reverts and outside. An address or an enum member is its integer value.
+value, reverts and outside. An address or an enum member is its integer value. The value of a function of several
+returns, and of a tuple, is a Python tuple of terms, one for each part.
 """
 
 from __future__ import annotations
@@ -14,7 +15,26 @@ from dataclasses import dataclass, field
 
 import z3
 
-from solift.ir import BOOL, Assign, Call, Const, Expr, Function, If, Let, Model, Op, Return, Revert, Stmt, Var
+from solift.ir import (
+    BOOL,
+    Assign,
+    Call,
+    Const,
+    Expr,
+    Function,
+    If,
+    Let,
+    Model,
+    Op,
+    Return,
+    Revert,
+    Stmt,
+    Tuple,
+    Type,
+    Unpack,
+    Var,
+    parts,
+)
 from solift.ops import TABLE, U256
 
 FALSE = z3.BoolVal(False)
@@ -34,7 +54,7 @@ class Terms:
     reads the result. `anywhere` is the same whether or not the operation runs: a local's value is a term also where its
     statement does not run, so a theorem that reads a local rests on the lemma there too."""
 
-    value: z3.ExprRef
+    value: z3.ExprRef | tuple
     reverts: z3.BoolRef
     outside: z3.BoolRef
     locals: dict[str, z3.ExprRef]
@@ -83,17 +103,31 @@ def _and(a, b):
     return b if z3.is_true(a) else a if z3.is_true(b) else z3.And(a, b)
 
 
-def _zero(var: Var) -> z3.ExprRef:
-    return FALSE if var.type == BOOL else z3.IntVal(0)
+def _zero(type_: Type) -> z3.ExprRef | tuple:
+    if type_.kind == "tuple":
+        return tuple(_zero(part) for part in type_.parts)
+    return FALSE if type_ == BOOL else z3.IntVal(0)
 
 
-def _select(cases: list) -> z3.ExprRef:
-    """The value of the case whose condition holds, of (condition, value) cases whose conditions are disjoint. The last
-    case is the default."""
+def _select(cases: list) -> z3.ExprRef | tuple:
+    """The value of the case whose condition holds, of (condition, value) cases whose conditions are disjoint, and of
+    each part for tuple values. The last case is the default."""
+    if isinstance(cases[-1][1], tuple):
+        return tuple(_select([(cond, v[n]) for cond, v in cases]) for n in range(len(cases[-1][1])))
     value = cases[-1][1]
     for cond, v in reversed(cases[:-1]):
         value = value if v.eq(value) else z3.If(cond, v, value)
     return value
+
+
+def _end(function: Function, env: dict) -> z3.ExprRef | tuple:
+    """The value of a function that ends without a return: its named return variables, and zero for a value without a
+    name."""
+    if not function.results:
+        return _zero(function.returns)
+    pairs = zip(function.results, parts(function.returns), strict=True)
+    values = tuple(_zero(t) if v is None else env[v.name] for v, t in pairs)
+    return values[0] if len(values) == 1 else values
 
 
 @dataclass
@@ -130,19 +164,18 @@ class _Run:
         self.stack.append(function.name)
         body = _Body()
         env = dict(env)
-        if function.result is not None:
-            env[function.result.name] = _zero(function.result)
+        for result in function.named:
+            env[result.name] = _zero(result.type)
         self.entries.append(self.guard)
         reached, env = self.block(function.body, env, TRUE, body, top)
         self.guard = self.entries.pop()
         self.stack.pop()
         returns = body.returns
         if not z3.is_false(reached):
-            end = env[function.result.name] if function.result is not None else _zero(Var("", function.returns))
-            returns = returns + [(reached, end, env)]
+            returns = returns + [(reached, _end(function, env), env)]
         if not returns:
             # Every path reverts.
-            return _zero(Var("", function.returns)), body.reverts, body.outside
+            return _zero(function.returns), body.reverts, body.outside
         if top:
             names = {name for _, _, scope in returns for name in scope}
             for name in sorted(names):
@@ -164,9 +197,18 @@ class _Run:
                 body.runs(reached, r, o)
                 env[stmt.var.name] = v
                 if top and isinstance(stmt, Let):
-                    if stmt.var.name in self.declared:
-                        raise ValueError(f"local {stmt.var.name} is declared twice")
-                    self.declared[stmt.var.name] = v
+                    self._declare(stmt.var, v)
+            elif isinstance(stmt, Unpack):
+                v, r, o = self.expr(stmt.expr, env)
+                body.runs(reached, r, o)
+                for var, part in zip(stmt.vars, v, strict=True):
+                    if var is None:
+                        continue
+                    if stmt.declare and var.name in env:
+                        raise ValueError(f"local {var.name} shadows a variable of the same name")
+                    env[var.name] = part
+                    if top and stmt.declare:
+                        self._declare(var, part)
             elif isinstance(stmt, Return):
                 v, r, o = self.expr(stmt.expr, env)
                 body.runs(reached, r, o)
@@ -195,6 +237,11 @@ class _Run:
                 raise TypeError(f"no statement {stmt!r}")
         return reached, env
 
+    def _declare(self, var: Var, value: z3.ExprRef) -> None:
+        if var.name in self.declared:
+            raise ValueError(f"local {var.name} is declared twice")
+        self.declared[var.name] = value
+
     def guarded(self, condition: z3.BoolRef, e: Expr, env: dict):
         """The expression, evaluated where it runs only under `condition`, such as a branch of a ternary."""
         outer = self.guard
@@ -209,6 +256,9 @@ class _Run:
             return (self.inputs if e.input else env)[e.name], FALSE, FALSE
         if isinstance(e, Const):
             return (z3.BoolVal(e.value) if e.type == BOOL else z3.IntVal(e.value)), FALSE, FALSE
+        if isinstance(e, Tuple):
+            args = [self.expr(arg, env) for arg in e.args]
+            return tuple(a[0] for a in args), _any([a[1] for a in args]), _any([a[2] for a in args])
         if isinstance(e, Call):
             args = [self.expr(arg, env) for arg in e.args]
             callee = self.functions[e.function]

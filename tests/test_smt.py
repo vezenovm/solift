@@ -186,7 +186,7 @@ def test_a_named_return_starts_at_zero_and_is_returned_at_the_end():
         If(ops.make("gt", a, Const(3)), (Assign(r, ops.make("add", a, Const(1))),)),
         If(ops.make("eq", a, Const(9)), (Return(r),)),
     ]
-    model = Model("C", Function("f", (a,), UINT256, tuple(body), result=r))
+    model = Model("C", Function("f", (a,), UINT256, tuple(body), results=(r,)))
     assert evaluate(model, {"a": 2}) == (False, 0, False)
     assert evaluate(model, {"a": 5}) == (False, 6, False)
     assert evaluate(model, {"a": 9}) == (False, 10, False)

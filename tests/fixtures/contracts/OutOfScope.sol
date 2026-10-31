@@ -34,13 +34,13 @@ contract OutOfScope {
     return uint128(_a);
   }
 
-  function tupleReturn(uint256 _a) internal pure returns (uint256, uint256) {
-    return (_a, _a);
+  function tupleOfAnExternalCall(uint256 _a) internal view returns (uint256 x) {
+    (x, ) = this.pair(_a);
   }
 
-  function tupleDeclaration(uint256 _a) internal pure returns (uint256) {
-    (uint256 x, uint256 y) = tupleReturn(_a);
-    return x + y;
+  function tupleAssignmentToStorage(uint256 _a) internal returns (uint256) {
+    ($total, ) = (_a, _a);
+    return _a;
   }
 
   function exponentiation(uint256 _a) internal pure returns (uint256) {
@@ -161,6 +161,10 @@ contract OutOfScope {
   function constantNamedAsALocal(uint256 _x) internal pure returns (uint256) {
     uint256 A = _x;
     return Named.A + A;
+  }
+
+  function pair(uint256 _a) external pure returns (uint256, uint256) {
+    return (_a, _a);
   }
 }
 

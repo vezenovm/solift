@@ -4,10 +4,10 @@ The link proves the emitted Solidity equal to the bytecode, and Halmos proves th
 proves that smt.py composes the rows as the Solidity does: the vectors check that on samples. For each comparison and
 each min of the model, z3 finds inputs that do not revert, under which the comparison runs, where the two sides are
 equal and one apart, with inputs that pay first. Random inputs then cover each outcome: pays (a positive or true
-result), zero, and reverts. z3 finds an input for an outcome that no random input reaches, such as a revert that only
-inputs near 2**256 reach. An outcome or a boundary that z3 proves no input reaches is recorded as unreachable, and an
-"unknown" from z3 is an error. A generated forge test runs the emitted Solidity on each vector and compares whether it
-reverts, and its result, with the z3 terms.
+result, or for several returns a positive or true value), zero, and reverts. z3 finds an input for an outcome that no
+random input reaches, such as a revert that only inputs near 2**256 reach. An outcome or a boundary that z3 proves no
+input reaches is recorded as unreachable, and an "unknown" from z3 is an error. A generated forge test runs the emitted
+Solidity on each vector and compares whether it reverts, and its result, with the z3 terms.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import z3
 
-from solift.ir import BOOL, Model
+from solift.ir import BOOL, Model, Type, parts
 from solift.smt import domain, symbols, terms
 from solift.solidity import names
 
@@ -34,13 +34,29 @@ class VectorError(Exception):
 
 @dataclass(frozen=True)
 class Vector:
+    """The inputs, whether the model reverts, and its result: a tuple for a function of several returns."""
+
     values: dict
     reverts: bool
-    result: int | bool
+    result: int | bool | tuple
 
     @property
     def outcome(self) -> str:
-        return "reverts" if self.reverts else "pays" if self.result else "zero"
+        pays = any(self.result) if isinstance(self.result, tuple) else self.result
+        return "reverts" if self.reverts else "pays" if pays else "zero"
+
+
+def _pays(value) -> z3.BoolRef:
+    """Where a result pays: it is positive or true, or for several returns one of its values is."""
+    if isinstance(value, tuple):
+        return z3.Or(*(_pays(v) for v in value))
+    return value if z3.is_bool(value) else value > 0
+
+
+def _zero(type_: Type):
+    if type_.kind == "tuple":
+        return tuple(_zero(part) for part in type_.parts)
+    return False if type_ == BOOL else 0
 
 
 @dataclass(frozen=True)
@@ -73,13 +89,17 @@ class _Terms:
         if not (z3.is_true(reverts) or z3.is_false(reverts)):
             raise VectorError(f"{model.name}: the revert condition does not evaluate on {values}")
         if z3.is_true(reverts):
-            return Vector(values, True, False if model.function.returns == BOOL else 0)
-        value = z3.simplify(z3.substitute(t.value, *pairs))
-        if z3.is_true(value) or z3.is_false(value):
-            return Vector(values, False, z3.is_true(value))
-        if not z3.is_int_value(value):
-            raise VectorError(f"{model.name}: the result does not evaluate on {values}")
-        return Vector(values, False, value.as_long())
+            return Vector(values, True, _zero(model.function.returns))
+        found = []
+        for result in t.value if isinstance(t.value, tuple) else (t.value,):
+            value = z3.simplify(z3.substitute(result, *pairs))
+            if z3.is_true(value) or z3.is_false(value):
+                found.append(z3.is_true(value))
+            elif z3.is_int_value(value):
+                found.append(value.as_long())
+            else:
+                raise VectorError(f"{model.name}: the result does not evaluate on {values}")
+        return Vector(values, False, tuple(found) if isinstance(t.value, tuple) else found[0])
 
 
 def evaluate(model: Model, values: dict) -> Vector:
@@ -99,7 +119,7 @@ def reaching(model: Model, outcome: str, built: _Terms | None = None) -> Vector 
     cannot decide."""
     built = built or _Terms(model)
     inputs, t = built.inputs, built.terms
-    pays = t.value if z3.is_bool(t.value) else t.value > 0
+    pays = _pays(t.value)
     condition = {"reverts": t.reverts, "pays": z3.And(z3.Not(t.reverts), pays)}.get(
         outcome, z3.And(z3.Not(t.reverts), z3.Not(pays))
     )
@@ -123,7 +143,7 @@ def _boundaries(model: Model, built: _Terms | None = None) -> tuple[list[Vector]
     proves no input reaches."""
     built = built or _Terms(model)
     inputs, t = built.inputs, built.terms
-    pays = t.value if z3.is_bool(t.value) else t.value > 0
+    pays = _pays(t.value)
     found, unreachable = [], 0
     for runs, a, b in t.comparisons:
         for offset in (-1, 0, 1):
@@ -197,7 +217,8 @@ def sample(model: Model, impossible: tuple[str, ...] = ()) -> Samples:
 
 def vectors_source(model: Model, vectors: list[Vector], test_import: str = "forge-std/Test.sol") -> str:
     """A forge test with one function for each vector. Each vector is the ABI encoding of the inputs struct, and the
-    result is compared as its ABI word, which holds a number, a bool, an address or an enum member alike."""
+    result is compared as its ABI words, one for each value, which hold a number, a bool, an address or an enum member
+    alike."""
     library, host = names(model)
     stem = library.removesuffix("Model")
     lines = [
@@ -215,22 +236,26 @@ def vectors_source(model: Model, vectors: list[Vector], test_import: str = "forg
         f"    host = new {host}();",
         "  }",
         "",
-        "  function _check(bytes memory _inputs, bool _reverts, bytes32 _result) internal {",
+        "  function _check(bytes memory _inputs, bool _reverts, bytes memory _result) internal {",
         f"    {library}.Inputs memory i = abi.decode(_inputs, ({library}.Inputs));",
         "    (bool ok, bytes memory out) = address(host).call(abi.encodeCall(host.run, (i)));",
         '    assertEq(!ok, _reverts, "reverts");',
         "    if (ok) {",
-        '      assertEq(out.length, 32, "result length");',
-        '      assertEq(abi.decode(out, (bytes32)), _result, "result");',
+        '      assertEq(out, _result, "result");',
         "    }",
         "  }",
     ]
+    count = len(parts(model.function.returns))
     for n, vector in enumerate(vectors):
         encoded = "".join(f"{int(vector.values[v.name]):064x}" for v in model.inputs)
+        results = vector.result if isinstance(vector.result, tuple) else (vector.result,)
+        if len(results) != count:
+            raise VectorError(f"{model.name}: a vector has {len(results)} values, and the model returns {count}")
+        result = "".join(f"{int(value):064x}" for value in results)
         lines += [
             "",
             f"  function test_vector_{n:03d}() public {{",
-            f'    _check(hex"{encoded}", {"true" if vector.reverts else "false"}, 0x{int(vector.result):064x});',
+            f'    _check(hex"{encoded}", {"true" if vector.reverts else "false"}, hex"{result}");',
             "  }",
         ]
     lines += ["}", ""]

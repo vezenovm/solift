@@ -8,7 +8,7 @@ from solift import forge
 from solift.extract import extract
 from solift.forge import BuildError, statuses
 from solift.halmos import HalmosEngine, judge
-from solift.link import Check, generate, placed
+from solift.link import Check, Link, generate, placed
 from solift.workspace import Workspace
 from tests.projects import QUOTER, QUOTER_LINK, QUOTER_READS, fixtures
 
@@ -100,14 +100,14 @@ def test_a_cached_build_without_the_ast_fails_the_run(workspace):
     assert fresh.results[0].verdict == "PASS"
 
 
-def quoter_link(workspace: Workspace, contract: str | None = None):
-    """Generates the Quoter link from the fixture source, and runs it against `contract`, a replacement source."""
+def link_run(workspace: Workspace, target: str, reads: dict, link: Link, replace: dict | None = None):
+    """Generates the link of `target` from the fixture source, and runs it against the fixture contracts, or against
+    `replace`, the text of a source file by its path."""
     project = fixtures()
     build_root = project.overlay(workspace, "build-root")
     infos = forge.build(build_root, workspace.fresh("ast-out"), workspace.fresh("ast-cache"))
-    model = extract(infos, f"{QUOTER}:Quoter._quote", QUOTER_READS).model
-    generated = generate(model, QUOTER_LINK)
-    replace = {QUOTER: contract} if contract is not None else None
+    model = extract(infos, target, reads).model
+    generated = generate(model, link)
     root = project.overlay(workspace, replace=replace)
     for name, text in generated.files.items():
         (root / project.generated / name).write_text(text)
@@ -115,16 +115,30 @@ def quoter_link(workspace: Workspace, contract: str | None = None):
 
 
 def test_the_quoter_link_passes(workspace):
-    run = quoter_link(workspace)
+    run = link_run(workspace, f"{QUOTER}:Quoter._quote", QUOTER_READS, QUOTER_LINK)
     assert run.ok, [(r.check.function, r.verdict) for r in run.results]
     assert len(run.results) == 8
 
 
-def test_the_link_finds_a_contract_that_no_longer_matches_its_model(workspace):
-    source = (pathlib.Path(fixtures().root) / QUOTER).read_text()
-    mutated = source.replace("return _cost + _margin;", "return _cost + _margin + 1;")
-    assert mutated != source
-    run = quoter_link(workspace, mutated)
+QUOTE = (QUOTER_READS, None, QUOTER_LINK)
+TUPLES = "tests/fixtures/contracts/Tuples.sol"
+LIMITS = ({}, None, Link(setup="tests/fixtures/test/TuplesSetup.sol:TuplesSetup", call="tuples.limits(_a, _b)"))
+# Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
+# the contract reverts: a result, and each value of several returns.
+CHANGES = {
+    "result": (f"{QUOTER}:Quoter._quote", QUOTE, "_cost + _margin;", "(_cost + _margin) / 2;"),
+    "first-value": (f"{TUPLES}:Tuples.limits", LIMITS, "sum = _a + _b;", "sum = (_a + _b) / 2;"),
+    "second-value": (f"{TUPLES}:Tuples.limits", LIMITS, "_a < _b ? _a : _b;", "_a < _b ? _b : _a;"),
+}
+
+
+@pytest.mark.parametrize("change", CHANGES)
+def test_the_link_finds_a_contract_that_no_longer_matches_its_model(workspace, change):
+    target, (reads, _, link), old, new = CHANGES[change]
+    path = target.partition(":")[0]
+    source = (pathlib.Path(fixtures().root) / path).read_text()
+    assert source.count(old) == 1
+    run = link_run(workspace, target, reads, link, {path: source.replace(old, new)})
     verdicts = {r.check.function: r.verdict for r in run.results}
     assert verdicts["check_link"] == "COUNTEREXAMPLE"
 

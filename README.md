@@ -107,8 +107,8 @@ and your harness. External view calls and cut points are assumed not to revert.
 ## What it takes
 
 Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
-calls, and `Math.min` and `Math.mulDiv`. The extractor refuses loops, `unchecked`, signed integers, `**`, `%`,
-assembly, modifiers and tuple returns, and names the place in the source. A view or pure call that does not fit can go
+calls, several returns, and `Math.min` and `Math.mulDiv`. The extractor refuses loops, `unchecked`, signed integers,
+`**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call that does not fit can go
 in the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
 
 ## Proof performance
@@ -143,8 +143,7 @@ more power than these:
 ## Roadmap
 
 Coverage: generated names that never clash with the source's, constant expressions, arithmetic below `uint256`, `%`,
-and library summaries through the operator table. Then, as projects need them: `unchecked`, tuple returns, bounded
-loops.
+and library summaries through the operator table. Then, as projects need them: `unchecked`, bounded loops.
 
 Past arithmetic:
 
