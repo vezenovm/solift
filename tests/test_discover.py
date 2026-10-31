@@ -96,3 +96,29 @@ def test_the_given_reads_stay_in_the_read_map_and_a_reserved_word_is_never_a_nam
     assert extract(build, QUOTE, {**QUOTER_READS, "$floor": "error"}).model.reads[2].var.name == "error"
     with pytest.raises(ExtractionError, match="the input name type of \\$floor is a word that Solidity reserves"):
         extract(build, QUOTE, {**QUOTER_READS, "$floor": "type"})
+
+
+EFFECTS = "tests/fixtures/contracts/Effects.sol:Effects"
+
+
+def test_a_function_without_a_value_gets_its_call_arguments_as_outputs(build):
+    found = discover(build, f"{EFFECTS}.buy")
+    assert found.complete
+    assert found.outputs == {"SWAPPER.buy(msg.sender,amount)": (None, "amount2")}
+    assert found.read_map == {"SWAPPER.fee()": "fee"}
+    text = report(found)
+    assert "outputs={\n    'SWAPPER.buy(msg.sender,amount)': (None, 'amount2'),  # an output\n}," in text
+    assert "        'amount2': '/* read amount2 after the call */'," in text
+    assert as_json(found)["outputs"] == [{"key": "SWAPPER.buy(msg.sender,amount)", "names": (None, "amount2")}]
+
+
+def test_a_write_that_can_revert_is_an_output_and_one_on_some_paths_gets_its_value_before_the_call(build):
+    pull = discover(build, f"{EFFECTS}.pull")
+    assert pull.complete
+    assert set(pull.outputs) == {"$allowances[msg.sender].left", "$allowances[msg.sender].last"}
+    add = discover(build, f"{EFFECTS}.add")
+    assert add.complete
+    assert (add.outputs, add.read_map) == ({"$total": "total"}, {"$total": "totalBefore"})
+    nothing = discover(build, f"{EFFECTS}.nothing")
+    assert not nothing.complete and "returns no value" in nothing.diagnostic
+    assert [e.kind for e in nothing.effects] == ["event"]

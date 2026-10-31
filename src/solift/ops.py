@@ -11,16 +11,19 @@
     not      !a                     Not(a)              never
     and, or  a && b, a || b         And(a, b), Or(a, b) never
     ite      c ? a : b              If(c, a, b)         never
-    widen    uint256(a)             a                   never
+    widen    uint<n>(a)             a                   never
+    narrow   uint<n>(a)             a % 2**n            never
 
 An expression also reverts when an operand that runs reverts, and is outside when such an operand is outside. `and`
 and `or` skip their second operand, and `ite` the branch not taken (smt.py).
 
 Arithmetic is at uint256: `make` refuses an addition, subtraction, multiplication or division at a narrower type, so
-the overflow bound is always 2**256. `widen` converts a narrower unsigned value to uint256, as in `uint256(a) * b` for
-two uint128 operands. Comparisons and library calls take operands of any unsigned width. `eq` and `ne` also compare two
-bools, two addresses, or two members of one enum, and `ite` selects between two values of one such type. z3 sees an
-address or an enum member as its integer value.
+the overflow bound is always 2**256. `widen` converts an unsigned value to a type at least as wide, as in
+`uint256(a) * b` for two uint128 operands, and `narrow` to a narrower type, which keeps the low bits, as Solidity's
+explicit conversion does: `uint192(a)` of a uint256 is `a % 2**192`. Each takes the type to convert to. Comparisons
+and library calls take operands of any unsigned width. `eq` and `ne` also compare two bools, two addresses, or two
+members of one enum, and `ite` selects between two values of one such type. z3 sees an address or an enum member as its
+integer value.
 
 Halmos proves on the bytecode each row that can revert, and the two OpenZeppelin facts that the min and mulDiv rows rest
 on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, and `Math.mulDiv(x, y, d)` is `x * y / d` when `x` and `y` are below
@@ -126,7 +129,8 @@ TABLE = {
         Operator("and", 2, "{0} && {1}", "logic", z3.And),
         Operator("or", 2, "{0} || {1}", "logic", z3.Or),
         Operator("ite", 3, "{0} ? {1} : {2}", "select", z3.If),
-        Operator("widen", 1, "uint256({0})", "convert", lambda a: a),
+        Operator("widen", 1, "{type}({0})", "convert", lambda a: a),
+        Operator("narrow", 1, "{type}({0})", "convert", None),
     ]
 }
 
@@ -146,8 +150,9 @@ def literal_type(value: int) -> Type:
     return uint(max(8, -(-value.bit_length() // 8) * 8))
 
 
-def make(op: str, *args: Expr, src: Src | None = None) -> Op:
-    """An operation, with its result type. Raises TypeError for an operation that the table does not cover."""
+def make(op: str, *args: Expr, src: Src | None = None, to: Type = UINT256) -> Op:
+    """An operation, with its result type. A conversion converts to `to`. Raises TypeError for an operation that the
+    table does not cover."""
     operator = TABLE.get(op)
     where = f" at {src}" if src else ""
     if operator is None:
@@ -175,7 +180,11 @@ def make(op: str, *args: Expr, src: Src | None = None) -> Op:
             result = BOOL
     elif operator.kind == "convert":
         _numbers(op, types, where)
-        result = UINT256
+        if to.kind != "uint":
+            raise TypeError(f"{op}{where} converts to an unsigned type, not {to.kind}")
+        if types[0].kind == "uint" and (types[0].bits <= to.bits) != (op == "widen"):
+            raise TypeError(f"{op}{where} of a {types[0].solidity} to {to.solidity}")
+        result = to
     elif operator.kind == "logic":
         if any(t != BOOL for t in types):
             raise TypeError(f"{op}{where} takes bool operands")

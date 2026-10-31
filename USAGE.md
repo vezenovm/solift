@@ -15,13 +15,16 @@ solift reads 'src/Vault.sol:Vault._redeem' --root <project> [--profile deploy]
 `solift reads` builds the project into `build/reads` and runs the extractor until it has every read of the function:
 storage variables and fields, mapping entries, fields of a struct parameter, fields of `tx`, `block` and `msg`, and
 external calls. It prints them as a read map with proposed input names, a link skeleton, the internal calls that a read
-map entry can cut, and the writes and events that the model leaves out. `--json` prints the same as JSON.
+map entry can cut, the outputs it needs, and the writes, calls and events that the model leaves out. `--json` prints
+the same as JSON.
 
 It stops at the first construct the extractor refuses, with its place in the source, and says "incomplete". The
 function must be loop-free and use checked `uint` arithmetic: the extractor refuses loops, `unchecked`, signed
-integers, narrowing casts, `**`, `%` and assembly. A function can write storage when nothing after the
-write reads what it changed. To cut out a call that does not fit, add its source text to the read map: its result
-becomes an input. [What the extractor takes](#what-the-extractor-takes) has the full list.
+integers, `**`, `%` and assembly. A function can write storage when nothing after the write reads what it changed. A
+write, or an argument of an external call, can be an output of the model, which the link compares after the call:
+`solift reads` proposes the output map, and a function without a value needs one. To cut out a call that does not
+fit, add its source text to the read map: its result becomes an input. [What the extractor
+takes](#what-the-extractor-takes) has the full list.
 
 ## 2. Write a harness
 
@@ -68,6 +71,33 @@ SPEC = Spec(
 
 Each input needs an adapter or an `observed` expression. Otherwise the link refuses to generate.
 
+A write or an external call argument becomes an output with the output map, and `post` reads it after the call:
+
+```python
+SPEC = Spec(
+    ...,
+    reads={"$allowances[msg.sender].left": "stored", "block.timestamp": "time"},
+    outputs={  # a write's place -> its name; an external call -> a name or None for each argument
+        "$allowances[msg.sender].left": "remaining",
+        "$allowances[msg.sender].last": "last",
+        "SWAPPER.buy(msg.sender,amount)": (None, "bought"),
+    },
+    link=Link(
+        ...,
+        post={  # how the test reads each output after the call
+            "remaining": "pool.leftOf(address(this))",
+            "last": "pool.lastOf(address(this))",
+            "bought": "swapper.lastAmount()",  # a stub that records its arguments
+        },
+    ),
+)
+```
+
+An output's value can revert, which the model includes. A write that only some paths make needs its place in the read
+map too, as the value before the call. Another write to the storage variable of an output is refused, as it could
+change the output. An external call is assumed not to revert and not to call back into the contract, and no read of
+storage may follow one.
+
 `Project.foundry()` reads the project's foundry config (`forge config --json`, under the profile) when the run starts:
 it links `foundry.toml`, `remappings.txt`, the library directories and the top directory of each remapping's target
 (`.deps` for `@lib/=.deps/lib/src/`), copies the source directory, and writes the generated files to `<test>/solift`.
@@ -97,6 +127,7 @@ def redeem_at_most_the_assets(q):
 The docstring is the statement. A theorem returns a z3 condition on `q`, which has:
 
 - `result` and `reverts`; for a function of several returns, `result` is a tuple (`q.result[1]`);
+- `post`, each output by name (`q.post.remaining`): the value written, or passed to the external call;
 - each input, parameter and local, by name;
 - `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
   `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
@@ -157,10 +188,11 @@ The README says what a run proves and what it trusts.
 | `if`, early returns, `require`, `assert`, `revert` | loops |
 | locals, also assigned in branches; compound assignments; named returns | modifiers |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
-| addresses, enums, constants, immutables, `uint256(x)` of a narrower `x` | narrowing casts, arithmetic below `uint256` |
+| addresses, enums, constants, immutables, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
 | `Math.min` and `Math.mulDiv`, backed by lemmas | other `Math` functions |
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
+| writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
 | one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
 
@@ -201,13 +233,16 @@ way: as an argument of `call`, through an adapter, or as an `observed` value.
 | an immutable that the harness sets | `observed={"token": "address(pricer.TOKEN())"}`, which takes only that value |
 
 `parameters` are symbolic parameters of the check that are not inputs: an adapter uses them to set what the contract
-reads. `observed` maps an input to the expression that the check reads it from, before the call. `imports` adds the
+reads. `observed` maps an input to the expression that the check reads it from, before the call. `post` maps each
+output to the expression that the check reads it from after the call, such as a getter of the harness or a stub that
+records its arguments. `imports` adds the
 import directives that the adapters need.
 
 ### Spec options
 
 | Option | Meaning |
 |---|---|
+| `outputs` | The output map: each write's place, as `solift reads` names it, to its output name, and each external call's source text to a tuple of a name or None for each argument. |
 | `impossible` | Outcomes (`"pays"`, `"zero"`, `"reverts"`) that the spec asserts no input reaches. A vector that reaches one fails the run. An outcome that z3 proves no input reaches needs no entry: the record lists it as unreachable. |
 | `stem` | The name of the generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and `quote`. |
 
@@ -245,7 +280,7 @@ a failed write of the generated files ends the run, and a spec whose extraction 
 - `versions` of the tools, `engine` with the options of the link, `build` with the sha256 of each solc input,
   `spec files` with the sha256 of each Python file of the specs, and `generated` with the sha256 of each generated file;
 - `specs`, one for each spec:
-  - `model`: its inputs, reads, callees, and the writes and events that it leaves out (`effects`);
+  - `model`: its inputs, reads, callees, outputs, and the writes, calls and events that it leaves out (`effects`);
   - `theorems`: each with its verdict, witness, the values of a counterexample or a witness, what it assumed,
     `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver;
   - `vectors`: the count, how many agree, and which outcomes and boundaries were reached or unreachable;

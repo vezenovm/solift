@@ -6,9 +6,13 @@ not name (a storage variable or field, a mapping entry, a field of a struct para
 or at the first error that is not a missing read, such as a loop, which it reports with `complete` false. So the read
 map it gives is one that the extractor takes, and nothing in it is a guess about the extractor's rules.
 
+It adds outputs the same way: a write whose value can revert, or an argument of an external call that can, is an output
+under a proposed name, and a function without a value gets each of its writes and external call arguments as an output.
+A write that some paths make gets its value before the call in the read map.
+
 It never cuts an internal call: a cut changes what the link proves, so it lists the internal calls of the model as
-candidates for the user to choose from. It lists the writes and events that the model leaves out, which the link does
-not compare.
+candidates for the user to choose from. It lists the writes, external calls and events that the model leaves out, which
+the link does not compare, as candidates for the output map.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from solift.extract import ExtractionError, Missing, declared, extract
+from solift.extract import ExtractionError, Missing, Wanted, declared, extract
 from solift.ir import BUILTINS, Effect, Model, reserved
 from solift.link import RESERVED
 
@@ -36,8 +40,9 @@ OBSERVED = {"tx.gasprice": "tx.gasprice"}
 
 @dataclass
 class Discovery:
-    """The reads that the target makes, in the order the extractor met them, each with its proposed input name; the
-    model with them when `complete`; otherwise the error that stopped the discovery."""
+    """The reads that the target makes, in the order the extractor met them, each with its proposed input name, and the
+    outputs that it needs, each with its proposed name or names; the model with them when `complete`; otherwise the
+    error that stopped the discovery."""
 
     target: str
     reads: list[tuple[Missing, str]] = field(default_factory=list)
@@ -45,6 +50,9 @@ class Discovery:
     diagnostic: str = ""
     model: Model | None = None
     given: dict[str, str] = field(default_factory=dict)
+    found_effects: tuple[Effect, ...] = ()
+    outputs: dict = field(default_factory=dict)
+    taken: set[str] = field(default_factory=set)
 
     @property
     def read_map(self) -> dict[str, str]:
@@ -57,34 +65,74 @@ class Discovery:
 
     @property
     def effects(self) -> tuple[Effect, ...]:
-        return self.model.effects if self.model is not None else ()
+        return self.model.effects if self.model is not None else self.found_effects
 
 
 def discover(build_infos: list[dict], target: str, reads: dict[str, str] | None = None) -> Discovery:
     """The reads of the target, starting from `reads`."""
     found = Discovery(target, given=dict(reads or {}))
     try:
-        taken = declared(build_infos, target) | RESERVED | set((reads or {}).values())
+        taken = found.taken = declared(build_infos, target) | RESERVED | set((reads or {}).values())
     except ExtractionError as err:
         found.diagnostic = str(err)
         return found
     read_map = dict(reads or {})
     for _ in range(LIMIT):
         try:
-            found.model = extract(build_infos, target, read_map).model
+            found.model = extract(build_infos, target, read_map, found.outputs).model
         except ExtractionError as err:
-            if err.missing is None or err.missing.key in read_map:
-                found.diagnostic = str(err)
-                return found
-            name = _propose(err.missing.key, taken)
-            taken.add(name)
-            read_map[err.missing.key] = name
-            found.reads.append((err.missing, name))
-            continue
+            if err.missing is not None and err.missing.key not in read_map:
+                output = found.outputs.get(err.missing.key)
+                before = f"{output}Before" if isinstance(output, str) and f"{output}Before" not in taken else None
+                name = before or _propose(err.missing.key, taken)
+                taken.add(name)
+                read_map[err.missing.key] = name
+                found.reads.append((err.missing, name))
+                continue
+            wanted = [err.output] if err.output is not None else []
+            if err.effects and not found.outputs:
+                for e in err.effects:
+                    if e.kind == "write":
+                        wanted.append(Wanted(e.place))
+                    elif e.kind == "call":
+                        wanted += [Wanted(e.place, n, e.arguments) for n, a in enumerate(e.arguments) if _value(a)]
+            if wanted and _add_outputs(found, wanted):
+                continue
+            found.diagnostic = str(err)
+            found.found_effects = err.effects
+            return found
         found.complete = True
         return found
     found.diagnostic = f"the target makes more than {LIMIT} reads"
     return found
+
+
+def _value(argument: str) -> bool:
+    """Whether a call argument is a value that a function computes, and not a field of `tx`, `block` or `msg`, a
+    literal, a constant by its upper case name, or `address(this)`."""
+    fixed = r"(tx|block|msg)\.\w+|address\(this\)|[0-9][\w.]*|true|false|[A-Z][A-Z0-9_]*"
+    return re.fullmatch(fixed, argument) is None
+
+
+def _add_outputs(found: Discovery, wanted: list[Wanted]) -> bool:
+    """Adds each wanted output to the discovery's output map under a proposed name: a name for a write, and one for an
+    argument of a call, among None for the others. Whether it added one."""
+    added = False
+    for want in wanted:
+        if want.index is None:
+            if want.key in found.outputs:
+                continue
+            found.outputs[want.key] = _propose(want.key, found.taken)
+            found.taken.add(found.outputs[want.key])
+        else:
+            names = list(found.outputs.get(want.key) or (None,) * len(want.arguments))
+            if names[want.index] is not None:
+                continue
+            names[want.index] = _propose(want.arguments[want.index], found.taken)
+            found.taken.add(names[want.index])
+            found.outputs[want.key] = tuple(names)
+        added = True
+    return added
 
 
 def _propose(key: str, taken: set[str]) -> str:
@@ -151,7 +199,15 @@ def skeleton(found: Discovery, function: str) -> str:
     ]
     if observed:
         lines += ["    observed={", *(f"    {line}" for line in observed), "    },"]
+    names = [n for value in found.outputs.values() for n in (value if isinstance(value, tuple) else (value,)) if n]
+    if names:
+        lines += ["    post={", *(f"        {n!r}: '/* read {n} after the call */'," for n in names), "    },"]
     lines.append("),")
+    candidates = [e for e in found.effects if e.kind in ("write", "call") and e.place not in found.outputs]
+    if found.outputs or candidates:
+        entries = [f"    {key!r}: {value!r},  # an output" for key, value in found.outputs.items()]
+        entries += [f"    # {e.place!r}: ...,  # a {e.kind}, {e.src}: an output if named" for e in candidates]
+        lines = ["outputs={", *entries, "},", *lines]
     return "\n".join(lines)
 
 
@@ -167,7 +223,7 @@ def report(found: Discovery) -> str:
         lines += ["", "internal calls that a read map entry can cut (by the call's source text):"]
         lines += [f"  {name}" for name in found.cuts]
     if found.effects:
-        lines += ["", "writes and events that the model leaves out, which the link does not compare:"]
+        lines += ["", "writes, calls and events that the model leaves out, which the link does not compare:"]
         lines += [f"  {e.kind} {e.place}  ({e})" for e in found.effects]
     return "\n".join(lines)
 
@@ -190,4 +246,5 @@ def as_json(found: Discovery) -> dict:
         ],
         "cuts": found.cuts,
         "effects": [{"kind": e.kind, "place": e.place, "source": e.source, "at": str(e.src)} for e in found.effects],
+        "outputs": [{"key": key, "names": value} for key, value in found.outputs.items()],
     }

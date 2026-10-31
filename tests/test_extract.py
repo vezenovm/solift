@@ -88,7 +88,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("storageWrite", {}, r"OutOfScope.sol:19:5: a write with \+=: its value can revert"),
         ("uncheckedBlock", {}, r"OutOfScope.sol:24:5: an unchecked block"),
         ("signedParameter", {}, r"OutOfScope.sol:29:28: a signed integer"),
-        ("cast", {}, r"OutOfScope.sol:34:12: a type conversion: uint128\(_a\)"),
+        ("cast", {"msg.sender": "sender"}, r"OutOfScope.sol:34:12: a type conversion: uint160\(msg.sender\)"),
         (
             "tupleOfAnExternalCall",
             {"this.pair(_a)": "p"},
@@ -483,3 +483,103 @@ def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointer
     # A parameter with the name of a storage variable in the read map is the parameter.
     shadowed = extract(build, f"{POINTERS}.valueIs", {"level": "owed"}).model
     assert [v.name for v in shadowed.inputs] == ["level", "owed"]
+
+
+EFFECTS = "tests/fixtures/contracts/Effects.sol:Effects"
+PULL_READS = {"$allowances[msg.sender].left": "stored", "block.timestamp": "time"}
+PULL_OUTPUTS = {"$allowances[msg.sender].left": "remaining", "$allowances[msg.sender].last": "last"}
+
+
+def test_an_external_call_argument_is_an_output_of_a_function_without_a_value(build):
+    model = extract(
+        build, f"{EFFECTS}.buy", {"SWAPPER.fee()": "fee"}, {"SWAPPER.buy(msg.sender,amount)": (None, "bought")}
+    ).model
+    assert model.function.returns.solidity == "uint256" and model.results == ()
+    assert [(o.var.name, o.kind, o.index, o.source) for o in model.outputs] == [
+        ("bought", "call", 1, "SWAPPER.buy(msg.sender,amount)")
+    ]
+    assert evaluate_vector(model, {"_amountIn": 3 * 10**18, "fee": 0}) == (False, 3)
+    assert evaluate_vector(model, {"_amountIn": 1, "fee": 2**256 - 1}) == (True, 0)
+    text = source(model)
+    assert "function buy(Inputs memory i) internal pure returns (uint256 bought) {" in text
+    assert "    bought = amount;\n" in text
+
+
+def test_a_write_is_an_output_whose_value_can_revert_and_a_narrowing_conversion_keeps_the_low_bits(build):
+    model = extract(build, f"{EFFECTS}.pull", PULL_READS, PULL_OUTPUTS).model
+    assert model.function.returns.solidity == "uint256, uint192, uint64"
+    assert [(e.kind, e.place) for e in model.effects] == [("event", "Pulled(address,uint256)")]
+    values = {"_amount": 3, "_refill": 10, "stored": 5, "time": 2**64 + 7}
+    assert evaluate_vector(model, values) == (False, (3, 12, 7))
+    assert evaluate_vector(model, {**values, "_refill": 2**192}) == (False, (3, 2, 7))
+    assert evaluate_vector(model, {**values, "_amount": 16}) == (True, (0, 0, 0))
+    assert "    remaining = uint192(left - i._amount);\n    last = uint64(i.time);\n" in source(model)
+
+
+def test_an_output_with_its_value_before_the_call_is_written_on_some_paths_and_read_after_its_write(build):
+    model = extract(build, f"{EFFECTS}.add", {"$total": "before"}, {"$total": "total"}).model
+    assert [r.source for r in model.reads] == ["$total"]
+    assert evaluate_vector(model, {"_x": 0, "_y": 9, "before": 4}) == (False, (False, 4))
+    assert evaluate_vector(model, {"_x": 5, "_y": 2, "before": 4}) == (False, (True, 7))
+    assert evaluate_vector(model, {"_x": 5, "_y": 10, "before": 4}) == (True, (False, 0))
+    assert "    total = i.before;\n" in source(model)
+    # The place of an output names one storage variable, as a read map key does.
+    with pytest.raises(ExtractionError, match=r"the read level names other things than at its first read"):
+        extract(build, f"{POINTERS}.setLevel", {"level": "before"}, {"level": "updated"})
+    # A memory copy keeps the value from before the write.
+    place = "$allowances[msg.sender].left"
+    replaced = extract(build, f"{EFFECTS}.replace", {place: "stored"}, {place: "left"}).model
+    assert evaluate_vector(replaced, {"_x": 9, "stored": 5}) == (False, (5, 9))
+
+
+@pytest.mark.parametrize(
+    "function, reads, outputs, message",
+    [
+        ("writeOnSomePaths", {}, {"$count": "count"}, r"can end without a write of the output count \(\$count\)"),
+        ("skip", {}, {"$count": "count"}, r"Effects.sol:\d+:7: returns without a write of the output count \(\$coun"),
+        (
+            "skip",
+            {"$count": "before"},
+            {"$count": "count", "SWAPPER.buy(msg.sender,_x)": (None, "bought")},
+            r"returns without a write of the output bought \(SWAPPER.buy\(msg.sender,_x\)\): make the call on every",
+        ),
+        (
+            "otherWriteToAnOutput",
+            {},
+            {"$allowances[msg.sender].left": "left", "$allowances[_a].left": "other"},
+            r"the outputs \$allowances\[msg.sender\].left and \$allowances\[_a\].left are one place where their keys",
+        ),
+        (
+            "otherWriteToAnOutput",
+            {},
+            {"$allowances[msg.sender].left": "left"},
+            r"Effects.sol:\d+:5: writes \$allowances\[_a\].left, which could change the output \$allowances\[msg",
+        ),
+        ("readAfterACall", {"$count": "count"}, {}, r"reads \$count after an external call, which could change it"),
+        ("nothing", {}, {}, r"Effects.nothing returns no value: name a write or an external call in the output map"),
+        (
+            "boundCallStatement",
+            {},
+            {},
+            r"Effects.sol:\d+:5: a call to buyAll as a statement: an internal call is taken",
+        ),
+        ("add", {}, {"$total": "total"}, r"\+= to the output \$total needs its value before the call"),
+        ("buy", {"SWAPPER.fee()": "fee"}, {"SWAPPER.buy(msg.sender,amount)": "x"}, r"names 1 values of SWAPPER.buy"),
+        ("truncate", {}, {"$total": "total"}, r"the output map names \$total, which Effects.truncate does not write"),
+        (
+            "outputAtALocalKey",
+            {},
+            {"$allowances[who].left": "left"},
+            r"Effects.sol:\d+:5: the output \$allowances\[who\].left is at a key that can change during the call",
+        ),
+    ],
+)
+def test_the_extractor_refuses_an_output_that_the_model_cannot_have(build, function, reads, outputs, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{EFFECTS}.{function}", reads, outputs)
+
+
+def test_an_immutable_is_read_after_an_external_call_which_cannot_change_it(build):
+    model = extract(build, f"{EFFECTS}.swapperAfterACall", {"SWAPPER": "swapper"}).model
+    assert [(e.kind, e.place) for e in model.effects] == [("call", "SWAPPER.buy(msg.sender,1)")]
+    assert evaluate_vector(model, {"swapper": 7}) == (False, 7)

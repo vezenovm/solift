@@ -100,13 +100,13 @@ def test_a_cached_build_without_the_ast_fails_the_run(workspace):
     assert fresh.results[0].verdict == "PASS"
 
 
-def link_run(workspace: Workspace, target: str, reads: dict, link: Link, replace: dict | None = None):
+def link_run(workspace: Workspace, target: str, reads: dict, link: Link, replace: dict | None = None, outputs=None):
     """Generates the link of `target` from the fixture source, and runs it against the fixture contracts, or against
     `replace`, the text of a source file by its path."""
     project = fixtures()
     build_root = project.overlay(workspace, "build-root")
     infos = forge.build(build_root, workspace.fresh("ast-out"), workspace.fresh("ast-cache"))
-    model = extract(infos, target, reads).model
+    model = extract(infos, target, reads, outputs).model
     generated = generate(model, link)
     root = project.overlay(workspace, replace=replace)
     for name, text in generated.files.items():
@@ -133,23 +133,49 @@ PER_PERIOD = (
         adapters={"perPeriod": "pointers.set(_who, 0, perPeriod, 0, 0);"},
     ),
 )
+EFFECTS = "tests/fixtures/contracts/Effects.sol"
+EFFECTS_SETUP = "tests/fixtures/test/EffectsSetup.sol:EffectsSetup"
+BUY = (
+    {"SWAPPER.fee()": "fee"},
+    {"SWAPPER.buy(msg.sender,amount)": (None, "bought")},
+    Link(
+        setup=EFFECTS_SETUP,
+        call="effects.buy(_amountIn)",
+        adapters={"fee": "swapper.setFee(fee);"},
+        post={"bought": "swapper.lastAmount()"},
+    ),
+)
+PULL = (
+    {"$allowances[msg.sender].left": "stored", "block.timestamp": "time"},
+    {"$allowances[msg.sender].left": "remaining", "$allowances[msg.sender].last": "last"},
+    Link(
+        setup=EFFECTS_SETUP,
+        call="effects.pull(_amount, _refill)",
+        adapters={"stored": "effects.setLeft(address(this), stored);", "time": "vm.warp(time);"},
+        post={"remaining": "effects.leftOf(address(this))", "last": "effects.lastOf(address(this))"},
+    ),
+)
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
-# the contract reverts: a result, each value of several returns, and the key of a storage pointer.
+# the contract reverts: a result, each value of several returns, the key of a storage pointer, and outputs: an
+# argument of a call, a written value, and a write at another key.
 CHANGES = {
     "result": (f"{QUOTER}:Quoter._quote", QUOTE, "_cost + _margin;", "(_cost + _margin) / 2;"),
     "first-value": (f"{TUPLES}:Tuples.limits", LIMITS, "sum = _a + _b;", "sum = (_a + _b) / 2;"),
     "second-value": (f"{TUPLES}:Tuples.limits", LIMITS, "_a < _b ? _a : _b;", "_a < _b ? _b : _a;"),
     "pointer-key": (f"{POINTERS}:Pointers.perPeriod", PER_PERIOD, "[_who].config;", "[msg.sender].config;"),
+    "call-argument": (f"{EFFECTS}:Effects.buy", BUY, "(msg.sender, amount);", "(msg.sender, amount / 2);"),
+    "written-value": (f"{EFFECTS}:Effects.pull", PULL, "uint192(left - _amount);", "uint192(left - _amount / 2);"),
+    "written-key": (f"{EFFECTS}:Effects.pull", PULL, "allowance.last =", "$allowances[address(0)].last ="),
 }
 
 
 @pytest.mark.parametrize("change", CHANGES)
 def test_the_link_finds_a_contract_that_no_longer_matches_its_model(workspace, change):
-    target, (reads, _, link), old, new = CHANGES[change]
+    target, (reads, outputs, link), old, new = CHANGES[change]
     path = target.partition(":")[0]
     source = (pathlib.Path(fixtures().root) / path).read_text()
     assert source.count(old) == 1
-    run = link_run(workspace, target, reads, link, {path: source.replace(old, new)})
+    run = link_run(workspace, target, reads, link, {path: source.replace(old, new)}, outputs)
     verdicts = {r.check.function: r.verdict for r in run.results}
     assert verdicts["check_link"] == "COUNTEREXAMPLE"
 
