@@ -374,6 +374,48 @@ def test_a_balance_that_the_harness_deals_links_to_its_model(tmp_path):
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
 
 
+def test_internal_calls_of_virtual_functions_run_the_override_and_link_to_their_models(tmp_path):
+    def spec(target, call, result, reads=None, adapters=None):
+        """A spec whose theorem is the target's value where it does not revert."""
+        made = Spec(
+            name=target.replace(".", "-").lower(),
+            target=f"tests/fixtures/contracts/Virtual.sol:{target}",
+            reads=reads or {},
+            link=Link(setup="tests/fixtures/test/VirtualSetup.sol:VirtualSetup", call=call, adapters=adapters or {}),
+            project=SPEC.project,
+        )
+
+        @made.theorem(witness=lambda q: z3.Not(q.reverts))
+        def value(q):
+            """the value of the override that runs"""
+            return z3.Or(q.reverts, q.result == result(q))
+
+        return made
+
+    specs = [
+        spec("DerivedFees.total", "fees.total(_a)", lambda q: q._a + 2),
+        spec("DerivedFees.weighed", "fees.weighed(_a, _b)", lambda q: 10 * q._a + q._b),
+        spec("DerivedFees.weighedTwice", "fees.weighedTwice(_a)", lambda q: q._a + 33),
+        spec("Tiers.next", "tiers.next(_a)", lambda q: q._a + 2),
+        spec("Tiers.named", "tiers.named(_a)", lambda q: q._a + 1),
+        spec("Tiers.own", "tiers.own(_a)", lambda q: q._a + 4),
+        spec("Shares.shared", "shares.shared(_a)", lambda q: q._a + 3),
+        spec(
+            "TokenPool.rate",
+            "pool.rate()",
+            lambda q: z3.If(q.supply == 0, 10**18, q.cash * 10**18 / q.supply),
+            reads={"supply": "supply", "TOKEN.balanceOf(address(this))": "cash"},
+            adapters={"supply": "pool.setSupply(supply);", "cash": "token.set(cash);"},
+        ),
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert [t["verdict"] for t in result["theorems"]] == ["PROVED"], result["spec"]
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["spec"]
+        assert result["vectors"]["agree"] == result["vectors"]["count"] > 0, result["spec"]
+
+
 SMALLER = """\
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.27;

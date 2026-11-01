@@ -89,6 +89,8 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         self.paths = {s["id"]: path for path, s in self.sources.items()}
         self.nodes: dict[int, dict] = {}
         self.enum_members: dict[int, tuple[dict, int]] = {}
+        # The contract of each function and modifier, by its id: solc gives a modifier no scope.
+        self.owners: dict[int, int] = {}
         for s in self.sources.values():
             self._index(s["ast"])
         self.read_map = {_normal(key): (key, name) for key, name in reads.items()}
@@ -96,6 +98,12 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
             raise ExtractionError("two read map keys differ only in whitespace")
         self.reads: dict[str, Read] = {}
         self.callees: dict[int, Function] = {}
+        # The contract that the target names, whose linearization each internal call runs in (_runs), the target
+        # function, and the callees being extracted, by declaration id.
+        self.contract: dict | None = None
+        self.top: dict | None = None
+        # Each function or modifier by the id of each one that it overrides (_family), once a call needs them.
+        self.overriders: dict[int, set[int]] | None = None
         self.stack: list[int] = []
         self.used: set[str] = set()
         self.math_path: str | None = None
@@ -139,6 +147,9 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
                 if node["nodeType"] == "EnumDefinition":
                     for index, member in enumerate(node["members"]):
                         self.enum_members[member["id"]] = (node, index)
+                if node["nodeType"] == "ContractDefinition":
+                    for member in node["nodes"]:
+                        self.owners[member["id"]] = node["id"]
             for value in node.values():
                 self._index(value)
         elif isinstance(node, list):
@@ -162,7 +173,7 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         raise ExtractionError(f"{self.src(node)}: {message}", missing, output=output)
 
     def extract(self, target: str) -> Extraction:
-        node = self.target(target)
+        node = self.top = self.target(target)
         path, _, qualified = target.rpartition(":")
         contract_name = qualified.partition(".")[0]
         unit = self.sources[path]["ast"]
@@ -213,6 +224,7 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         contracts = [n for n in unit["nodes"] if n["nodeType"] == "ContractDefinition" and n["name"] == contract_name]
         if len(contracts) != 1:
             raise ExtractionError(f"{path} has no contract {contract_name}")
+        self.contract = contracts[0]
         candidates = []
         for base_id in contracts[0]["linearizedBaseContracts"]:
             base = self.nodes[base_id]

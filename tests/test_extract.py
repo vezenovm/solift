@@ -51,6 +51,104 @@ def test_the_sources_of_an_inherited_function_hold_the_file_that_defines_it(buil
     }
 
 
+VIRTUAL = "tests/fixtures/contracts/Virtual.sol"
+
+
+@pytest.mark.parametrize(
+    "target, values, result",
+    [
+        # The base's own function runs its own fee, and the derived contract's runs the override.
+        ("Fees.total", {"_a": 5}, 6),
+        ("DerivedFees.total", {"_a": 5}, 7),
+        # weigh({_value: 3, _weight: 4}) passes 3 first, which the override names _weight.
+        ("DerivedFees.weighed", {"_a": 3, "_b": 4}, 34),
+        # The same named call passes (1, 2) in Fees and (2, 1) in DerivedFees: 12 and 21.
+        ("DerivedFees.weighedTwice", {"_a": 5}, 38),
+        ("Tiers.own", {"_a": 5}, 9),
+        # super in HighTier is Tier in HighTier, and LowTier in Tiers; Tier.rate() is Tier's in both.
+        ("HighTier.next", {"_a": 5}, 6),
+        ("Tiers.next", {"_a": 5}, 7),
+        ("Tiers.named", {"_a": 5}, 6),
+        # super in Third runs Second's share, which does not override First's.
+        ("Shares.shared", {"_a": 5}, 8),
+    ],
+)
+def test_an_internal_call_runs_the_override_in_the_linearization_of_the_targets_contract(build, target, values, result):
+    model = extract(build, f"{VIRTUAL}:{target}", {}).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_a_function_that_a_base_declares_without_a_body_runs_the_derived_contracts(build):
+    reads = {"supply": "supply", "TOKEN.balanceOf(address(this))": "cash"}
+    extraction = extract(build, f"{VIRTUAL}:TokenPool.rate", reads)
+    assert [f.name for f in extraction.model.callees] == ["cash"]
+    assert evaluate(extraction.model, {"supply": 2, "cash": 3}) == (False, 3 * WAD // 2, False)
+    with pytest.raises(ExtractionError, match=r"Virtual.sol:\d+:3: cash is not an implemented function"):
+        extract(build, f"{VIRTUAL}:Pool.rate", {"supply": "supply"})
+
+
+@pytest.mark.parametrize(
+    "target, reads, message",
+    [
+        # Only the override calls gasleft: in its body, in its modifier, and in the function that this.exposed() runs.
+        ("GasMeter.spent", {"left()": "left"}, r"the read left\(\) calls gasleft"),
+        ("GatedMeter.spent", {"left()": "left"}, r"the read left\(\) calls gasleft"),
+        ("GasMeter.viaThis", {"this.exposed()": "exposed"}, r"the read this.exposed\(\) calls gasleft"),
+        # A modifier that the target overrides can change state, and a qualified modifier runs as named.
+        ("CountedTwice.delta", {"current()": "now"}, r"the read current\(\) runs the modifier counts of CountedTwice"),
+        ("Unthrottled.levels", {"level()": "level"}, r"the read level\(\) calls gasleft"),
+        # super skips a declaration without a body; a pointer is not followed; assembly reads the gas too.
+        ("Probes.delta", {"super.sense()": "sensed"}, r"the read super.sense\(\) calls gasleft"),
+        ("Pointed.twice", {"indirect()": "counted"}, r"the read indirect\(\) reads the function pointer pointer from"),
+        ("GasOptioned.viaPointer", {"optioned()": "left"}, r"the read optioned\(\) reads the function pointer pointer"),
+        (
+            "Optioned.viaGetter",
+            {"gotten()": "selector"},
+            r"the read gotten\(\) reads the function pointer this.pointer",
+        ),
+        # A function named as a value runs as named too: through an internal pointer, and on another receiver.
+        ("FlatPinned.viaPinned", {"pinned()": "pinned"}, r"the read pinned\(\) calls gasleft"),
+        ("FlatPinned.viaSent", {"sent(_other)": "sent"}, r"the read sent\(_other\) calls gasleft"),
+        ("Prober.delta", {"read(_schema,_receiver)": "read"}, r"the read read\(_schema, _receiver\) calls gasleft"),
+        # A function named through its contract as a value, and a call through (this), run the override.
+        ("GasOptioned.viaEncodedByName", {"encodedByName()": "encoded"}, r"the read encodedByName\(\) calls gasleft"),
+        ("GasOptioned.viaParenthesized", {"parenthesized()": "left"}, r"the read parenthesized\(\) calls gasleft"),
+        # A low-level call runs the function that abi.encodeCall names; a selector names it too.
+        ("GasOptioned.viaEncoded", {"encoded()": "encoded"}, r"the read encoded\(\) calls gasleft"),
+        ("GasOptioned.viaSelector", {"selector()": "selector"}, r"the read selector\(\) calls gasleft"),
+        # A receiver typed GasReader runs its override of reading.
+        ("Sampler.delta", {"_other.read()": "got"}, r"the read _other.read\(\) calls gasleft"),
+        # Another instance runs Gauge's reading, which calls gasleft, not the target's override.
+        ("FixedGauge.twice", {"_other.get()": "got"}, r"the read _other.get\(\) calls gasleft"),
+        # super.rate() is Tier's rate in lower and LowTier's in higher: one input cannot stand for both.
+        ("Tiers.both", {"super.rate()": "rate"}, r"the read super.rate\(\) names other things than at its first read"),
+        # Both calls run DerivedFees.weigh, but bind their named arguments by two declarations' names.
+        (
+            "DerivedFees.weighedTwice",
+            {"weigh({_value:1,_weight:2})": "weighed"},
+            r"the read weigh\(\{_value: 1, _weight: 2\}\) names other things than at its first read",
+        ),
+        ("Tiers.both", {}, r"two callees are named rate"),
+    ],
+)
+def test_a_read_map_call_is_checked_as_the_function_that_runs(build, target, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{VIRTUAL}:{target}", reads)
+    assert extract(build, f"{VIRTUAL}:Meter.spent", {"left()": "left"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Meter.viaThis", {"this.exposed()": "exposed"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Counted.delta", {"current()": "now"}).model.reads
+    # A function called in parentheses is no pointer; gas forwarded to a precompile and a comparator passed to a sort
+    # are no change.
+    assert extract(build, f"{VIRTUAL}:GasOptioned.viaParentheses", {"wrapped()": "seven"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Medians.quote", {"median()": "price"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Medians.power", {"Math.modExp(_b, _e, _m)": "power"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Medians.hashed", {"precompiled(_x)": "hashed"}).model.reads
+    # As on main, the scan does not read assembly.
+    assert extract(build, f"{VIRTUAL}:GasAssembled.delta", {"measure()": "measured"}).model.reads
+    # The getter of FixedRated's fixedRate runs, and no modifier.
+    assert extract(build, f"{VIRTUAL}:FixedRated.total", {"this.fixedRate()": "rate"}).model.reads
+
+
 def test_the_quoter_terms_give_the_reference_result(build):
     model = extract(build, f"{QUOTER}._quote", READS).model
     rng = random.Random(1)
