@@ -46,10 +46,15 @@ def environment(out: pathlib.Path, cache: pathlib.Path, profile: str | None = No
     return env
 
 
-def config(root: pathlib.Path, profile: str | None = None) -> dict:
-    """The project's foundry configuration under the profile, as `forge config --json` gives it. It writes nothing."""
+def config(root: pathlib.Path, profile: str | None = None, detect: bool = True) -> dict:
+    """The project's foundry configuration under the profile, as `forge config --json` gives it. Without `detect`,
+    forge does not detect remappings in the libraries, so the remappings are those that the configuration and the
+    environment state. It writes nothing."""
     command = [binary(), "config", "--json", "--root", str(root)]
-    result = subprocess.run(command, env=_clean(profile), capture_output=True, text=True, check=False)
+    env = _clean(profile)
+    if not detect:
+        env["FOUNDRY_AUTO_DETECT_REMAPPINGS"] = "false"
+    result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
     if not result.returncode:
         try:
             return json.loads(result.stdout)
