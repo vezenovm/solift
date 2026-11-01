@@ -97,7 +97,7 @@ def test_a_function_that_a_base_declares_without_a_body_runs_the_derived_contrac
         # A modifier that the target overrides can change state, and a qualified modifier runs as named.
         ("CountedTwice.delta", {"current()": "now"}, r"the read current\(\) runs the modifier counts of CountedTwice"),
         ("Unthrottled.levels", {"level()": "level"}, r"the read level\(\) calls gasleft"),
-        # super skips a declaration without a body; a pointer is not followed; assembly reads the gas too.
+        # super skips a declaration without a body; a pointer read from storage is not followed.
         ("Probes.delta", {"super.sense()": "sensed"}, r"the read super.sense\(\) calls gasleft"),
         ("Pointed.twice", {"indirect()": "counted"}, r"the read indirect\(\) reads the function pointer pointer from"),
         ("GasOptioned.viaPointer", {"optioned()": "left"}, r"the read optioned\(\) reads the function pointer pointer"),
@@ -113,9 +113,17 @@ def test_a_function_that_a_base_declares_without_a_body_runs_the_derived_contrac
         # A function named through its contract as a value, and a call through (this), run the override.
         ("GasOptioned.viaEncodedByName", {"encodedByName()": "encoded"}, r"the read encodedByName\(\) calls gasleft"),
         ("GasOptioned.viaParenthesized", {"parenthesized()": "left"}, r"the read parenthesized\(\) calls gasleft"),
-        # A low-level call runs the function that abi.encodeCall names; a selector names it too.
+        # A low-level call runs the function that abi.encodeCall names, or whose selector it sends, and so does a
+        # pointer that assembly builds from a selector.
         ("GasOptioned.viaEncoded", {"encoded()": "encoded"}, r"the read encoded\(\) calls gasleft"),
-        ("GasOptioned.viaSelector", {"selector()": "selector"}, r"the read selector\(\) calls gasleft"),
+        ("GasOptioned.viaSentSelector", {"sentSelector()": "sent"}, r"the read sentSelector\(\) calls gasleft"),
+        ("GasOptioned.viaBuilt", {"built()": "built"}, r"the read built\(\) calls gasleft"),
+        ("Relays.viaSent", {"sent(_relay)": "sent"}, r"the read sent\(_relay\) reads gas\(\) in assembly"),
+        # gas() in assembly, other than as the gas that a call forwards, in the override and on a receiver, and a copy
+        # that a Yul function in the gas argument keeps.
+        ("GasAssembled.delta", {"measure()": "measured"}, r"the read measure\(\) reads gas\(\) in assembly"),
+        ("Kept.delta", {"kept()": "kept"}, r"the read kept\(\) reads gas\(\) in assembly"),
+        ("Relays.viaProbe", {"_relay.probe(address(0))": "probed"}, r"the read _relay.probe\(address\(0\)\) reads gas"),
         # A receiver typed GasReader runs its override of reading.
         ("Sampler.delta", {"_other.read()": "got"}, r"the read _other.read\(\) calls gasleft"),
         # Another instance runs Gauge's reading, which calls gasleft, not the target's override.
@@ -143,8 +151,9 @@ def test_a_read_map_call_is_checked_as_the_function_that_runs(build, target, rea
     assert extract(build, f"{VIRTUAL}:Medians.quote", {"median()": "price"}).model.reads
     assert extract(build, f"{VIRTUAL}:Medians.power", {"Math.modExp(_b, _e, _m)": "power"}).model.reads
     assert extract(build, f"{VIRTUAL}:Medians.hashed", {"precompiled(_x)": "hashed"}).model.reads
-    # As on main, the scan does not read assembly.
-    assert extract(build, f"{VIRTUAL}:GasAssembled.delta", {"measure()": "measured"}).model.reads
+    # A selector that no call sends runs nothing.
+    assert extract(build, f"{VIRTUAL}:GasOptioned.viaSelector", {"selector()": "selector"}).model.reads
+    assert extract(build, f"{VIRTUAL}:Relays.viaSelector", {"probeSelector()": "selector"}).model.reads
     # The getter of FixedRated's fixedRate runs, and no modifier.
     assert extract(build, f"{VIRTUAL}:FixedRated.total", {"this.fixedRate()": "rate"}).model.reads
 
