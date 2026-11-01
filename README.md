@@ -1,19 +1,20 @@
 # solift
 
-solift proves arithmetic properties of Solidity functions, such as rounding, solvency, and fee and pricing bounds,
-over exact integers, and proves with Halmos that the model it proves them on matches the bytecode.
+solift proves theorems about Solidity functions. Today it covers one loop-free call: its arithmetic, such as rounding,
+solvency, and fee and pricing bounds, and the storage writes and external call arguments that you name as outputs.
+The [roadmap](#roadmap) goes past one call.
 
 For each function of a spec, solift:
 
-1. extracts a model of the function in solift IR from the solc AST, with each outside read (storage, an external view
-   call, a `block` field, a balance, a cut internal call) as a named input, and each storage write or external call
-   argument that you name as an output;
-2. emits the model as pure Solidity, and proves with Halmos that it returns, reverts and sets its outputs as the
-   contract does. Both sides share their structure, so Halmos checks an equivalence, not the property;
-3. translates the model to SMT terms over unbounded integers, and proves your theorems, written in Python, on them with
-   z3, and with yices and cvc5 when z3 cannot decide.
+1. extracts a model of the function in solift IR from the source, with each outside read, such as storage or an
+   external view call, as an input, and each write or call argument that you name as an output;
+2. proves with Halmos that the model, emitted as Solidity, returns, reverts and sets its outputs as the bytecode does;
+3. translates the model to SMT terms over unbounded integers, and proves your theorems, written in Python, on them
+   with z3, then yices and cvc5, or prints a counterexample.
 
-You write the theorems, the read map and a test harness. Nobody writes the model.
+You write the theorems, the read map and a test harness. Nobody writes the model or a proof. When the function
+changes, the next run extracts the model again and checks the link and the theorems again. The read map and the
+harness change only when the function's reads or its setup do.
 
 ![Halmos proves the Solidity that solift emits from the extracted model equal to the contract's bytecode, and the
 solvers prove the theorems on the model's SMT terms, which sampled vectors check against the emitted
@@ -109,7 +110,7 @@ The integer translation and the operator table (the vectors check them on sample
 and your harness. External view calls and cut points are assumed not to revert, and an external call that the
 function makes as a statement is assumed not to revert and not to call back into the contract.
 
-## What it takes
+## What it accepts
 
 Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
 calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min`, `Math.max`
@@ -121,19 +122,13 @@ can go in the read map: its result becomes an input. [USAGE.md](USAGE.md#what-th
 ## Proof performance
 
 The split takes a property's multiplication, division and rounding off the bytecode: the solvers prove the property
-over exact integers, and Halmos checks that two programs of the same shape return and revert alike. Nonlinear
-arithmetic on bytecode is what symbolic tools find slow. Halmos's documentation says that with it "the SMT solvers
-might become very slow", and Halmos turns nonlinear reasoning off by default
-([warnings](https://github.com/a16z/halmos/wiki/warnings#counterexample-invalid)). hevm's worked examples need several
-minutes per query on wrapping price arithmetic ([Truebit](https://hevm.dev/exploit-tutorial.html)), and meet roundings
-between shares and debt that the solver "cannot always decide quickly"
-([Abracadabra](https://hevm.dev/exploit-tutorial2.html)). `Math.mulDiv` still meets the bytecode in the lemmas, which
-a run proves once for each spec, not for each theorem.
+over exact integers, and Halmos only checks that two programs of the same shape agree. `Math.mulDiv` meets the
+bytecode only in its lemma, once for each spec.
 
-To measure what the split saves, the three Resupply checks also run directly on the bytecode, as Halmos tests with no
-extracted model ([ResupplyDirect.t.sol](acceptance/resupply/harness/ResupplyDirect.t.sol)). They use the link's
-harness and inputs, the theorem's hypotheses, and the theorem's bound computed over exact integers. Halmos runs each
-check with one solver for up to an hour.
+To measure what the split saves, the three Resupply checks also run directly on the bytecode, as Halmos tests with the
+link's harness and inputs and the theorem's hypotheses
+([ResupplyDirect.t.sol](acceptance/resupply/harness/ResupplyDirect.t.sol)). Halmos runs each with one solver for up to
+an hour.
 
 | Theorem | solift | Halmos with yices | Halmos with z3 |
 | --- | --- | --- | --- |
@@ -141,29 +136,37 @@ check with one solver for up to an hour.
 | At the exploit: the same, up to a price of 1e36 | proved, 0.78s | no result in 1 hour | no result in 1 hour |
 | On the fix: debt below twice the LTV limit | proved, 0.85s | no result in 1 hour | no result in 1 hour |
 
-- solift's time adds up the theorem query (0.01s), the link (0.76s at the exploit, 0.83s on the fix) and the lemmas
-  (0.01s). The two rows at the exploit share one link, and each counts it in full. The build is left out: a whole run
-  at the exploit, with the build and the test vectors, takes 14s.
-- The direct check does a little more work. It also runs `toAmount`, which solift cuts, so in solift's model the
-  borrower's debt is an input.
-- Halmos's counterexample is the same bug that solift finds, at an oracle price of about 4.6e46. forge replays it, and
-  it fails the bound.
 - "No result" means the run was stopped at the hour, not that the theorem cannot be proved on the bytecode.
+- solift's time is the theorem query, the link and the lemmas. A whole run at the exploit, with the build and the
+  test vectors, takes 14s.
+- The direct check also runs `toAmount`, which solift cuts. Halmos's counterexample is the same bug, at an oracle
+  price of about 4.6e46.
 - Measured on an Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.4), with solc 0.8.28, forge 1.8.5, Halmos 0.3.3,
   yices 2.6.4 and z3 4.12.6.
 
 ## How it compares
 
-solift is a small, inspectable workflow for one function's arithmetic, with a stated trust base. It does not claim
+solift is a small, inspectable workflow for one call of a function, with a stated trust base. It does not claim
 more power than these:
 
-- **Halmos** runs symbolic tests on bytecode, in 256-bit arithmetic. solift uses it for the equivalence and the
-  lemmas, and proves the property over unbounded integers.
-- **hevm** also checks bytecode equivalence. solift adds the extraction and the integer theorems.
-- **Certora** has `mathint`, summaries, and invariants across calls, in its own spec language. solift covers one call,
-  with theorems in Python.
-- **Kontrol** proves Foundry specifications in K, with lemmas and loop invariants.
-- **SMTChecker** ships with the compiler and reasons across transactions and loops, with no link to the bytecode.
+| Tool | Proves the property on | You write | Reach |
+|---|---|---|---|
+| **solift** | an integer model extracted from the source, which Halmos proves equal to the bytecode | theorems in Python, a read map and a harness | one loop-free call |
+| Halmos | the bytecode, in 256-bit arithmetic | symbolic tests in Solidity | several calls in a test, loops up to a bound |
+| hevm | the bytecode, in 256-bit arithmetic, and the equivalence of two bytecodes | symbolic tests, or a second program | loops up to a bound |
+| Certora | the compiled code, with `mathint` in the spec | rules, invariants and summaries in CVL | invariants across calls |
+| Kontrol | the bytecode, in K | Foundry tests, with lemmas and loop invariants | loops, with invariants |
+| SMTChecker | the source, inside the compiler, with no link to the bytecode | assertions in the source | across transactions and loops |
+| Lean on bytecode, such as [ml-dsa-fv](https://github.com/eth-act/ml-dsa-fv) | one fixed bytecode, in Lean | a proof for each bytecode | full specifications, gas included |
+
+solift uses Halmos for the link and the lemmas. hevm could check the link too: solift adds the extraction and the
+integer theorems.
+
+A Lean proof on bytecode trusts only the Lean kernel and the EVM semantics, a smaller base than solift's. But the
+proof follows the bytecode it is about, so a new contract or a changed one needs a new proof, even when an agent
+writes it, and a proof that does not close does not say whether the property is false. In solift the theorems are
+written once: each run extracts the model again, Halmos checks the link with no proof to write, and a false theorem
+gives a counterexample.
 
 ## Roadmap
 
