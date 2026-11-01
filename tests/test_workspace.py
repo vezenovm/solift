@@ -1,10 +1,12 @@
 import os
+import pathlib
 import re
 import subprocess
 import sys
 
 import pytest
 
+from solift import forge
 from solift.workspace import MARKER, Guard, Project, Workspace, WorkspaceError
 
 
@@ -41,6 +43,7 @@ def test_the_overlay_links_and_copies_and_replaces_only_copies(tmp_path):
     assert (root / "src" / "A.sol").read_text() == "contract B {}\n"
     assert (project.root / "src" / "A.sol").read_text() == "contract A {}\n"
     assert (root / "test" / "gen").is_dir()
+    assert not os.path.lexists(root / "remappings.txt")
     with pytest.raises(WorkspaceError, match="not under a copied path"):
         project.overlay(workspace, replace={"foundry.toml": ""})
 
@@ -67,6 +70,114 @@ def test_the_guard_finds_an_ignored_build_output(tmp_path):
     (root / "out").mkdir()
     (root / "out" / "A.json").write_text("{}")
     assert f"{root}/out/A.json changed during the run" in guard.changes()
+
+
+def test_the_guard_ignores_the_git_directory_of_a_repository_inside_the_project(tmp_path):
+    root = git_project(tmp_path / "project")
+    nested = root / "tools" / "checkout"
+    nested.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(nested)], check=True)
+    (nested / "README").write_text("a checkout, as of solift\n")
+    (root / "lib" / "b").mkdir(parents=True)
+    (root / "lib" / "b" / ".git").write_text("gitdir: ../../.git/modules/b\n")
+    workspace = Workspace(tmp_path / "work")
+    guard = Guard(root, workspace.path / "stamp")
+    # What `git status` in the checkout writes, when a run records the checkout's version.
+    subprocess.run(["git", "-C", str(nested), "add", "-A"], check=True)
+    assert guard.changes() == []
+    (nested / "README").write_text("changed\n")
+    (root / "lib" / "b" / ".git").write_text("gitdir: elsewhere\n")
+    assert sorted(guard.changes()) == [
+        f"{root}/lib/b/.git changed during the run",
+        f"{nested}/README changed during the run",
+    ]
+
+
+LIBRARY = {
+    "lib/a/foundry.toml": '[profile.default]\nsrc = "src"\nlibs = ["lib"]\nremappings = ["@x/=lib/x/"]\n',
+    "lib/a/lib/x/src/I.sol": "pragma solidity ^0.8.20;\n\ninterface I {\n  function f() external;\n}\n",
+    "lib/a/src/A.sol": (
+        'pragma solidity ^0.8.20;\n\nimport {I} from "@x/src/I.sol";\n\n'
+        "contract A {\n  function use(I) external {}\n}\n"
+    ),
+    # I through the project's remapping @ax/, and A, which imports I through @x/, the remapping that forge detects in
+    # lib/a's foundry.toml: both name lib/a/lib/x/src/I.sol.
+    "src/Main.sol": (
+        'pragma solidity ^0.8.20;\n\nimport {I} from "@ax/I.sol";\nimport {A} from "a/A.sol";\n\n'
+        "contract Main {\n  function call(A _a) external {\n    _a.use(I(address(0)));\n  }\n}\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("remapped_in", ["foundry.toml", "remappings.txt", "an added foundry.toml"])
+def test_the_overlay_keeps_the_remappings_that_forge_detects_in_a_linked_library_inside_the_overlay(
+    tmp_path, remapped_in
+):
+    root = tmp_path / "project"
+    files = {**LIBRARY, "foundry.toml": '[profile.default]\nsrc = "src"\nlibs = ["lib"]\n'}
+    added = {}
+    if remapped_in == "foundry.toml":
+        files["foundry.toml"] += 'remappings = ["@ax/=lib/a/lib/x/src/"]\n'
+    elif remapped_in == "remappings.txt":
+        files["remappings.txt"] = "@ax/=lib/a/lib/x/src/\n"
+    else:
+        # Only the overlay has a configuration, which the project lacks.
+        added["foundry.toml"] = tmp_path / "added.toml"
+        added["foundry.toml"].write_text(files.pop("foundry.toml") + 'remappings = ["@ax/=lib/a/lib/x/src/"]\n')
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    project = Project.foundry(root=root, add=added).resolve()
+    workspace = Workspace(tmp_path / "work")
+    overlay = project.overlay(workspace)
+    assert (overlay / "lib").is_symlink()
+    # Some versions of forge give the detected @x/ the library's real path, and the overlay's remappings.txt the
+    # relative one; others give it the relative path already.
+    remappings = forge.config(overlay)["remappings"]
+    assert {"@ax/=lib/a/lib/x/src/", "@x/=lib/a/lib/x/"} <= set(remappings)
+    assert not any(str(project.root) in r for r in remappings)
+    infos = forge.build(overlay, workspace.fresh("out"), workspace.fresh("cache"), allow_paths=(root,))
+    assert {path for info in infos for path in info["output"]["sources"]} == {
+        "src/Main.sol",
+        "lib/a/src/A.sol",
+        "lib/a/lib/x/src/I.sol",
+    }
+    assert {path: path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+
+
+def test_the_overlay_writes_a_detected_remapping_that_it_reaches_through_a_link_with_its_own_path(
+    tmp_path, monkeypatch
+):
+    root = git_project(tmp_path / "project")
+    (root / "lib" / "a" / "lib" / "w").mkdir(parents=True)
+    (root / "remappings.txt").write_text("@y/=lib/a/\n")
+    project = Project(root, link=("foundry.toml", "remappings.txt", "lib"), copy=("src",), generated="test/gen")
+    top = project.root
+    # Forge, in the overlay: the detected @x/, @t/ with a .. that it keeps, and the context of @w/ through the link,
+    # and @u/ at a path that the overlay lacks; then the stated @y/ of remappings.txt, and @v/ and @z/ with the
+    # absolute paths that the configuration states, also with a .. outside the project.
+    context = f"{top}/lib/a/:@w/={top}/lib/a/lib/w/"
+    detected = [f"@x/={top}/lib/a/", f"@t/={top}/lib/a/lib/../lib/w/", context, f"@u/={top}/missing/"]
+    stated = ["@y/=lib/a/", f"@v/={top}/lib/a/", f"@z/={top}/../elsewhere/"]
+    kept = ["@x/=lib/a/", "@t/=lib/a/lib/../lib/w/", "lib/a/:@w/=lib/a/lib/w/", f"@u/={top}/missing/", *stated]
+    ignored = [False]
+
+    def config(at, profile=None, detect=True):
+        file = pathlib.Path(at) / "remappings.txt"
+        if file.is_symlink() or ignored[0]:
+            return {"remappings": [*detected, *stated] if detect else stated}
+        # Forge still detects the remapping of @w/ at its absolute context, a key of its own.
+        return {"remappings": [*file.read_text().splitlines(), context]}
+
+    monkeypatch.setattr(forge, "config", config)
+    overlay = project.overlay(Workspace(tmp_path / "work"))
+    assert not (overlay / "remappings.txt").is_symlink()
+    assert (overlay / "remappings.txt").read_text().splitlines() == kept
+    assert (root / "remappings.txt").read_text() == "@y/=lib/a/\n"
+    ignored[0] = True
+    with pytest.raises(WorkspaceError, match="forge does not take the remappings of the overlay's remappings.txt"):
+        project.overlay(Workspace(tmp_path / "work2"))
 
 
 def test_no_write_into_the_overlay_follows_a_link_into_the_project(tmp_path):

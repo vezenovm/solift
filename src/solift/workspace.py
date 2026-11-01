@@ -11,7 +11,9 @@ compiles as project files or that a mutant changes (`copy`), local files at path
 (`add`), such as the harness of a contract that the project does not test, and the generated files. Forge reads a
 symlinked project file under its real path and then finds no AST for it, so project files are copied, not linked. A
 copy keeps the links inside it, so each write into the overlay refuses a link and a path that resolves outside the
-overlay. `guard` checks that nothing in the project changed during the run.
+overlay. Forge also gives a remapping that it detects in a linked library the library's real path, so the overlay keeps
+each remapping at the path that the project gives it (`_keep_remappings`). `guard` checks that nothing in the project
+changed during the run.
 """
 
 from __future__ import annotations
@@ -162,6 +164,7 @@ class Project:
             _write(root, root / rel, content)
         _inside(root, root / self.generated)
         (root / self.generated).mkdir(parents=True, exist_ok=True)
+        _keep_remappings(root, self.root, self.profile)
         return root
 
     def write(self, root: pathlib.Path, name: str, text: str) -> None:
@@ -199,14 +202,61 @@ class Guard:
         found = []
         if self._status() != self.status:
             found.append(f"the git status of {self.top} changed during the run")
-        pruned = [str(self.top / ".git"), *(str(e) for e in self.exclude)]
-        command = ["find", str(self.top), "("]
-        for i, path in enumerate(pruned):
-            command += (["-o"] if i else []) + ["-path", path]
+        # The top's .git, and each .git directory of a repository inside the project, such as a checkout of solift,
+        # whose index `git status` rewrites when a run records its version. A submodule's .git file is still watched.
+        command = ["find", str(self.top), "(", "-path", str(self.top / ".git"), "-o", "-type", "d", "-name", ".git"]
+        for path in self.exclude:
+            command += ["-o", "-path", str(path)]
         command += [")", "-prune", "-o", "-newer", str(self.stamp), "-print"]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         found += [f"{line} changed during the run" for line in result.stdout.splitlines() if line]
         return found
+
+
+def _keep_remappings(root: pathlib.Path, project: pathlib.Path, profile: str | None) -> None:
+    """Keeps each remapping that forge detects in a linked library inside the overlay. Some versions of forge follow
+    the overlay's links into the project and give such a remapping, as `@x/=lib/a/lib/x/` from lib/a's own
+    foundry.toml, the library's real path, while a remapping that the configuration states stays relative. A file that
+    both reach would then be two source units, and its types two types. A detected remapping with an absolute path that
+    the overlay reaches through a link is written to the overlay's remappings.txt with the overlay's path, which takes
+    the place of the detected one of the same name. A remapping that the configuration or the environment states stays
+    as it is."""
+    remappings = forge.config(root, profile).get("remappings", [])
+    stated = set(forge.config(root, profile, detect=False).get("remappings", []))
+    kept = [r if r in stated else _relative(r, root, project) for r in remappings]
+    if kept == remappings:
+        return
+    path = root / "remappings.txt"
+    if path.is_symlink():
+        path.unlink()
+    _write(root, path, "".join(f"{r}\n" for r in kept))
+    # A detected remapping whose context was rewritten keeps its own key, and stays beside the new one. Its absolute
+    # context names no source unit of the overlay unless a stated remapping has an absolute path too, as in the project.
+    taken = set(forge.config(root, profile).get("remappings", []))
+    if not set(kept) <= taken <= set(kept) | set(remappings):
+        raise WorkspaceError(f"forge does not take the remappings of the overlay's remappings.txt: {', '.join(kept)}")
+
+
+def _relative(remapping: str, root: pathlib.Path, project: pathlib.Path) -> str:
+    """The remapping `[context:]name=target` with its context and target at their paths in the overlay, where they are
+    absolute paths inside the project that the overlay reaches through its links. A path keeps its spelling, `..` too:
+    solc does not normalize a remapping's target, so another spelling would name other source units."""
+
+    def relative(path: str) -> str:
+        at, top = pathlib.PurePosixPath(path), pathlib.PurePosixPath(project)
+        normal = pathlib.PurePosixPath(os.path.normpath(path)) if path else at
+        if not at.is_absolute() or not at.is_relative_to(top) or not normal.is_relative_to(top) or normal == top:
+            return path
+        rel = at.relative_to(top)
+        if not os.path.exists(root / rel) or (root / rel).resolve() != pathlib.Path(path).resolve():
+            return path
+        return f"{rel}/" if path.endswith("/") else str(rel)
+
+    left, _, target = remapping.partition("=")
+    context, colon, name = left.partition(":")
+    if not colon:
+        return f"{left}={relative(target)}"
+    return f"{relative(context)}:{name}={relative(target)}"
 
 
 def _remapped_top(remapping: str) -> str | None:
