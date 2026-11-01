@@ -314,9 +314,12 @@ def queries(directory: pathlib.Path) -> dict:
     """The answers of the solver to the queries that Halmos wrote: the first query of each path, with multiplication
     and division as uninterpreted functions, and the refined one, with the real operations, which Halmos writes when
     the first one has a model that uses them. A query with no answer has no output, or an empty one when the run
-    stopped its solver."""
+    stopped its solver. The copies that Halmos writes of the queries it stopped, in `<test>-error` and
+    `<test>-timeout`, are not counted again."""
     counts: dict[str, dict[str, int]] = {"first": {}, "refined": {}}
     for query in sorted(directory.rglob("*.smt2")):
+        if query.parent.name.endswith(("-error", "-timeout")):
+            continue
         out = query.with_name(query.name + ".out")
         answer = (out.read_text().partition("\n")[0].strip() if out.exists() else "") or "unanswered"
         kind = counts["refined" if query.name.endswith(".refined.smt2") else "first"]
