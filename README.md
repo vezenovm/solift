@@ -25,11 +25,11 @@ finds solvent has debt below twice the loan-to-value limit of its collateral's v
 
 ```
 COUNTEREXAMPLE WITNESS [solvent-debt-within-twice-the-ltv] a borrower that the pair finds solvent has debt below twice
-  (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.03s]
-  _borrower=0 price=1500000000000024999999999999999999488 storedRate=0 maxLTV=3 collateral=2 borrowed=240000000000004
+  (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.01s]
+  _borrower=0 price=1000000000000000000000000000000000002 storedRate=0 maxLTV=1 collateral=2 borrowed=80000000000001
 PROVED WITNESS [solvent-debt-within-twice-the-ltv-up-to-a-price-of-1e36] up to an oracle price of 1e36, ... [0.01s]
 vectors: 192 of 192 agree
-PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.74s]
+PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.76s]
 ```
 
 An oracle price above 1e36 rounds the exchange rate down to 0, and at a rate of 0 one wei of collateral backs any debt.
@@ -129,9 +129,27 @@ between shares and debt that the solver "cannot always decide quickly"
 ([Abracadabra](https://hevm.dev/exploit-tutorial2.html)). `Math.mulDiv` still meets the bytecode in the lemmas, which
 a run proves once for each spec, not for each theorem.
 
-In the Resupply example above, the solver queries of the two theorems take 0.03s and 0.01s, and the link check takes
-0.74s. These are single checks, without the build and the vectors. No direct proof of the same theorem on the bytecode
-is measured here.
+To measure what the split saves, the three Resupply checks also run directly on the bytecode, as Halmos tests with no
+extracted model ([ResupplyDirect.t.sol](acceptance/resupply/harness/ResupplyDirect.t.sol)). They use the link's
+harness and inputs, the theorem's hypotheses, and the theorem's bound computed over exact integers. Halmos runs each
+check with one solver for up to an hour.
+
+| Theorem | solift | Halmos with yices | Halmos with z3 |
+| --- | --- | --- | --- |
+| At the exploit: debt below twice the LTV limit | counterexample, 0.78s | counterexample, 1314s | no result in 1 hour |
+| At the exploit: the same, up to a price of 1e36 | proved, 0.78s | no result in 1 hour | no result in 1 hour |
+| On the fix: debt below twice the LTV limit | proved, 0.85s | no result in 1 hour | no result in 1 hour |
+
+- solift's time adds up the theorem query (0.01s), the link (0.76s at the exploit, 0.83s on the fix) and the lemmas
+  (0.01s). The two rows at the exploit share one link, and each counts it in full. The build is left out: a whole run
+  at the exploit, with the build and the test vectors, takes 14s.
+- The direct check does a little more work. It also runs `toAmount`, which solift cuts, so in solift's model the
+  borrower's debt is an input.
+- Halmos's counterexample is the same bug that solift finds, at an oracle price of about 4.6e46. forge replays it, and
+  it fails the bound.
+- "No result" means the run was stopped at the hour, not that the theorem cannot be proved on the bytecode.
+- Measured on an Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.4), with solc 0.8.28, forge 1.8.5, Halmos 0.3.3,
+  yices 2.6.4 and z3 4.12.6.
 
 ## How it compares
 
@@ -182,6 +200,8 @@ git submodule update --init
 .venv/bin/solift run examples.quoter.spec                   # one spec on the test fixtures
 .venv/bin/python -m acceptance.resupply --root <resupply>   # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>  # setup in acceptance/morpho/__main__.py
+# the Resupply checks directly on the bytecode, as in Proof performance: up to an hour each, so not in CI
+.venv/bin/python -m acceptance.resupply.direct --root <resupply> --solver yices --budget 3600
 ```
 
 ## License
