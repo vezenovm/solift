@@ -6,7 +6,7 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, EXTERNAL, _normal, _storage_struct
+from solift.extract.common import _STORAGE, EXTERNAL, _normal, _storage_struct, _super, _this, _through_contract
 from solift.extract.errors import Missing
 from solift.extract.reads import MARKERS, _assigned
 from solift.ir import ADDRESS, BOOL, LITERAL, Call, Const, Expr, Function, Tuple, Type, Var, uint
@@ -161,9 +161,13 @@ class Expressions:
             and owner.get("contractKind") == "library"
             and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
         )
+        # Named arguments name the parameters of the declaration that solc resolved. An override can name its own
+        # parameters otherwise, and takes the arguments in their order.
         arguments = self._arguments(node, decl, bound)
         if bound:
             arguments = [callee["expression"], *arguments]
+        decl = self._runs(callee, decl, self._within())
+        owner = self.nodes[decl["scope"]]
         if owner.get("contractKind") == "library" and owner["name"] == "Math":
             path = self._place(owner)[0]
             if path.endswith(MATH_PATH):
@@ -175,10 +179,14 @@ class Expressions:
                 self.math_path = path
                 self.used.add(path)
                 return self._make(node, op[0], *arguments, scope=scope)
-        internal = (callee["nodeType"] == "Identifier" and decl["visibility"] != "external") or (
-            callee["nodeType"] == "MemberAccess"
-            and owner.get("contractKind") == "library"
-            and decl["visibility"] in ("internal", "private")
+        internal = (
+            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
+            or (
+                callee["nodeType"] == "MemberAccess"
+                and owner.get("contractKind") == "library"
+                and decl["visibility"] in ("internal", "private")
+            )
+            or _through_contract(callee)
         )
         if not internal:
             text = self.text(node)
@@ -216,6 +224,62 @@ class Expressions:
         for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
+
+    def _runs(self, callee, decl, within: int, contract: dict | None = None) -> dict:
+        """The function that a call of `decl` through the expression `callee` runs, in a function of the contract
+        `within`, in an instance of `contract` (the target's contract by default). A call of a contract's function or
+        modifier by its name alone, or through `this`, is virtual: it runs the first implemented one of `decl`'s family
+        (_family) in the linearization of `contract`, from the most derived contract. `super.f` runs the first one after
+        `within`, which can be a sibling's function that `decl` does not override. solc resolves each in the calling
+        contract instead, which can be a base of the target's contract. A call through a contract's name (`Base.f()`,
+        `Base.gate`), a library function, a free function and a function of a contract outside the linearization run
+        `decl`. Where a public state variable overrides an external function, its getter runs: the variable."""
+        order = (contract or self.contract)["linearizedBaseContracts"]
+        owner = self.owners.get(decl["id"])
+        if owner not in order or self.nodes[owner]["contractKind"] == "library":
+            return decl
+        path = callee["nodeType"] == "IdentifierPath" and "." not in callee["name"]
+        if callee["nodeType"] == "Identifier" or path or _this(callee):
+            start = 0
+        elif _super(callee) and within in order:
+            start = order.index(within) + 1
+        else:
+            return decl
+        return self._first(order[start:], decl) or decl
+
+    def _first(self, order, decl) -> dict | None:
+        """The first implemented member of `decl`'s family in the contracts `order`, or the first member if none is
+        implemented, as in an abstract contract."""
+        family = self._family(decl)
+        members = [n for base in order for n in self.nodes[base]["nodes"] if n.get("id") in family]
+        implemented = [
+            n for n in members if n["nodeType"] == "VariableDeclaration" or n.get("implemented") or n.get("body")
+        ]
+        return (implemented or members or [None])[0]
+
+    def _family(self, decl) -> set[int]:
+        """The functions, or modifiers, that overrides connect to `decl`, in either direction: `decl`, those that it
+        overrides, those that override them, and so on. They have its name and parameter types, and in one contract's
+        linearization they are the functions that a call of `decl` by name or through super can run. A private function
+        is alone in its family."""
+        if self.overriders is None:
+            self.overriders = {}
+            for n in self.nodes.values():
+                for base in (*(n.get("baseFunctions") or ()), *(n.get("baseModifiers") or ())):
+                    self.overriders.setdefault(base, set()).add(n["id"])
+        found, todo = {decl["id"]}, [decl["id"]]
+        while todo:
+            node = self.nodes.get(todo.pop(), {})
+            linked = (*(node.get("baseFunctions") or ()), *(node.get("baseModifiers") or ()))
+            for other in (*linked, *self.overriders.get(node.get("id"), ())):
+                if other not in found:
+                    found.add(other)
+                    todo.append(other)
+        return found
+
+    def _within(self) -> int:
+        """The contract of the function being extracted."""
+        return self.nodes[self.stack[-1]]["scope"] if self.stack else self.top["scope"]
 
     def _rounding(self, node) -> str:
         """The operator of Math.mulDiv with a rounding, which must be Math.Rounding.Floor, as written."""

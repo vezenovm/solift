@@ -18,11 +18,13 @@ An entry that the function does not read is an error, except a field of `tx`, `b
 input. A key names one value for the whole call, so each local in it is assigned only by its declaration, is the same
 local at each read, and belongs to the modeled function or to a callee that runs once.
 
-Internal and library calls are inlined. `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py.
-A constant is its value, an enum member its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n
-bits. Locals can be reassigned, also in branches, and a named return starts at zero. Several returns, tuple
-declarations and assignments, `type(uint<n>).max` and `.min`, `require`, `assert` and `revert` are supported. A
-parameter of a user-defined value type or a signed type that only read map keys or effects use is not an input.
+Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
+the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
+`Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
+its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n bits. Locals can be reassigned, also in
+branches, and a named return starts at zero. Several returns, tuple declarations and assignments, `type(uint<n>).max`
+and `.min`, `require`, `assert` and `revert` are supported. A parameter of a user-defined value type or a signed type
+that only read map keys or effects use is not an input.
 Anything else stops the extraction with an error that names the construct and its place.
 
 The model is the function's value, whether it reverts, and its outputs: the writes and external call arguments that

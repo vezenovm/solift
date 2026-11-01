@@ -3,9 +3,14 @@ map's other expressions."""
 
 from __future__ import annotations
 
-from solift.extract.common import EXTERNAL, _normal, _root, _subtree
+import re
+
+from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped
 from solift.extract.errors import Missing
 from solift.ir import Read, Var
+
+# A type that holds a function pointer, as `function () view returns (uint256)` or a mapping or array of one.
+_POINTER = re.compile(r"\bfunction\b \(")
 
 # The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
 # parameter, and a balance.
@@ -177,22 +182,31 @@ class Reads:
             self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
 
     def _identity(self, node, scope: dict) -> tuple:
-        """What an expression names, beyond its text: the declaration of each identifier and of each member, a copy or
-        a pointer as the identity of its place, so that a read through it is the read of that place, and each literal,
-        whose text loses its spaces in a read map key."""
+        """What an expression names, beyond its text: the declaration of each identifier and of each member, also the
+        one that runs for a function (_declaration_of), a copy or a pointer as the identity of its place, so that a read
+        through it is the read of that place, and each literal, whose text loses its spaces in a read map key."""
         names = []
         for n in _subtree(node):
             if n.get("nodeType") == "Literal":
                 names.append(("literal", n.get("hexValue")))
             elif n.get("nodeType") == "MemberAccess":
-                names.append(("member", n["memberName"], n.get("referencedDeclaration")))
+                names.append(("member", n["memberName"], self._declaration_of(n, self._within())))
             elif n.get("nodeType") == "Identifier":
                 entry = scope.get(n.get("referencedDeclaration"))
                 if isinstance(entry, tuple) and entry[0] in ("copy", "pointer"):
                     names.extend(entry[3])
                 else:
-                    names.append(n.get("referencedDeclaration"))
+                    names.append(self._declaration_of(n, self._within()))
         return tuple(names)
+
+    def _declaration_of(self, node, within: int):
+        """The declaration that an identifier or a member access names, in a function of the contract `within`. For a
+        function, also the one that runs (_runs): two calls of one function can bind named arguments by the parameter
+        names of two declarations."""
+        decl = self.nodes.get(node.get("referencedDeclaration"))
+        if decl is not None and decl["nodeType"] == "FunctionDefinition":
+            return decl["id"], self._runs(node, decl, within)["id"]
+        return node.get("referencedDeclaration")
 
     def _run_once(self) -> None:
         """Refuses a callee that names its own locals or parameters in a read map key and runs more than once in the
@@ -237,9 +251,11 @@ class Reads:
     def _fallback_read(self, node, scope: dict) -> None:
         """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
         it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. No
-        call may take a memory value of the function, which an internal call could change, nor call `gasleft`."""
-        if self._calls_gasleft(node, set()):
-            self.fail(node, f"the read {self.text(node)} calls gasleft, whose value changes during the call")
+        call may take a memory value of the function, which an internal call could change, nor reach `gasleft` or a
+        modifier that the target's contract overrides (_varies)."""
+        why = self._varies(node, set(), self._within(), self.contract)
+        if why is not None:
+            self.fail(node, f"the read {self.text(node)} {why}")
         for n in _subtree(node):
             ref = n.get("referencedDeclaration")
             if n.get("nodeType") == "Identifier":
@@ -258,30 +274,107 @@ class Reads:
                     continue
                 if decl is None or decl["nodeType"] != "FunctionDefinition":
                     self.fail(n, f"the read {self.text(node)} makes a call that the extractor cannot resolve")
-                if decl["stateMutability"] not in ("view", "pure"):
+                decl = self._runs(callee, decl, self._within())
+                # A getter, which a public state variable that overrides the function gives, is a view.
+                mutability = decl.get("stateMutability", "view")
+                if mutability not in ("view", "pure"):
                     self.fail(n, f"the read {self.text(node)} calls {decl['name']}, which can change state")
-                internal = decl["visibility"] in ("internal", "private") or callee["nodeType"] == "Identifier"
+                internal = (
+                    decl["visibility"] in ("internal", "private")
+                    or callee["nodeType"] == "Identifier"
+                    or _through_contract(callee)
+                )
                 given = [*n["arguments"], *([callee["expression"]] if callee["nodeType"] == "MemberAccess" else [])]
                 if internal and any(" memory" in a["typeDescriptions"].get("typeString", "") for a in given):
                     self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
-                if decl["stateMutability"] != "pure" or decl["visibility"] not in ("internal", "private"):
+                if mutability != "pure" or decl["visibility"] not in ("internal", "private"):
                     if self.written:
                         self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
                     for reads in self.reading:
                         reads.add("call")
 
-    def _calls_gasleft(self, node, seen: set) -> bool:
-        """Whether an expression or a function calls `gasleft`, also through the functions that it calls."""
-        for n in _subtree(node):
-            ref = n.get("referencedDeclaration")
-            if n.get("nodeType") == "Identifier" and n["name"] == "gasleft" and (ref or 0) < 0:
-                return True
-            decl = self.nodes.get(ref) if n.get("nodeType") in ("Identifier", "MemberAccess") else None
-            if decl is not None and decl["nodeType"] == "FunctionDefinition" and decl["id"] not in seen:
-                seen.add(decl["id"])
-                if self._calls_gasleft(decl, seen):
-                    return True
-        return False
+    def _varies(self, node, seen: set, within: int | None, contract: dict | None) -> str | None:
+        """Why an expression, a function or a modifier can give two values in one call, or None, also through each
+        function and modifier that it names: it calls `gasleft`, reads a function pointer from storage, whose target the
+        scan does not see, or runs a modifier that its contract overrides. As on main, assembly is not scanned, so its
+        `gas()` is not seen. solc checks a function's mutability against the modifiers that it names, and an
+        override of a modifier can change state in a view function.
+
+        The scan follows each function and modifier that the code names, called or not, so a pointer that the code
+        passes, as a comparator to a sort, is followed where it is named. A call runs what _runs gives it in the
+        contract `contract`, in a function of the contract `within`: the target's contract, and for code that an
+        external call reaches, the contract that the receiver's type names. A receiver of another type, such as an
+        interface, runs the code that solc names (`contract` None). A function named as a value, as a pointer or in
+        `abi.encodeCall(Base.g, ())`, can run as solc names it on any receiver, as _runs gives it, and if it is public
+        or external, as a call through `this` runs it: the scan follows each. It follows user-defined operators too."""
+        nodes = list(_subtree(node))
+        called = {id(_unwrapped(n["expression"])) for n in nodes if n.get("nodeType") == "FunctionCall"}
+        for n in nodes:
+            kind = n.get("nodeType")
+            if kind == "Identifier" and n["name"] == "gasleft" and (n.get("referencedDeclaration") or 0) < 0:
+                return "calls gasleft, whose value changes during the call"
+            if kind in ("Identifier", "IdentifierPath", "MemberAccess"):
+                callee = n
+            elif kind in ("BinaryOperation", "UnaryOperation") and n.get("function") in self.nodes:
+                # A user-defined operator runs a free or library function.
+                callee = {"nodeType": "Operator", "referencedDeclaration": n["function"]}
+            else:
+                continue
+            decl = self.nodes.get(callee.get("referencedDeclaration"))
+            if decl is not None and decl["nodeType"] == "VariableDeclaration" and self._stored_pointer(decl):
+                return f"reads the function pointer {self.text(callee)} from storage, which the scan does not follow"
+            if decl is None or decl["nodeType"] not in ("FunctionDefinition", "ModifierDefinition"):
+                continue
+            owner = self.nodes.get(self.owners.get(decl["id"]), {})
+            external = (
+                callee["nodeType"] == "MemberAccess"
+                and not _through_contract(callee)
+                and not _this(callee)
+                and owner.get("contractKind") != "library"
+            )
+            if external:
+                runs_in = self._receiver(callee)
+                ran = (self._first(runs_in["linearizedBaseContracts"], decl) or decl) if runs_in else decl
+                runs = [(ran, runs_in)]
+                if id(callee) not in called:
+                    # Named as a value, as in abi.encodeCall, it can be sent to a receiver of another type.
+                    runs.append((decl, None))
+            else:
+                ran = self._runs(callee, decl, within, contract) if contract is not None else decl
+                if decl["nodeType"] == "ModifierDefinition" and ran["id"] != decl["id"]:
+                    overrider = self.nodes[self.owners[ran["id"]]]["name"]
+                    return f"runs the modifier {decl['name']} of {overrider}, an override that could change state"
+                runs = [(ran, contract)]
+                if decl["nodeType"] == "FunctionDefinition" and id(callee) not in called:
+                    runs.append((decl, None))
+                    if contract is not None and decl.get("visibility") in ("public", "external"):
+                        if owner.get("contractKind") == "contract":
+                            runs.append((self._first(contract["linearizedBaseContracts"], decl) or decl, contract))
+            for ran, runs_in in runs:
+                if ran["nodeType"] == "VariableDeclaration":
+                    continue
+                key = (ran["id"], runs_in["id"] if runs_in else None)
+                if key not in seen:
+                    seen.add(key)
+                    why = self._varies(ran, seen, self.owners.get(ran["id"]), runs_in)
+                    if why is not None:
+                        return why
+        return None
+
+    def _stored_pointer(self, decl) -> bool:
+        """Whether a variable is storage, or a struct field, that holds a function pointer."""
+        type_string = decl.get("typeDescriptions", {}).get("typeString") or ""
+        field = self.nodes.get(decl.get("scope"), {}).get("nodeType") == "StructDefinition"
+        return bool(_POINTER.search(type_string)) and (decl.get("stateVariable") or field)
+
+    def _receiver(self, member):
+        """The contract that the type of an external call's receiver names, or None for an interface or another type."""
+        identifier = member["expression"].get("typeDescriptions", {}).get("typeIdentifier") or ""
+        match = re.fullmatch(r"t_contract\$_\w+_\$(\d+)", identifier)
+        found = self.nodes.get(int(match.group(1))) if match else None
+        if found is None or found.get("nodeType") != "ContractDefinition" or found["contractKind"] != "contract":
+            return None
+        return found
 
     def _state_variable(self, node):
         if node["nodeType"] != "Identifier":

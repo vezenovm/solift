@@ -190,7 +190,7 @@ The README says what a run proves and what it trusts.
 | locals, also assigned in branches; compound assignments; named returns | modifiers |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
-| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments | a call that writes storage inside a larger expression |
+| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`) |
 | `Math.min`, `Math.max` and `Math.mulDiv`, also with `Math.Rounding.Floor`, backed by lemmas | other `Math` functions, `Math.mulDiv` rounded up (Halmos cannot prove its `mulmod` at a symbolic denominator) |
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
