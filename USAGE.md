@@ -24,7 +24,7 @@ integers, `**`, `%` and assembly. A function can write storage when nothing afte
 write, or an argument of an external call, can be an output of the model, which the link compares after the call:
 `solift reads` proposes the output map, and a function without a value needs one. To cut out a call that does not
 fit, add its source text to the read map: its result becomes an input. [What the extractor
-takes](#what-the-extractor-takes) has the full list.
+accepts](#what-the-extractor-accepts) has the full list.
 
 ## 2. Write a harness
 
@@ -164,8 +164,8 @@ pin a commit: `pip install 'git+https://github.com/vezenovm/solift@<commit>'`. I
 
 ## When it fails
 
-- **`solift reads` says incomplete**, or **an extraction error** names the construct and its line. Cut the call in the read map, or expose a smaller function
-  in the harness.
+- **`solift reads` says incomplete**, or **an extraction error** names the construct and its line. Cut the call in
+  the read map, or expose a smaller function in the harness.
 - **"the read map names X, which ... does not read"**: remove X from the read map.
 - **The link fails**: an adapter does not set what the contract reads, or the read map misses a read.
 - **The vectors disagree**: this is a solift bug.
@@ -180,9 +180,9 @@ The README says what a run proves and what it trusts.
 
 ## Reference
 
-### What the extractor takes
+### What the extractor accepts
 
-| Takes | Refuses, with the place in the source |
+| Accepts | Refuses, with the place in the source |
 |---|---|
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |

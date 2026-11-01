@@ -2,7 +2,7 @@
 
 solift proves theorems about Solidity functions. Today it covers one loop-free call: its arithmetic, such as rounding,
 solvency, and fee and pricing bounds, and the storage writes and external call arguments that you name as outputs.
-The [roadmap](#roadmap) goes past one call.
+The [roadmap](#roadmap) goes further: invariants over a set of functions, external calls in the model, and events.
 
 For each function of a spec, solift:
 
@@ -113,11 +113,11 @@ function makes as a statement is assumed not to revert and not to call back into
 ## What it accepts
 
 Loop-free functions in checked `uint` arithmetic, with branches, `require` and `revert`, inlined internal and library
-calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min`, `Math.max`
-and `Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link
-compares after the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed
-values, `**`, `%`, assembly and modifiers, and names the place in the source. A view or pure call that does not fit
-can go in the read map: its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-takes) has the full list.
+calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min`, `Math.max` and
+`Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link compares after
+the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed values, `**`, `%`,
+assembly and modifiers, and names the place in the source. A view or pure call that does not fit can go in the read map:
+its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-accepts) has the full list.
 
 ## Proof performance
 
