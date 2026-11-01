@@ -129,9 +129,22 @@ between shares and debt that the solver "cannot always decide quickly"
 ([Abracadabra](https://hevm.dev/exploit-tutorial2.html)). `Math.mulDiv` still meets the bytecode in the lemmas, which
 a run proves once for each spec, not for each theorem.
 
-In the Resupply example above, the solver queries of the two theorems take 0.03s and 0.01s, and the link check takes
-0.74s. These are single checks, without the build and the vectors. No direct proof of the same theorem on the bytecode
-is measured here.
+On the Resupply example, the table sets solift's checks beside the same theorems stated directly on the bytecode
+([ResupplyDirect.t.sol](acceptance/resupply/harness/ResupplyDirect.t.sol)): the link's harness, inputs and adapters,
+the theorem's hypotheses, and its bound over exact integers in 512-bit words. Halmos runs each with one solver and no
+timeout on a query, and the run stops it after an hour.
+
+| Check | solift: theorem | link | lemmas | total | Halmos, yices | Halmos, z3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| debt within twice the LTV, at the exploit | COUNTEREXAMPLE, 0.01s | 0.76s | 0.01s | 0.78s | COUNTEREXAMPLE, 1314s | TIMEOUT at 3600s |
+| the same up to a price of 1e36, at the exploit | PROVED, 0.01s | 0.76s | 0.01s | 0.78s | TIMEOUT at 3600s | TIMEOUT at 3600s |
+| debt within twice the LTV, on the fix | PROVED, 0.01s | 0.83s | 0.01s | 0.85s | TIMEOUT at 3600s | TIMEOUT at 3600s |
+
+The times are single checks, without the build; a whole solift run at the exploit, with the vectors, takes 14s. The
+link and the lemmas run once for each spec, and each row counts them in full. The direct check also runs `toAmount`,
+which solift cuts: there the borrower's debt is an input. Halmos's counterexample, at an oracle price of about 4.6e46,
+fails the bound when forge replays it. Measured on an Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.4) with solc 0.8.28,
+forge 1.8.5, Halmos 0.3.3, yices 2.6.4 and z3 4.12.6.
 
 ## How it compares
 
@@ -182,6 +195,8 @@ git submodule update --init
 .venv/bin/solift run examples.quoter.spec                   # one spec on the test fixtures
 .venv/bin/python -m acceptance.resupply --root <resupply>   # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>  # setup in acceptance/morpho/__main__.py
+# the Resupply theorems directly on the bytecode, without the model: hours, so not in CI (acceptance/resupply/direct.py)
+.venv/bin/python -m acceptance.resupply.direct --root <resupply> --solver yices --budget 3600
 ```
 
 ## License
