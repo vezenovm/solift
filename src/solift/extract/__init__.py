@@ -16,7 +16,8 @@ key is one of:
 
 An entry that the function does not read is an error, except a field of `tx`, `block` or `msg`, which is always an
 input. A key names one value for the whole call, so each local in it is assigned only by its declaration, is the same
-local at each read, and belongs to the modeled function or to a callee that runs once.
+local at each read, and belongs to the modeled function or to a callee that runs once. A call in the read map must not
+reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 
 Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
 the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.

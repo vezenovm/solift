@@ -322,7 +322,7 @@ contract Sampler {
   }
 }
 
-// An override that reads the gas in assembly, which the scan, as on main, does not read.
+// An override that reads the gas in assembly.
 contract Assembled {
   function measure() internal view virtual returns (uint256) {
     return 0;
@@ -365,7 +365,8 @@ contract FixedRated is Rated {
 }
 
 // A pointer called with call options, a function called in parentheses, a getter that gives a pointer, a selector,
-// which the scan follows as the function that it names, and a low-level call of a function named as a value.
+// which runs nothing until a low-level call or a pointer that assembly sets sends it, and a low-level call of a
+// function named as a value.
 contract Optioned {
   function() external view returns (uint256) public pointer;
 
@@ -391,6 +392,30 @@ contract Optioned {
 
   function selector() internal pure returns (uint256) {
     return uint32(this.remaining.selector);
+  }
+
+  function sentSelector() internal view returns (uint256) {
+    (bool ok, bytes memory data) = address(this).staticcall(abi.encodeWithSelector(this.remaining.selector));
+    require(ok);
+    return abi.decode(data, (uint256));
+  }
+
+  function built() internal view returns (uint256) {
+    function() external view returns (uint256) p;
+    bytes4 sent = this.remaining.selector;
+    assembly {
+      p.address := address()
+      p.selector := shr(224, sent)
+    }
+    return p();
+  }
+
+  function viaSentSelector(uint256 _a) public view returns (uint256) {
+    return _a + sentSelector();
+  }
+
+  function viaBuilt(uint256 _a) public view returns (uint256) {
+    return _a + built();
   }
 
   function gotten() internal view returns (uint256) {
@@ -548,5 +573,58 @@ contract Prober {
 
   function delta(FlatSchema _schema, Schema _receiver, uint256 _a) public view returns (uint256) {
     return _a + read(_schema, _receiver);
+  }
+}
+
+// A Yul function in the gas argument of a call that keeps a copy of gas() in memory, where the read finds it.
+contract Kept {
+  function kept() internal view returns (uint256 r) {
+    assembly {
+      function keep(g) -> f {
+        mstore(0x80, g)
+        f := g
+      }
+      pop(staticcall(keep(gas()), 0x02, 0, 0x20, 0, 0x20))
+      r := mload(0x80)
+    }
+  }
+
+  function delta(uint256 _a) public view returns (uint256) {
+    return _a + kept() - kept();
+  }
+}
+
+// A relay that measures the gas left after a call, which forwards gas() to its receiver. A selector of probe runs it only
+// when a low-level call sends it.
+contract Relay {
+  function probe(address _to) external view returns (uint256 left) {
+    assembly {
+      pop(staticcall(gas(), _to, 0, 0, 0, 0))
+      left := gas()
+    }
+  }
+}
+
+contract Relays {
+  function probeSelector() internal pure returns (uint256) {
+    return uint32(Relay.probe.selector);
+  }
+
+  function sent(Relay _relay) internal view returns (uint256) {
+    (bool ok, bytes memory data) = address(_relay).staticcall(abi.encodeWithSelector(Relay.probe.selector, address(0)));
+    require(ok);
+    return abi.decode(data, (uint256));
+  }
+
+  function viaSelector(uint256 _a) public pure returns (uint256) {
+    return _a + probeSelector();
+  }
+
+  function viaProbe(Relay _relay, uint256 _a) public view returns (uint256) {
+    return _a + _relay.probe(address(0));
+  }
+
+  function viaSent(Relay _relay, uint256 _a) public view returns (uint256) {
+    return _a + sent(_relay);
   }
 }

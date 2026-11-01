@@ -12,6 +12,41 @@ from solift.ir import Read, Var
 # A type that holds a function pointer, as `function () view returns (uint256)` or a mapping or array of one.
 _POINTER = re.compile(r"\bfunction\b \(")
 
+# The low-level calls, as members of an address and as Yul builtins, whose first Yul argument is the gas that the call
+# forwards.
+_CALLS = {"call", "callcode", "delegatecall", "staticcall"}
+
+# The Yul builtins that compute a value from their arguments alone, through which gas() can reach a call's gas argument
+# and nothing else.
+_ARITHMETIC = {
+    "add", "sub", "mul", "div", "sdiv", "mod", "smod", "exp", "addmod", "mulmod", "signextend", "not", "lt", "gt",
+    "slt", "sgt", "eq", "iszero", "and", "or", "xor", "byte", "shl", "shr", "sar",
+}  # fmt: skip
+
+
+def _forwarded(argument) -> list:
+    """The gas() calls whose value goes only into a call's gas argument: the argument itself, or one inside builtins
+    of _ARITHMETIC. A Yul function of the code, as `keep(gas())`, could also store the value where the read finds it."""
+    if argument.get("nodeType") != "YulFunctionCall":
+        return []
+    name = argument["functionName"]["name"]
+    if name == "gas":
+        return [argument]
+    return [g for a in argument["arguments"] for g in _forwarded(a)] if name in _ARITHMETIC else []
+
+
+class _Scan:
+    """One read's scan (_varies): the functions and modifiers that it followed, each with the contract that runs it,
+    the functions that the code names only for their selector, and whether the code can send a selector as calldata,
+    through a low-level call or a pointer to an external function. Only then can a function named for its selector
+    run, so the scan follows those functions once it finds such a call."""
+
+    def __init__(self) -> None:
+        self.seen: set = set()
+        self.selected: list = []
+        self.sends = False
+
+
 # The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
 # parameter, and a balance.
 MARKERS = {"call", "any", "balance"}
@@ -251,9 +286,12 @@ class Reads:
     def _fallback_read(self, node, scope: dict) -> None:
         """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
         it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. No
-        call may take a memory value of the function, which an internal call could change, nor reach `gasleft` or a
-        modifier that the target's contract overrides (_varies)."""
-        why = self._varies(node, set(), self._within(), self.contract)
+        call may take a memory value of the function, which an internal call could change, nor reach `gasleft`, `gas()`
+        in assembly, or a modifier that the target's contract overrides (_varies)."""
+        scan = _Scan()
+        why = self._varies(node, scan, self._within(), self.contract)
+        while why is None and scan.sends and scan.selected:
+            why = self._follow(*scan.selected.pop(), scan)
         if why is not None:
             self.fail(node, f"the read {self.text(node)} {why}")
         for n in _subtree(node):
@@ -293,11 +331,11 @@ class Reads:
                     for reads in self.reading:
                         reads.add("call")
 
-    def _varies(self, node, seen: set, within: int | None, contract: dict | None) -> str | None:
+    def _varies(self, node, scan: _Scan, within: int | None, contract: dict | None) -> str | None:
         """Why an expression, a function or a modifier can give two values in one call, or None, also through each
-        function and modifier that it names: it calls `gasleft`, reads a function pointer from storage, whose target the
-        scan does not see, or runs a modifier that its contract overrides. As on main, assembly is not scanned, so its
-        `gas()` is not seen. solc checks a function's mutability against the modifiers that it names, and an
+        function and modifier that it names: it calls `gasleft`, reads `gas()` in assembly other than as the gas that a
+        call forwards, reads a function pointer from storage, whose target the scan does not see, or runs a modifier
+        that its contract overrides. solc checks a function's mutability against the modifiers that it names, and an
         override of a modifier can change state in a view function.
 
         The scan follows each function and modifier that the code names, called or not, so a pointer that the code
@@ -306,13 +344,38 @@ class Reads:
         external call reaches, the contract that the receiver's type names. A receiver of another type, such as an
         interface, runs the code that solc names (`contract` None). A function named as a value, as a pointer or in
         `abi.encodeCall(Base.g, ())`, can run as solc names it on any receiver, as _runs gives it, and if it is public
-        or external, as a call through `this` runs it: the scan follows each. It follows user-defined operators too."""
+        or external, as a call through `this` runs it: the scan follows each. A function named only for its selector
+        (`this.g.selector`) runs only through a call that sends the selector as calldata, so the scan follows it only
+        if the code makes a low-level call or calls a pointer to an external function (_Scan). It follows
+        user-defined operators too. Code that a low-level call runs is not scanned beyond the function that its
+        calldata names in Solidity, like an external call's receiver of another type."""
         nodes = list(_subtree(node))
         called = {id(_unwrapped(n["expression"])) for n in nodes if n.get("nodeType") == "FunctionCall"}
+        selected = {
+            id(_unwrapped(n["expression"]))
+            for n in nodes
+            if n.get("nodeType") == "MemberAccess" and n["memberName"] == "selector"
+        }
+        forwarded = {
+            id(g)
+            for n in nodes
+            if n.get("nodeType") == "YulFunctionCall" and n["functionName"]["name"] in _CALLS and n["arguments"]
+            for g in _forwarded(n["arguments"][0])
+        }
         for n in nodes:
             kind = n.get("nodeType")
             if kind == "Identifier" and n["name"] == "gasleft" and (n.get("referencedDeclaration") or 0) < 0:
                 return "calls gasleft, whose value changes during the call"
+            if kind == "YulFunctionCall":
+                name = n["functionName"]["name"]
+                scan.sends = scan.sends or name in _CALLS
+                if name == "gas" and id(n) not in forwarded:
+                    return "reads gas() in assembly, other than as the gas that a call forwards"
+                continue
+            if kind == "MemberAccess" and n["memberName"] in _CALLS and _address(n["expression"]):
+                scan.sends = True
+            if kind == "FunctionCall" and self._external_pointer(_unwrapped(n["expression"])):
+                scan.sends = True
             if kind in ("Identifier", "IdentifierPath", "MemberAccess"):
                 callee = n
             elif kind in ("BinaryOperation", "UnaryOperation") and n.get("function") in self.nodes:
@@ -351,15 +414,30 @@ class Reads:
                         if owner.get("contractKind") == "contract":
                             runs.append((self._first(contract["linearizedBaseContracts"], decl) or decl, contract))
             for ran, runs_in in runs:
-                if ran["nodeType"] == "VariableDeclaration":
+                if id(callee) in selected and not scan.sends:
+                    scan.selected.append((ran, runs_in))
                     continue
-                key = (ran["id"], runs_in["id"] if runs_in else None)
-                if key not in seen:
-                    seen.add(key)
-                    why = self._varies(ran, seen, self.owners.get(ran["id"]), runs_in)
-                    if why is not None:
-                        return why
+                why = self._follow(ran, runs_in, scan)
+                if why is not None:
+                    return why
         return None
+
+    def _follow(self, ran, runs_in: dict | None, scan: _Scan) -> str | None:
+        """_varies of a function or modifier that runs in an instance of `runs_in`, once in a scan. A getter, which a
+        public state variable gives, reads storage only."""
+        key = (ran["id"], runs_in["id"] if runs_in else None)
+        if ran["nodeType"] == "VariableDeclaration" or key in scan.seen:
+            return None
+        scan.seen.add(key)
+        return self._varies(ran, scan, self.owners.get(ran["id"]), runs_in)
+
+    def _external_pointer(self, callee) -> bool:
+        """Whether a callee is a pointer to an external function, whose selector and address can come from any value,
+        as assembly can set them, rather than a function that it names."""
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        type_string = callee.get("typeDescriptions", {}).get("typeString") or ""
+        named = decl is not None and decl["nodeType"] == "FunctionDefinition"
+        return not named and type_string.startswith("function ") and " external" in type_string
 
     def _stored_pointer(self, decl) -> bool:
         """Whether a variable is storage, or a struct field, that holds a function pointer."""

@@ -215,7 +215,11 @@ A key names a value that the function reads from outside itself, and maps it to 
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
 has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, the same
-one at each read of the key, in the target or in a callee that runs once. The model assumes that each read succeeds: an external call that reverts has no input in the model.
+one at each read of the key, in the target or in a callee that runs once. A call in the read map must not reach code
+whose value changes during the call: `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards. The
+check reads the code in the build: a low-level call runs what its calldata names in Solidity, and an external call the
+code of its receiver's type. The model assumes that each read succeeds: an external call that reverts has no input in
+the model.
 `solift reads` prints the keys that a function needs.
 
 ### Adapters
