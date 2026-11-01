@@ -25,11 +25,11 @@ finds solvent has debt below twice the loan-to-value limit of its collateral's v
 
 ```
 COUNTEREXAMPLE WITNESS [solvent-debt-within-twice-the-ltv] a borrower that the pair finds solvent has debt below twice
-  (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.03s]
-  _borrower=0 price=1500000000000024999999999999999999488 storedRate=0 maxLTV=3 collateral=2 borrowed=240000000000004
+  (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.01s]
+  _borrower=0 price=1000000000000000000000000000000000002 storedRate=0 maxLTV=1 collateral=2 borrowed=80000000000001
 PROVED WITNESS [solvent-debt-within-twice-the-ltv-up-to-a-price-of-1e36] up to an oracle price of 1e36, ... [0.01s]
 vectors: 192 of 192 agree
-PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.74s]
+PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.76s]
 ```
 
 An oracle price above 1e36 rounds the exchange rate down to 0, and at a rate of 0 one wei of collateral backs any debt.
