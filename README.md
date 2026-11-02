@@ -1,8 +1,7 @@
 # solift
 
-solift proves theorems about Solidity functions. Today it covers one loop-free call: its arithmetic, such as rounding,
-solvency, and fee and pricing bounds, and the storage writes and external call arguments that you name as outputs.
-The [roadmap](#roadmap) goes further: invariants over a set of functions, external calls in the model, and events.
+solift proves theorems about Solidity functions. Support is limited today: see [What it accepts](#what-it-accepts)
+and the [roadmap](#roadmap).
 
 For each function of a spec, solift:
 
@@ -12,8 +11,8 @@ For each function of a spec, solift:
 3. translates the model to SMT terms over unbounded integers, and proves your theorems, written in Python, on them
    with z3, then yices and cvc5, or prints a counterexample.
 
-You write the theorems, the read map and a test harness. Nobody writes the model or a proof. When the function
-changes, the next run extracts the model again and checks the link and the theorems again. The read map and the
+You write the theorems, a spec and a test harness. Nobody writes the model or a proof. When the function changes, the
+next run extracts the model again, checks it against the bytecode and proves the theorems again. The spec and the
 harness change only when the function's reads or its setup do.
 
 ![Halmos proves the Solidity that solift emits from the extracted model equal to the contract's bytecode, and the
