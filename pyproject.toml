@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "solift"
 version = "0.1.0"
-description = "Proves arithmetic properties of Solidity functions over exact integers, on a model that Halmos proves equal to the bytecode."
+description = "Proves properties of Solidity contracts, linked to contract bytecode through symbolic equivalence checking."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
