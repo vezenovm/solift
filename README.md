@@ -151,7 +151,7 @@ more power than these:
 
 | Tool | Proves the property on | You write | Reach |
 |---|---|---|---|
-| **solift** | an integer model extracted from the source, which Halmos proves equal to the bytecode | theorems in Python, a read map and a harness | one loop-free call |
+| **solift** | a model in solift IR, extracted from the source, which Halmos proves equal to the bytecode | theorems in Python, a read map and a harness | one loop-free call |
 | Halmos | the bytecode, in 256-bit arithmetic | symbolic tests in Solidity | several calls in a test, loops up to a bound |
 | hevm | the bytecode, in 256-bit arithmetic, and the equivalence of two bytecodes | symbolic tests, or a second program | loops up to a bound |
 | Certora | the compiled code, with `mathint` in the spec | rules, invariants and summaries in CVL | invariants across calls |
