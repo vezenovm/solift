@@ -330,6 +330,73 @@ contract Structs {
         return w.end;
     }
 
+    function _nestedStart(Nested memory _n) internal pure returns (uint256) {
+        return _n.window.start;
+    }
+
+    function _fakeWindow() internal pure returns (Window memory p) {
+        assembly {
+            p := 0x80
+        }
+    }
+
+    function _smashWindow(Window memory _w) internal pure returns (uint256) {
+        assembly {
+            mstore(0x80, 7)
+        }
+        return _w.start;
+    }
+
+    // Cuts that take memory: a new struct around one that the function holds, a struct that assembly points to, and a
+    // callee whose assembly could write any memory.
+    function cutNested(uint256 _x) external pure returns (uint256) {
+        Window memory held = Window(_x, _x);
+        return _nestedStart(Nested(held)) + held.end;
+    }
+
+    function cutFake(uint256 _t) external pure returns (uint256) {
+        return Windows.opened(_fakeWindow(), _t);
+    }
+
+    function cutSmashed(uint256 _x) external pure returns (uint256) {
+        return _smashWindow(Window(_x, _x));
+    }
+
+    function _smashNext(Window memory _w) internal pure returns (uint256) {
+        assembly ("memory-safe") {
+            mstore(sub(_w, 32), 7)
+        }
+        return _w.start;
+    }
+
+    // A callee whose assembly, marked memory-safe, writes next to the new struct that it takes, where held can be.
+    function cutSmashedNext(uint256 _x) external pure returns (uint256) {
+        Window memory held = Window(_x, _x);
+        uint256 r = _smashNext(Window(0, 0));
+        return r + held.start;
+    }
+
+    function _length(uint256[] memory _a) internal pure returns (uint256) {
+        return _a.length;
+    }
+
+    function cutNewArray(uint256 _n) external pure returns (uint256) {
+        return _length(new uint256[](_n));
+    }
+
+    function _startOf(Window memory _w) internal pure returns (uint256) {
+        return _w.start;
+    }
+
+    function _made(function(Window memory) internal pure returns (uint256) _f) internal pure returns (Window memory) {
+        return Window(_f(Window(1, 2)), 0);
+    }
+
+    // A factory that takes a function, which is no memory.
+    function cutFactoryOfAFunction(uint256 _x) external pure returns (uint256) {
+        return Windows.opened(_made(_startOf), _x);
+    }
+
     // A cut whose assembly is marked memory-safe.
     function safe(uint256 _x) external pure returns (uint256) {
         Window memory w = Window(_x, _x);

@@ -943,3 +943,37 @@ def test_a_struct_field_or_a_tuple_value_of_an_external_call_is_a_read(build, fu
 def test_a_value_of_an_external_call_needs_its_key_and_stays_as_read(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{STRUCTS}.{function}", reads)
+
+
+@pytest.mark.parametrize(
+    "function, reads",
+    [
+        ("openedConstructed", {"Windows.opened(Window(_s,_s),_t)": "opened"}),
+        ("owed", {"config.end": "end", "window().opened(_t)": "opened"}),
+        ("cutNewArray", {"_length(new uint256[](_n))": "opened"}),
+        ("cutFactoryOfAFunction", {"Windows.opened(_made(_startOf),_x)": "opened"}),
+    ],
+)
+def test_a_cut_may_take_new_memory_that_nothing_reaches_after_the_call(build, function, reads):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert "opened" in [r.var.name for r in model.reads]
+    assert not model.callees
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("openedBuilt", {"w.opened(_t)": "opened"}, r"passes memory to opened, which can change it"),
+        ("cutNested", {"_nestedStart(Nested(held))": "start"}, r"passes memory to _nestedStart, which can change it"),
+        ("cutFake", {"Windows.opened(_fakeWindow(),_t)": "opened"}, r"passes memory to opened, which can change it"),
+        (
+            "cutSmashed",
+            {"_smashWindow(Window(_x,_x))": "smashed"},
+            r"passes memory to _smashWindow, and runs inline assembly",
+        ),
+        ("cutSmashedNext", {"_smashNext(Window(0,0))": "smashed"}, r"passes memory to _smashNext, and runs inline"),
+    ],
+)
+def test_a_cut_whose_memory_argument_could_be_reached_or_written_unseen_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)

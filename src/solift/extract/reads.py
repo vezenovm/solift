@@ -46,11 +46,18 @@ class _Scan:
         self.selected: list = []
         self.sends = False
         self.unsafe = False
+        self.assembly = False
 
 
 # The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
 # parameter, and a balance.
 MARKERS = {"call", "any", "balance"}
+
+
+def _memory(node) -> bool:
+    """Whether an expression is a reference to memory, as a struct or an array, and not a function that takes one."""
+    type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+    return not type_string.startswith("function") and (type_string.endswith(" memory") or " memory " in type_string)
 
 
 def _address(node) -> bool:
@@ -307,9 +314,10 @@ class Reads:
 
     def _fallback_read(self, node, scope: dict) -> None:
         """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
-        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. No
-        call may take a memory value of the function, which an internal call could change, nor reach `gasleft`, `gas()`
-        in assembly, or a modifier that the target's contract overrides (_varies)."""
+        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. An
+        internal call may take memory only where nothing can reach it after the call (_fresh), and with no assembly in
+        its code that is not memory-safe, as it could change it unseen. No call may reach `gasleft`, `gas()` in
+        assembly, or a modifier that the target's contract overrides (_varies)."""
         scan = _Scan()
         why = self._varies(node, scan, self._within(), self.contract)
         while why is None and scan.sends and scan.selected:
@@ -337,6 +345,9 @@ class Reads:
                     self.fail(n, f"reads {n['name']} after a write to it: the model does not see the write")
             elif n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
                 callee = n["expression"]
+                if callee["nodeType"] == "NewExpression":
+                    # A new memory array: an allocation, which runs no code (_fresh).
+                    continue
                 decl = self.nodes.get(callee.get("referencedDeclaration"))
                 if decl is None and callee.get("referencedDeclaration", 0) < 0:
                     continue
@@ -353,13 +364,50 @@ class Reads:
                     or _through_contract(callee)
                 )
                 given = [*n["arguments"], *([callee["expression"]] if callee["nodeType"] == "MemberAccess" else [])]
-                if internal and any(" memory" in a["typeDescriptions"].get("typeString", "") for a in given):
-                    self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
+                memory = [a for a in given if _memory(a)]
+                if internal and memory:
+                    # The callee can change memory that it takes, which the model would not see. That memory is safe to
+                    # pass when nothing can reach it after the call (_fresh), and the callee's assembly keeps to it.
+                    if not all(self._fresh(a) for a in memory):
+                        self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
+                    # Assembly that is marked memory-safe may still write next to the memory that it takes, where the
+                    # function's own structs can be, so a cut that takes memory has no assembly at all.
+                    if scan.assembly:
+                        self.fail(
+                            n, f"the read {self.text(node)} passes memory to {decl['name']}, and runs inline assembly"
+                        )
                 if mutability != "pure" or decl["visibility"] not in ("internal", "private"):
                     if self.written:
                         self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
                     for reads in self.reading:
                         reads.add("call")
+
+    def _fresh(self, node) -> bool:
+        """Whether nothing but the call that takes `node` can reach the memory that it is: a struct constructor whose
+        arguments are values or such constructors, a new array of a value type, or an internal call that takes no
+        memory and has no assembly in its code. Such a call can only return memory that it allocates or decodes, as it
+        reaches the caller's memory only through its arguments, while assembly can return any pointer."""
+        node = _unwrapped(node)
+        if node["nodeType"] != "FunctionCall":
+            return False
+        if node["kind"] == "structConstructorCall":
+            return all(not _memory(a) or self._fresh(a) for a in node["arguments"])
+        if node["kind"] != "functionCall":
+            return False
+        callee = node["expression"]
+        if callee["nodeType"] == "NewExpression":
+            return (
+                re.fullmatch(r"(uint\d*|bool|address)\[\] memory", node["typeDescriptions"]["typeString"]) is not None
+            )
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "FunctionDefinition":
+            return False
+        bound = [callee["expression"]] if callee["nodeType"] == "MemberAccess" else []
+        if any(_memory(a) for a in (*node["arguments"], *bound)):
+            return False
+        scan = _Scan()
+        why = self._varies(node, scan, self._within(), self.contract)
+        return why is None and not scan.assembly and not scan.sends
 
     def _varies(self, node, scan: _Scan, within: int | None, contract: dict | None) -> str | None:
         """Why an expression, a function or a modifier can give two values in one call, or None, also through each
@@ -394,8 +442,9 @@ class Reads:
         }
         for n in nodes:
             kind = n.get("nodeType")
-            if kind == "InlineAssembly" and not memory_safe(n):
-                scan.unsafe = True
+            if kind == "InlineAssembly":
+                scan.assembly = True
+                scan.unsafe = scan.unsafe or not memory_safe(n)
             if kind == "Identifier" and n["name"] == "gasleft" and (n.get("referencedDeclaration") or 0) < 0:
                 return "calls gasleft, whose value changes during the call"
             if kind == "YulFunctionCall":

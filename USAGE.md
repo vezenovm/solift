@@ -213,7 +213,7 @@ A key names a value that the function reads from outside itself, and maps it to 
 | `address(this).balance`, `_who.balance` | the balance of an address, which no external call that can change state may precede |
 | `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
 | `PARAMS.window().end`, `FEED.latestRoundData()[3]` | a field of a struct, or a value of a tuple, that an external view call returns: also through a local that holds it (`Window memory w = PARAMS.window();`, `(,,, uint256 at,) = FEED.latestRoundData();`) |
-| `_price()` | an internal call: a cut point, whose result becomes an input |
+| `_price()` | an internal call: a cut point, whose result becomes an input. Its memory arguments must be new memory that nothing else reaches: a struct constructor of values, a new array of a value type, or an internal call that takes no memory and has no assembly (`window().opened(t)`) |
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
 has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, the same

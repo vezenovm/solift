@@ -645,3 +645,41 @@ def test_the_values_of_an_external_call_link_to_their_models(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_cuts_that_take_new_memory_link_with_the_cut_value_observed(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    imports = ('import {Window, Windows} from "tests/fixtures/contracts/Structs.sol";',)
+    specs = [
+        Spec(
+            name="structs-cut-constructed",
+            target=f"{target}.openedConstructed",
+            reads={"Windows.opened(Window(_s,_s),_t)": "opened"},
+            link=Link(
+                setup=setup,
+                call="structs.openedConstructed(_s, _t)",
+                observed={"opened": "Windows.opened(Window(_s, _s), _t)"},
+                imports=imports,
+            ),
+            project=SPEC.project,
+        ),
+        Spec(
+            name="structs-cut-owed",
+            target=f"{target}.owed",
+            reads={"config.end": "end", "window().opened(_t)": "opened"},
+            link=Link(
+                setup=setup,
+                call="structs.owed(_t)",
+                adapters={("start", "end"): "structs.setConfig(start, end);"},
+                observed={"opened": "Windows.opened(structs.window(), _t)"},
+                parameters={"start": "uint256"},
+                imports=imports,
+            ),
+            project=SPEC.project,
+        ),
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
