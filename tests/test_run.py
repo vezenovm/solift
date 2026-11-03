@@ -507,3 +507,36 @@ def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
+
+
+def test_a_mutant_that_drops_a_read_keeps_its_key_as_a_free_input_and_its_theorem_fails(tmp_path):
+    """The mutant no longer reads $config.cap. Without `unread` its spec fails, as the read map names a key that the
+    function does not read, and the theorem on the cap gets no verdict."""
+    from examples.quoter.spec import LINK, PROJECT, READS
+
+    spec = Spec(name="capped", target=f"{QUOTER}:Quoter._quote", reads=READS, link=LINK, project=PROJECT)
+
+    @spec.theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+    def quote_at_most_the_cap(q):
+        """the quote is at most the cap"""
+        return q.result <= q.cap
+
+    path = QUOTER
+    source = (PROJECT.root / path).read_text()
+    mutated = source.replace("Math.min(target - $floor, cfg.cap)", "Math.min(target - $floor, target)")
+    assert mutated != source
+    refused = run(spec, Workspace(tmp_path / "refused"), replace={path: mutated}, link=False, vectors=False)
+    assert any("which Quoter._quote does not read" in f for f in refused["failures"])
+    unchanged = extract(forge_build(tmp_path), spec.target, READS).model
+    types = {r.source: r.var.type for r in unchanged.reads}
+    record = run(spec, Workspace(tmp_path / "kept"), replace={path: mutated}, link=False, vectors=False, unread=types)
+    (result,) = record["specs"]
+    assert result["model"]["unread"] == ["$config.cap"]
+    (theorem,) = result["theorems"]
+    assert theorem["verdict"] == "COUNTEREXAMPLE"
+
+
+def forge_build(tmp_path):
+    workspace = Workspace(tmp_path / "build")
+    root = SPEC.project.overlay(workspace)
+    return forge.build(root, workspace.fresh("out"), workspace.fresh("cache"))

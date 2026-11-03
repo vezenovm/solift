@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 from acceptance.mutants import apply, problems
-from solift.run import run
+from solift.run import load, run
 
 
 def pinned(root: pathlib.Path, commit: str) -> list[str]:
@@ -20,9 +20,16 @@ def pinned(root: pathlib.Path, commit: str) -> list[str]:
 
 
 def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, list[str]]:
-    """Runs each mutant on its spec, and returns the records and the failures: a mutant that is not rejected."""
+    """Runs each mutant on its spec, and returns the records and the failures: a mutant that is not rejected. A read map
+    key that a mutant's function no longer reads stays an input of its type in the unchanged model, so that the
+    theorems on it get a verdict (run's `unread`)."""
     print("\n== mutants")
     by_name = {spec.name: spec for spec in specs}
+    used = [by_name[name] for name in dict.fromkeys(m.spec for m in mutants)]
+    types = {
+        name: {r.source: r.var.type for r in terms.model.reads}
+        for name, terms in load(used, workspace.child("unchanged")).items()
+    }
     records, failures = {}, []
     for mutant in mutants:
         source = (root / mutant.path).read_text()
@@ -33,6 +40,7 @@ def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, li
             link=mutant.link,
             vectors=False,
             only=(mutant.breaks, *mutant.holds),
+            unread=types[mutant.spec],
         )
         records[mutant.id] = record
         found = problems(mutant, record)

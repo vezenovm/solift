@@ -37,6 +37,7 @@ import z3
 from solift import forge, solvers
 from solift.extract import ExtractionError, extract
 from solift.halmos import HalmosEngine
+from solift.ir import Type
 from solift.link import Harness, Link, LinkError, generate, operators_test, placed
 from solift.solidity import names
 from solift.theorem import Terms, TheoremError, prove, theorem
@@ -110,11 +111,14 @@ def run(
     emit: pathlib.Path | None = None,
     only: tuple[str, ...] | None = None,
     engine: HalmosEngine | None = None,
+    unread: dict[str, Type] | None = None,
 ) -> dict:
     """Runs the specs and returns the record. `replace` gives new content for project files, such as a mutant. Without
     `link` Halmos does not run, and without `vectors` neither do the vectors, and the record says so. `emit` is a
     directory to write the models and their link tests to, for review. `only` names the theorems to prove, when a run
-    needs only some of them, as a mutant does."""
+    needs only some of them, as a mutant does. `unread` gives the type of each read map key that a target may no longer
+    read, as a mutant that drops a read: it stays an input, which nothing constrains, and the record's model lists it
+    under `unread` (extract.extract)."""
     specs = [specs] if isinstance(specs, Spec) else list(specs)
     if not specs or any(spec.project != specs[0].project for spec in specs):
         raise ValueError("a run needs specs, and its specs share one project")
@@ -157,7 +161,7 @@ def run(
     clock.stage("build")
 
     for c in checked:
-        _extract(c, infos, operators=len(specs) == 1, record=record)
+        _extract(c, infos, operators=len(specs) == 1, record=record, unread=unread)
     models = [c for c in checked if c.model is not None]
     stems: dict[str, str] = {}
     for c in list(models):
@@ -314,9 +318,9 @@ def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     return loaded
 
 
-def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict) -> None:
+def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict, unread: dict | None = None) -> None:
     try:
-        extraction = extract(infos, c.spec.target, c.spec.reads, c.spec.outputs)
+        extraction = extract(infos, c.spec.target, c.spec.reads, c.spec.outputs, unread)
         c.model = dataclasses.replace(extraction.model, stem=c.spec.stem)
         c.generated = generate(c.model, c.spec.link, operators=operators)
     except Exception as err:
@@ -330,6 +334,7 @@ def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict) -> N
         "inputs": [{"name": v.name, "type": v.type.solidity} for v in c.model.inputs],
         "reads": {r.var.name: r.source for r in c.model.reads},
         "callees": [f.name for f in c.model.callees],
+        "unread": list(extraction.unread),
         "effects": [{"kind": e.kind, "place": e.place, "source": e.source, "at": str(e.src)} for e in c.model.effects],
         "outputs": [
             {"name": o.var.name, "type": o.var.type.solidity, "kind": o.kind, "source": o.source, "argument": o.index}
