@@ -146,6 +146,9 @@ def judge(checks: tuple[Check, ...], data: dict | None, log: str, returncode: in
         problems.append(f"the Halmos process exited with {returncode}")
     if data is None:
         problems.append("Halmos wrote no results")
+        error = compiler_error(log)
+        if error:
+            problems.append(f"the build failed: {error}")
         data = {"test_results": {}}
     folded = " ".join(log.split())
     for needle, problem in LOG_FAILURES.items():
@@ -176,6 +179,17 @@ def judge(checks: tuple[Check, ...], data: dict | None, log: str, returncode: in
     for check in found:
         results.append(CheckResult(check, "UNDECLARED"))
     return LinkRun(tuple(results), tuple(problems), log)
+
+
+def compiler_error(log: str) -> str:
+    """The first compiler error in a log, with the place it names, as `Error (5407): ... at test/solift/A.t.sol:18:35`,
+    or empty if there is none."""
+    lines = log.splitlines()
+    for n, line in enumerate(lines):
+        if re.match(r"\s*Error( \(\d+\))?: (?!Compiler run failed)", line):
+            place = next((m.group(1) for later in lines[n + 1 : n + 4] if (m := re.match(r"\s*--> (\S+)", later))), "")
+            return line.strip() + (f" at {place.rstrip(':')}" if place else "")
+    return ""
 
 
 def _plain(text: str) -> str:

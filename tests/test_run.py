@@ -624,3 +624,31 @@ def test_a_payable_address_parameter_and_read_link_as_payable(tmp_path):
     (result,) = record["specs"]
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert [i["type"] for i in result["model"]["inputs"]] == ["address", "uint256", "address"]
+
+
+def test_the_link_check_of_a_model_with_many_inputs_and_two_outputs_fits_the_stack(tmp_path):
+    """Nine symbolic parameters, a value and two outputs: the link check decodes the values into memory structs and
+    keeps the calls in a block of their own, so the legacy code generator does not run out of stack slots."""
+    spec = Spec(
+        name="wide",
+        target="tests/fixtures/contracts/Wide.sol:Wide.take",
+        reads={"a": "a", "b": "b", "c": "c", "d": "d", "e": "e", "held[_who]": "held"},
+        outputs={"a": "aAfter", "held[_who]": "heldAfter"},
+        link=Link(
+            setup="tests/fixtures/test/WideSetup.sol:WideSetup",
+            call="wide.take(_who, _x, _y)",
+            adapters={("a", "b", "c", "d", "e"): "wide.set(a, b, c, d, e);", "held": "wide.setHeld(_who, held);"},
+            post={"aAfter": "wide.total()", "heldAfter": "wide.heldOf(_who)"},
+        ),
+        project=SPEC.project,
+    )
+
+    @spec.theorem(assume=("no-revert",), witness=lambda q: q.post.aAfter < q.a)
+    def take_lowers_both_by_the_amount(q):
+        """take lowers a and the holder's balance by the amount that it returns"""
+        return z3.And(q.a - q.post.aAfter == q.result, q.held - q.post.heldAfter == q.result)
+
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}

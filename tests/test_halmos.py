@@ -256,3 +256,16 @@ def test_forge_builds_without_dynamic_test_linking(tmp_path):
     """forge 1.8 compiles `new C()` in a test as vm.deployCode when dynamic test linking is on, which Halmos 0.3.3
     does not support, so every build of a run turns it off."""
     assert forge.environment(tmp_path / "out", tmp_path / "cache")["FOUNDRY_DYNAMIC_TEST_LINKING"] == "false"
+
+
+def test_a_failed_build_names_its_first_compiler_error():
+    log = """Error: Compiler run failed:
+Error (5407): Cannot implicitly convert component at position 0 from "address" to "address payable".
+  --> test/solift/PayablePaidLink.t.sol:18:35:
+   |
+"""
+    run = judge((), None, log, 1)
+    assert run.problems[-1] == (
+        'the build failed: Error (5407): Cannot implicitly convert component at position 0 from "address" to "address '
+        'payable". at test/solift/PayablePaidLink.t.sol:18:35'
+    )

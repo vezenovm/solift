@@ -32,25 +32,32 @@ contract QuoterQuoteLink is QuoterSetup {
     quoter.setConfig(margin, cap, floor);
     token.set(pot);
     vm.fee(baseFee);
-    QuoterQuoteModel.Inputs memory i = QuoterQuoteModel.Inputs({
-      _gas: _gas,
-      _price: _price,
-      margin: margin,
-      cap: cap,
-      floor: floor,
-      pot: pot,
-      txGasPrice: tx.gasprice,
-      baseFee: baseFee
-    });
-    (bool codeOk, bytes memory codeOut) = address(quoter).call(
-      abi.encodeCall(quoter.exposedQuote, (_gas, _price))
-    );
-    QuoterQuoteHost host = new QuoterQuoteHost();
-    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
-    assert(codeOk == modelOk);
-    if (codeOk) {
-      assert(abi.decode(codeOut, (uint256)) == abi.decode(modelOut, (uint256)));
+    bytes memory codeOut;
+    bytes memory modelOut;
+    {
+      QuoterQuoteModel.Inputs memory i = QuoterQuoteModel.Inputs({
+        _gas: _gas,
+        _price: _price,
+        margin: margin,
+        cap: cap,
+        floor: floor,
+        pot: pot,
+        txGasPrice: tx.gasprice,
+        baseFee: baseFee
+      });
+      bool codeOk;
+      (codeOk, codeOut) = address(quoter).call(
+        abi.encodeCall(quoter.exposedQuote, (_gas, _price))
+      );
+      QuoterQuoteHost host = new QuoterQuoteHost();
+      bool modelOk;
+      (modelOk, modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
+      assert(codeOk == modelOk);
+      if (!codeOk) {
+        return;
+      }
     }
+    assert(abi.decode(codeOut, (uint256)) == abi.decode(modelOut, (uint256)));
   }
 }
 """
@@ -94,7 +101,7 @@ def test_the_run_declares_the_link_and_each_row_and_lemma_that_the_model_uses():
         ({"call": "exposedQuote(_gas)"}, "is not target.function"),
         ({"parameters": {"pot": "uint256"}}, "the link parameter pot has the name of an input"),
         ({"parameters": {"host": "uint256"}}, "host has a name that the generated test uses"),
-        ({"parameters": {"codeResult1": "uint256"}}, "codeResult1 has a name that the generated test uses"),
+        ({"parameters": {"modelResults": "uint256"}}, "modelResults has a name that the generated test uses"),
     ],
 )
 def test_a_link_that_does_not_set_each_input_exactly_once_is_refused(change, message):
