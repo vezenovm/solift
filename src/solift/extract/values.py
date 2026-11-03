@@ -118,6 +118,11 @@ class Values:
             return self._enum(self.nodes[int(match.group(1))])
         self.fail(node, f"the type {type_string} is not supported")
 
+    def _declared(self, node) -> str:
+        """The source's type of a value where its model type loses a part that the link test needs: `address payable`,
+        which an `address` does not convert to implicitly."""
+        return "address payable" if node["typeDescriptions"]["typeString"] == "address payable" else ""
+
     def _enum(self, definition) -> Type:
         """The enum type, and the import of the contract or file-level enum that declares it, for the emitted
         Solidity."""

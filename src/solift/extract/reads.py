@@ -194,7 +194,7 @@ class Reads:
             # The indexes below a copy, a parameter or a pointer are any expressions, as in other read map keys.
             self._fallback_read(node, scope)
         if _normal(key) not in self.reads:
-            var = Var(entry[1], self._type(node), input=True, src=self.src(node))
+            var = Var(entry[1], self._type(node), input=True, src=self.src(node), declared=self._declared(node))
             self.reads[_normal(key)] = Read(var, entry[0])
         return self.reads[_normal(key)].var
 

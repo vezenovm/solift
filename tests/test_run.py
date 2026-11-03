@@ -603,3 +603,24 @@ def test_a_project_on_solc_0_8_10_links_with_its_operator_rows_and_vectors(tmp_p
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
     assert len(result["link"]) == 4
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+
+
+def test_a_payable_address_parameter_and_read_link_as_payable(tmp_path):
+    """An `address payable` parameter and read are addresses in the model, and `address payable` in the link test, as
+    the call and the adapter need."""
+    spec = Spec(
+        name="payable",
+        target="tests/fixtures/contracts/Payable.sol:Payable.paid",
+        reads={"recipient": "recipient"},
+        link=Link(
+            setup="tests/fixtures/test/PayableSetup.sol:PayableSetup",
+            call="payer.paid(_to, _a)",
+            adapters={"recipient": "payer.setRecipient(recipient);"},
+        ),
+        project=SPEC.project,
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert [i["type"] for i in result["model"]["inputs"]] == ["address", "uint256", "address"]

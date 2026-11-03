@@ -166,7 +166,7 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
 def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     library, host = names(model)
     setup_path, _, setup = link.setup.rpartition(":")
-    params = [f"    {v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
+    params = [f"    {v.declared or v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
     params += [f"    {type_} {name}" for name, type_ in link.parameters.items()]
     fields = [f"      {v.name}: {link.observed.get(v.name, v.name)}" for v in model.inputs]
     adapters = [f"    {code.strip()}" for code in link.adapters.values()]
