@@ -77,7 +77,7 @@ class Statements:
             if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
                 if not top:
                     self.fail(p, f"the struct parameter {p['name']} of a called function")
-                scope[p["id"]] = ("param", p["name"])
+                scope[p["id"]] = ("param", p["name"], (p["id"],))
                 continue
             if top and (self._user_value_type(p) or _SIGNED.fullmatch(p["typeDescriptions"]["typeString"])):
                 # A parameter of a type that the model has no value of: only a read map key or an argument of an
@@ -104,7 +104,9 @@ class Statements:
             kind = node["nodeType"]
             if kind == "VariableDeclarationStatement":
                 stmt = self._declaration(node, scope)
-                if stmt is not None:
+                if isinstance(stmt, tuple):
+                    out += stmt
+                elif stmt is not None:
                     out.append(stmt)
             elif kind == "IfStatement":
                 cond = self._expr(node["condition"], scope)
@@ -152,7 +154,7 @@ class Statements:
         )
         return values[0] if len(values) == 1 else Tuple(values, return_type)
 
-    def _declaration(self, node, scope: dict) -> Let | Unpack | None:
+    def _declaration(self, node, scope: dict) -> Let | Unpack | tuple[Stmt, ...] | None:
         declarations = node["declarations"]
         if len(declarations) != 1:
             return self._unpack(node, scope)
@@ -162,9 +164,11 @@ class Statements:
         if type_string.startswith("struct ") and decl.get("storageLocation") == "memory":
             path = self._storage_path(init, scope) if init is not None else None
             if path is None:
-                self.fail(init or node, "a memory struct that is not a copy of a storage struct")
+                self._not_inputs_name(decl)
+                return self._struct_declaration(decl, init, scope)
             self._storage_read(path[1], init)
-            scope[decl["id"]] = ("copy", *path, self._identity(init, scope))
+            # The copy is new memory: its object is this declaration, which its aliases share.
+            scope[decl["id"]] = ("copy", *path, self._identity(init, scope), decl["id"])
             return None
         if _storage_struct(decl):
             path = self._storage_path(init, scope) if init is not None else None
@@ -271,11 +275,17 @@ class Statements:
             if local[2] is None:
                 self.fail(expression, f"a write through the storage parameter {root['name']}: it could be any storage")
             return self._storage_write(expression, scope, self._through(local, root, lhs), local[2])
+        if isinstance(local, tuple) and local[0] == "struct":
+            self.fail(
+                expression,
+                f"a write to the memory struct {root['name']}: memory structs alias, and the model has its fields as "
+                "values, so it refuses a write to one",
+            )
         if isinstance(local, tuple):
             if local[0] != "copy" or root is lhs:
                 self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy or storage")
             self._write(expression, scope, "copy")
-            self.written_copies.add(root["referencedDeclaration"])
+            self.written_copies.add(local[4])
             return None
         var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
         if not isinstance(var, Var):

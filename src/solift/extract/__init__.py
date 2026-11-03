@@ -19,6 +19,9 @@ input. A key names one value for the whole call, so each local in it is assigned
 local at each read, and belongs to the modeled function or to a callee that runs once. A call in the read map must not
 reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 
+A memory struct that the function builds, by a constructor or zero, is a local of the model for each field (`w_start`
+for `w.start`), shared by its aliases (structs.py). Its fields are never written after it is built.
+
 Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
 the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
@@ -47,8 +50,8 @@ The model assumes that each read succeeds, and that each external call succeeds 
 contract.
 
 Each part of the IR has its own mixin of `_Extractor`: statements.py, expressions.py (with inlined callees), reads.py
-(inputs and key rules), effects.py (effects and outputs) and values.py (constants and types). extractor.py holds the
-shared state and checks the finished model.
+(inputs and key rules), effects.py (effects and outputs), structs.py (memory structs as locals) and values.py
+(constants and types). extractor.py holds the shared state and checks the finished model.
 """
 
 from solift.extract.errors import ExtractionError, Missing, Wanted

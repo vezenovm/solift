@@ -507,3 +507,39 @@ def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
+
+
+def test_memory_structs_that_the_function_builds_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in [
+            ("built", "_t", {}, {}),
+            ("aliased", "_a, _b", {}, {}),
+            ("zero", "_x", {}, {}),
+            (
+                "copyAliased",
+                "",
+                {"config.start": "start", "config.end": "end"},
+                {("start", "end"): "structs.setConfig(start, end);"},
+            ),
+            ("zeroOwner", "_x", {}, {}),
+        ]
+    ]
+
+    @specs[1].theorem(witness=lambda q: q.w_end > 0)
+    def the_alias_reads_the_same_fields(q):
+        """v.start is w's start: the result is the sum of the two fields"""
+        return z3.Implies(z3.Not(q.reverts), q.result == q.w_start + q.w_end)
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

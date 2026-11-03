@@ -195,6 +195,7 @@ The README says what a run proves and what it trusts.
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
+| a memory struct that the function builds (`Window memory w = Window(a, b);`, or zero), and its aliases (`Window memory v = w;`), as a local for each field (`w_start`, `w_end`) | a write to its fields, a field of a struct, array or string type, a cut whose assembly is not marked memory-safe once such a struct exists |
 | one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
 
 ### Read map keys

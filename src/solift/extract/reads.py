@@ -7,6 +7,7 @@ import re
 
 from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped
 from solift.extract.errors import Missing
+from solift.extract.structs import memory_safe
 from solift.ir import Read, Var
 
 # A type that holds a function pointer, as `function () view returns (uint256)` or a mapping or array of one.
@@ -45,6 +46,7 @@ class _Scan:
         self.seen: set = set()
         self.selected: list = []
         self.sends = False
+        self.unsafe = False
 
 
 # The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
@@ -78,6 +80,12 @@ def _assigned(node) -> set[int]:
         elif target is not None and target["nodeType"] == "Identifier":
             assigned.add(target["referencedDeclaration"])
     return assigned
+
+
+UNSAFE_ASSEMBLY = (
+    "runs inline assembly that is not marked memory-safe, which could write a memory struct of the function that the "
+    "model has as values"
+)
 
 
 class Reads:
@@ -139,6 +147,9 @@ class Reads:
         balance = False
         root = _root(node) if kind in ("MemberAccess", "IndexAccess") else None
         through = scope.get(root.get("referencedDeclaration")) if root is not None else None
+        if isinstance(through, tuple) and through[0] == "struct":
+            # A field of a struct that the function builds is a local of the model, not a read.
+            return self._struct_field(node, through)
         below = isinstance(through, tuple) and through[0] in ("copy", "param", "pointer")
         if below:
             if node["typeDescriptions"]["typeString"].startswith(("struct ", "mapping(")):
@@ -147,7 +158,7 @@ class Reads:
             what = "a field of the struct parameter" if through[0] == "param" else "a storage field"
             if through[0] == "pointer" and through[2] is None:
                 what = "a field of the storage parameter"
-            copy = root["referencedDeclaration"] if through[0] == "copy" else None
+            copy = through[4] if through[0] == "copy" else None
             pointer = through if through[0] == "pointer" else None
         elif kind == "MemberAccess" and node["memberName"] == "balance" and _address(node["expression"]):
             key, what, balance = _normal(self.text(node)), "the balance of an address", True
@@ -207,6 +218,9 @@ class Reads:
             if kind == "Assignment" or (kind == "UnaryOperation" and n["operator"] in ("++", "--", "delete")):
                 self.fail(n, f"the read {key} changes {self.text(n)}: {_LOCALS}")
             var = scope.get(n.get("referencedDeclaration")) if kind == "Identifier" else None
+            if isinstance(var, tuple) and var[0] == "struct" and self.stack:
+                # The fields of a struct that a callee builds or takes can differ at each run of the callee.
+                self.keyed.add(self.stack[-1])
             if isinstance(var, Var) and not var.input:
                 if n["referencedDeclaration"] in self.assigned:
                     self.fail(n, f"the read {key} names {n['name']}, which an assignment changes: {_LOCALS}")
@@ -230,6 +244,9 @@ class Reads:
                 entry = scope.get(n.get("referencedDeclaration"))
                 if isinstance(entry, tuple) and entry[0] in ("copy", "pointer"):
                     names.extend(entry[3])
+                elif isinstance(entry, tuple) and entry[0] == "param":
+                    # A memory struct parameter of the target, also through an alias of it.
+                    names.extend(entry[2])
                 else:
                     names.append(self._declaration_of(n, self._within()))
         return tuple(names)
@@ -292,6 +309,14 @@ class Reads:
         why = self._varies(node, scan, self._within(), self.contract)
         while why is None and scan.sends and scan.selected:
             why = self._follow(*scan.selected.pop(), scan)
+        if why is None and scan.unsafe:
+            # Such assembly could write a memory struct that the model has as values: one that exists, one that a later
+            # allocation puts where the assembly moved the free memory pointer, or one of a caller of a callee whose
+            # model the extraction reuses. So it is refused once any flattened struct exists, here or at the end of the
+            # extraction (extractor.py).
+            self.unsafe_cut = self.unsafe_cut or node
+            if self.flattened:
+                why = UNSAFE_ASSEMBLY
         if why is not None:
             self.fail(node, f"the read {self.text(node)} {why}")
         for n in _subtree(node):
@@ -303,7 +328,7 @@ class Reads:
                 declared = self.nodes.get(ref)
                 if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
                     self._state_read(declared, n)
-                if ref in self.written_copies:
+                if isinstance(entry, tuple) and entry[0] == "copy" and entry[4] in self.written_copies:
                     self.fail(n, f"reads {n['name']} after a write to it: the model does not see the write")
             elif n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
                 callee = n["expression"]
@@ -364,6 +389,8 @@ class Reads:
         }
         for n in nodes:
             kind = n.get("nodeType")
+            if kind == "InlineAssembly" and not memory_safe(n):
+                scan.unsafe = True
             if kind == "Identifier" and n["name"] == "gasleft" and (n.get("referencedDeclaration") or 0) < 0:
                 return "calls gasleft, whose value changes during the call"
             if kind == "YulFunctionCall":

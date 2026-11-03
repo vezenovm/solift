@@ -6,7 +6,7 @@ import z3
 
 from solift import forge, ops
 from solift.extract import ExtractionError, extract
-from solift.ir import Op, uint, walk
+from solift.ir import Op, declared_locals, uint, walk
 from solift.smt import symbols, terms
 from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
@@ -744,3 +744,79 @@ def test_a_balance_after_an_external_call_or_of_a_local_that_changes_is_refused_
         extract(build, f"{BALANCES}.potAfterACall", {"address(this).balance": "held"})
     model = extract(build, f"{BALANCES}.approveAll", {}).model
     assert [(e.kind, e.place) for e in model.effects] == [("call", "_payer.approve(IERC20(_token),type(uint256).max)")]
+
+
+STRUCTS = "tests/fixtures/contracts/Structs.sol:Structs"
+
+
+@pytest.mark.parametrize(
+    "function, reads",
+    [
+        ("smashedThroughCallee", {"_smash()": "smash"}),
+        ("smashedBefore", {"_smash()": "smash"}),
+        ("smashedCommented", {"_commented()": "smash"}),
+    ],
+)
+def test_a_cut_with_assembly_that_is_not_memory_safe_is_refused_wherever_it_runs(build, function, reads):
+    with pytest.raises(ExtractionError, match=r"runs inline assembly that is not marked memory-safe"):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+def test_the_fields_of_a_zero_struct_are_zeros_that_solidity_takes(build):
+    model = extract(build, f"{STRUCTS}.zeroOwner", {}).model
+    assert evaluate(model, {"_x": 3}) == (False, 3, False)
+    assert "address o_who = address(0);" in source(model)
+
+
+def test_a_generated_local_with_the_name_of_a_function_is_refused(build):
+    with pytest.raises(ExtractionError, match=r"the local q_start for a field of a memory struct has the name of a"):
+        extract(build, f"{STRUCTS}.shadowsAFunction", {})
+
+
+def test_an_alias_of_a_struct_parameter_reads_the_parameter_s_fields(build):
+    model = extract(build, f"{STRUCTS}.aliasedParameter", {"_w.start": "start"}).model
+    assert evaluate(model, {"start": 2, "_x": 1}) == (False, 5, False)
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("built", {}, {"_t": 5}, 1),
+        ("aliased", {}, {"_a": 2, "_b": 3}, 5),
+        ("zero", {}, {"_x": 4}, 4),
+        ("copyAliased", {"config.start": "start", "config.end": "end"}, {"start": 1, "end": 7}, 6),
+    ],
+)
+def test_a_memory_struct_that_the_function_builds_is_a_local_for_each_field(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_the_fields_of_a_built_struct_are_locals_that_theorems_can_name(build):
+    model = extract(build, f"{STRUCTS}.aliased", {}).model
+    assert [v.name for v in declared_locals(model.function.body)] == ["w_start", "w_end"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        (
+            "copyAliasedAfterWrite",
+            {"config.end": "end"},
+            r"reads config.end after a write to its memory copy",
+        ),
+        ("fieldWritten", {}, r"a write to the memory struct w: memory structs alias"),
+        ("nested", {}, r"the memory struct Nested has the field window of type struct Window"),
+        ("clash", {}, r"two locals are named w_end"),
+        ("quotedTwice", {"feed.quote(w.end)": "quote"}, r"_quoted runs 2 times in the call"),
+        ("smashed", {"_smash()": "smash"}, r"runs inline assembly that is not marked memory-safe"),
+    ],
+)
+def test_a_memory_struct_that_an_alias_or_assembly_could_change_unseen_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+def test_a_cut_whose_assembly_is_memory_safe_is_taken_beside_a_memory_struct(build):
+    model = extract(build, f"{STRUCTS}.safe", {"_safe()": "cut"}).model
+    assert [r.source for r in model.reads] == ["_safe()"]

@@ -155,6 +155,8 @@ PULL = (
         post={"remaining": "effects.leftOf(address(this))", "last": "effects.lastOf(address(this))"},
     ),
 )
+STRUCTS = "tests/fixtures/contracts/Structs.sol"
+ALIASED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.aliased(_a, _b)"))
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
 # the contract reverts: a result, each value of several returns, the key of a storage pointer, and outputs: an
 # argument of a call, a written value, and a write at another key.
@@ -166,6 +168,7 @@ CHANGES = {
     "call-argument": (f"{EFFECTS}:Effects.buy", BUY, "(msg.sender, amount);", "(msg.sender, amount / 2);"),
     "written-value": (f"{EFFECTS}:Effects.pull", PULL, "uint192(left - _amount);", "uint192(left - _amount / 2);"),
     "written-key": (f"{EFFECTS}:Effects.pull", PULL, "allowance.last =", "$allowances[address(0)].last ="),
+    "struct-field": (f"{STRUCTS}:Structs.aliased", ALIASED, "return v.start + w.end;", "return v.end + w.end;"),
 }
 
 

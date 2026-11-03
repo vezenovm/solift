@@ -10,8 +10,9 @@ from solift.extract.common import IDENTIFIER, _normal, _subtree
 from solift.extract.effects import Effects
 from solift.extract.errors import ExtractionError, Missing, Wanted
 from solift.extract.expressions import Expressions
-from solift.extract.reads import Reads, _assigned
+from solift.extract.reads import UNSAFE_ASSEMBLY, Reads, _assigned
 from solift.extract.statements import Statements
+from solift.extract.structs import Structs
 from solift.extract.values import Values
 from solift.ir import (
     ADDRESS,
@@ -82,7 +83,7 @@ def _job(build_infos: list[dict], target: str) -> dict:
     return infos[0]
 
 
-class _Extractor(Statements, Effects, Reads, Expressions, Values):
+class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
     def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None):
         self.sources = info["output"]["sources"]
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
@@ -115,6 +116,12 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         # callees being extracted; and the expression that is the whole value of the statement being extracted.
         self.written: set[int] = set()
         self.written_copies: set[int] = set()
+        # The memory structs that the extraction has as scalar locals so far (structs.py).
+        self.flattened = 0
+        # The first read map call whose code has assembly that is not marked memory-safe (reads.py), and the names of
+        # the functions in the build, which no generated local may take (structs.py).
+        self.unsafe_cut = None
+        self.function_names: set[str] | None = None
         self.effects: list[Effect] = []
         self.callee_reads: dict[int, set] = {}
         self.callee_writes: dict[int, set] = {}
@@ -180,6 +187,8 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         self.assigned = _assigned(node)
         function = self._with_outputs(self._function(node, top=True), qualified)
         self._run_once()
+        if self.flattened and self.unsafe_cut is not None:
+            self.fail(self.unsafe_cut, f"the read {self.text(self.unsafe_cut)} {UNSAFE_ASSEMBLY}")
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
                 continue
@@ -257,6 +266,12 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
                 self.fail(node, f"the local {name} has the name of an input")
             if locals_.count(name) > 1:
                 self.fail(node, f"two locals are named {name}")
+        for callee in self.callees.values():
+            names = [p.name for p in callee.params] + [v.name for v in declared_locals(callee.body)]
+            names += [v.name for v in callee.named]
+            for name in names:
+                if names.count(name) > 1:
+                    raise ExtractionError(f"{callee.src}: two parameters or locals of {callee.name} are named {name}")
 
     def _import_of(self, unit, path: str) -> str:
         """How the emitted Solidity imports `path`: as the target's file or another source imports it, if one does
