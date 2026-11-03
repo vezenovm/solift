@@ -85,6 +85,7 @@ def _job(build_infos: list[dict], target: str) -> dict:
 class _Extractor(Statements, Effects, Reads, Expressions, Values):
     def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None):
         self.sources = info["output"]["sources"]
+        self.solc = info.get("solcVersion") or ""
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
         self.paths = {s["id"]: path for path, s in self.sources.items()}
         self.nodes: dict[int, dict] = {}
@@ -206,6 +207,7 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
             spdx=unit.get("license") or "UNLICENSED",
             effects=tuple(self.effects),
             outputs=tuple(self.outputs.values()),
+            solc=self.solc,
         )
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}

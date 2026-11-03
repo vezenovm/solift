@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
 from solift.ops import PROOFS, TABLE
-from solift.solidity import imports, names
+from solift.solidity import encoded_call, encoded_calls, imports, names, oldest
 from solift.solidity import source as model_source
 
 RESERVED = {"i", "host", "codeOk", "codeOut", "modelOk", "modelOut"}
@@ -189,10 +189,10 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         ",\n".join(fields),
         "    });",
         f"    (bool codeOk, bytes memory codeOut) = address({target}).call(",
-        f"      abi.encodeCall({target}.{function}, ({arguments.strip()}))",
+        f"      {encoded_call(f'{target}.{function}', arguments, model.solc)}",
         "    );",
         f"    {host} host = new {host}();",
-        "    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));",
+        f"    (bool modelOk, bytes memory modelOut) = address(host).call({encoded_call('host.run', 'i', model.solc)});",
         "    assert(codeOk == modelOk);",
         "    if (codeOk) {",
         *_compare(model, link),
@@ -283,7 +283,7 @@ def _operators_test(models, stem: str, test_import: str, math: str, proofs: list
         f"    ops = new {stem}CheckedOperators();",
         "  }",
         "",
-        "\n".join(p.check for p in proofs).rstrip("\n"),
+        encoded_calls("\n".join(p.check for p in proofs).rstrip("\n"), oldest(models)),
         "}",
         "",
     ]

@@ -306,7 +306,8 @@ class Model:
     `spdx` its license identifier, each as the source file writes it. `stem`, if set, names the emitted contracts
     instead of the contract and function names (solidity.names). `effects` are the writes, external calls and events
     of the function and its callees, which the model leaves out. `outputs` are those it has as values, which the
-    modeled function returns after its own."""
+    modeled function returns after its own. `solc` is the version of the compiler that built the target, as `0.8.10`, or
+    empty where it is not known: the generated tests call the contract as that version can (solidity.encoded_call)."""
 
     contract: str
     function: Function
@@ -319,6 +320,7 @@ class Model:
     stem: str = ""
     effects: tuple[Effect, ...] = ()
     outputs: tuple[Output, ...] = ()
+    solc: str = ""
 
     @property
     def name(self) -> str:

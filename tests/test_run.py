@@ -8,7 +8,7 @@ from solift import forge
 from solift.extract import extract
 from solift.link import Harness, Link, generate
 from solift.run import Spec, run, summary, vector_failures
-from solift.workspace import Workspace
+from solift.workspace import Project, Workspace
 
 
 def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_path):
@@ -507,3 +507,99 @@ def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
+
+
+OLD_SOLC = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.10;
+
+contract Old {
+    uint256 internal total;
+
+    function set(uint256 _total) external {
+        total = _total;
+    }
+
+    function share(uint256 _a, uint256 _b) external view returns (uint256) {
+        return (total + _a - _b) / 4;
+    }
+}
+"""
+
+OLD_SOLC_SETUP = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.10;
+
+import {Test} from "forge-std/Test.sol";
+import {Old} from "src/Old.sol";
+
+contract OldSetup is Test {
+    Old internal old;
+
+    function setUp() public {
+        old = new Old();
+    }
+}
+"""
+
+
+# The part of forge-std's Test that the generated tests use, for solc below 0.8.13, which forge-std no longer takes.
+OLD_TEST = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.8.0;
+
+interface Vm {
+    function assume(bool) external;
+}
+
+abstract contract Test {
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    function assertEq(bool _a, bool _b, string memory _message) internal pure {
+        require(_a == _b, _message);
+    }
+
+    function assertEq(bytes memory _a, bytes memory _b, string memory _message) internal pure {
+        require(keccak256(_a) == keccak256(_b), _message);
+    }
+}
+"""
+
+
+def old_solc_project(tmp_path, solc: str, contract: str = OLD_SOLC):
+    """A project that pins `solc`, with a Test of its own in place of forge-std."""
+    root = tmp_path / f"solc-{solc}"
+    (root / "src").mkdir(parents=True)
+    (root / "lib" / "forge-std" / "src").mkdir(parents=True)
+    (root / "lib" / "forge-std" / "src" / "Test.sol").write_text(OLD_TEST)
+    (root / "foundry.toml").write_text(
+        f'[profile.default]\nsrc = "src"\nlibs = ["lib"]\nsolc = "{solc}"\n'
+        'remappings = ["forge-std/=lib/forge-std/src/"]\n'
+    )
+    (root / "src" / "Old.sol").write_text(contract)
+    (tmp_path / "OldSetup.sol").write_text(OLD_SOLC_SETUP)
+    return root
+
+
+def test_a_project_on_solc_0_8_10_links_with_its_operator_rows_and_vectors(tmp_path):
+    """solc 0.8.10 has no abi.encodeCall, which the link, the operator rows and the vectors call the code with from
+    0.8.11 on."""
+    root = old_solc_project(tmp_path, "0.8.10")
+    spec = Spec(
+        name="old-solc",
+        target="src/Old.sol:Old.share",
+        reads={"total": "total"},
+        link=Link(
+            setup=Harness(tmp_path / "OldSetup.sol", "OldSetup"),
+            call="old.share(_a, _b)",
+            adapters={"total": "old.set(total);"},
+        ),
+        project=Project.foundry(root),
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert result["versions"]["solc"].startswith("0.8.10")
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert len(result["link"]) == 4
+    assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
