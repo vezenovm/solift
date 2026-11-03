@@ -211,7 +211,6 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("recursion", {}, r"recursion calls itself"),
         ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
         ("requireCall", {}, r"OutOfScope.sol:88:21: the message of require is not a string literal or an error"),
-        ("structParameterOfACallee", {}, r"the struct parameter _pair of a called function"),
         ("moduloAssignment", {}, r"mod is not in the operator table"),
         ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
         ("enumOrder", {}, r"lt takes unsigned operands, not enum, enum"),
@@ -820,3 +819,36 @@ def test_a_memory_struct_that_an_alias_or_assembly_could_change_unseen_is_refuse
 def test_a_cut_whose_assembly_is_memory_safe_is_taken_beside_a_memory_struct(build):
     model = extract(build, f"{STRUCTS}.safe", {"_safe()": "cut"}).model
     assert [r.source for r in model.reads] == ["_safe()"]
+
+
+CONFIG = {"config.start": "start", "config.end": "end"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("openedBuilt", {}, {"_s": 3, "_t": 10}, 7),
+        ("openedParameter", {"_w.start": "start", "_w.end": "end"}, {"start": 3, "end": 9, "_t": 2}, 0),
+        ("openedConfig", CONFIG, {"start": 3, "end": 9, "_t": 5}, 2),
+        ("openedCopy", CONFIG, {"start": 3, "end": 9, "_t": 5}, 11),
+        ("openedConstructed", {}, {"_s": 4, "_t": 9}, 5),
+    ],
+)
+def test_a_struct_passed_to_a_callee_is_a_value_for_each_field(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+    (opened,) = model.callees
+    assert [p.name for p in opened.params] == ["_w_start", "_w_end", "_t"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("openedParameter", {"_w.start": "start"}, r"reads a field of the struct parameter _w.end, which the read map"),
+        ("writesParameter", {}, r"a write to the memory struct _w: memory structs alias"),
+        ("quotedParameterTwice", {"feed.quote(_w.end)": "quote"}, r"_quotedParameter runs 2 times in the call"),
+    ],
+)
+def test_a_struct_parameter_of_a_callee_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)

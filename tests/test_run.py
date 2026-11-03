@@ -543,3 +543,38 @@ def test_memory_structs_that_the_function_builds_link_to_their_models(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_structs_passed_to_callees_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    config = {"config.start": "start", "config.end": "end"}
+    set_config = {("start", "end"): "structs.setConfig(start, end);"}
+    window = ('import {Window} from "tests/fixtures/contracts/Structs.sol";',)
+    cases = [
+        ("openedBuilt", "_s, _t", {}, {}, ()),
+        (
+            "openedParameter",
+            "_w, _t",
+            {"_w.start": "start", "_w.end": "end"},
+            {("start", "end"): "Window memory _w = Window(start, end);"},
+            window,
+        ),
+        ("openedConfig", "_t", config, set_config, ()),
+        ("openedCopy", "_t", config, set_config, ()),
+        ("openedConstructed", "_s, _t", {}, {}, ()),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters, imports=imports),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters, imports in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

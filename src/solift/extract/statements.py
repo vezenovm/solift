@@ -6,7 +6,7 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct
+from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct, memory_struct
 from solift.ir import (
     BOOL,
     Assign,
@@ -74,9 +74,11 @@ class Statements:
             if _storage_struct(p):
                 scope[p["id"]] = ("pointer", p["name"], None, (p["id"],)) if top else ("pointer", *bindings[p["id"]])
                 continue
-            if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
+            if memory_struct(p):
                 if not top:
-                    self.fail(p, f"the struct parameter {p['name']} of a called function")
+                    # A callee takes a field for each parameter: its caller passes the struct's values (structs.py).
+                    params += self._struct_parameter(p, scope)
+                    continue
                 scope[p["id"]] = ("param", p["name"], (p["id"],))
                 continue
             if top and (self._user_value_type(p) or _SIGNED.fullmatch(p["typeDescriptions"]["typeString"])):

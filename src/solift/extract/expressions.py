@@ -6,7 +6,16 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, EXTERNAL, _normal, _storage_struct, _super, _this, _through_contract
+from solift.extract.common import (
+    _STORAGE,
+    EXTERNAL,
+    _normal,
+    _storage_struct,
+    _super,
+    _this,
+    _through_contract,
+    memory_struct,
+)
 from solift.extract.errors import Missing
 from solift.extract.reads import MARKERS, _assigned
 from solift.ir import ADDRESS, BOOL, LITERAL, Call, Const, Expr, Function, Tuple, Type, Var, uint
@@ -200,13 +209,20 @@ class Expressions:
                 if path is None:
                     self.fail(arg, f"the storage argument {self.text(arg)}: {_STORAGE}")
                 bindings[param["id"]] = (*path, self._identity(arg, scope))
-        pairs = zip(decl["parameters"]["parameters"], arguments, strict=True)
-        arguments = [arg for param, arg in pairs if param["id"] not in bindings]
+        pairs = list(zip(decl["parameters"]["parameters"], arguments, strict=True))
         written, value = set(self.written), self.statement_value
         function = self._callee(decl, node, bindings)
-        # The arguments run before the call, so they see the writes made before it only.
+        # The arguments run before the call, so they see the writes made before it only. A memory struct argument is
+        # its fields, as the callee takes them (structs.py).
         self.written = set(written)
-        args = tuple(self._expr(arg, scope) for arg in arguments)
+        args, arguments = [], []
+        for param, arg in pairs:
+            if param["id"] in bindings:
+                continue
+            values = self._struct_values(arg, scope) if memory_struct(param) else [self._expr(arg, scope)]
+            args += values
+            arguments += [arg] * len(values)
+        args = tuple(args)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
         stale = sorted(self.nodes[r]["name"] for r in reads - MARKERS if r in written or EXTERNAL in written)
         if "balance" in reads and EXTERNAL in written:

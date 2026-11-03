@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import re
 
-from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped
+from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped, memory_safe
 from solift.extract.errors import Missing
-from solift.extract.structs import memory_safe
 from solift.ir import Read, Var
 
 # A type that holds a function pointer, as `function () view returns (uint256)` or a mapping or array of one.

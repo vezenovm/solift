@@ -18,16 +18,17 @@ from __future__ import annotations
 
 import re
 
-from solift.ir import BOOL, Const, Let, Stmt, Type, Var
+from solift.extract.common import _normal
+from solift.extract.errors import Missing
+from solift.extract.reads import _LOCALS
+from solift.ir import BOOL, Const, Expr, Let, Read, Stmt, Type, Var
 
 _STRUCT = re.compile(r"t_struct\$_\w+_\$(\d+)")
 
-
-def memory_safe(assembly) -> bool:
-    """Whether an inline assembly block is marked memory-safe, by its flag or by the older comment."""
-    flags = assembly.get("flags") or ()
-    documentation = assembly.get("documentation") or ""
-    return "memory-safe" in flags or re.search(r"@solidity\s+memory-safe-assembly\b", documentation) is not None
+_ARGUMENTS = (
+    "a memory struct argument must be a struct that the function builds or aliases, a memory copy or a field of "
+    "storage, a struct parameter, or a constructor"
+)
 
 
 def _zero(type_: Type) -> Const:
@@ -129,6 +130,66 @@ class Structs:
                 f"the local {name} for a field of a memory struct has the name of a function, which the model calls",
             )
         return Var(name, type_, src=self.src(node))
+
+    def _struct_parameter(self, param, scope: dict) -> list[Var]:
+        """The parameters of a callee for a memory struct parameter, one for each field (`_w_start`, `_w_end`). The
+        struct is a flattened one in the callee, so a write to its fields is refused there."""
+        definition = self._struct_definition(param)
+        locals_ = {}
+        for field, type_ in self._struct_fields(definition, param):
+            locals_[field] = self._generated(f"{param['name']}_{field}", type_, param, scope)
+        scope[param["id"]] = ("struct", param["id"], definition["id"], locals_)
+        self.flattened += 1
+        return list(locals_.values())
+
+    def _struct_values(self, node, scope: dict) -> list[Expr]:
+        """The value of each field of a memory struct argument, in the order of the struct's members: the locals of a
+        flattened struct, the reads of a memory copy of storage, of a storage struct (which the call copies), of a
+        storage pointer or of a struct parameter of the modeled function, or the values that a constructor gives."""
+        definition = self._struct_definition(node)
+        fields = self._struct_fields(definition, node)
+        if node["nodeType"] == "FunctionCall" and node["kind"] == "structConstructorCall":
+            return self._constructed(node, definition, fields, scope)
+        entry = scope.get(node.get("referencedDeclaration")) if node["nodeType"] == "Identifier" else None
+        if isinstance(entry, tuple) and entry[0] == "struct":
+            return [entry[3][field] for field, _ in fields]
+        if not (isinstance(entry, tuple) and entry[0] in ("copy", "param", "pointer")):
+            path = self._storage_path(node, scope)
+            if path is None:
+                self.fail(node, f"the memory struct argument {self.text(node)}: {_ARGUMENTS}")
+            self._storage_read(path[1], node)
+            # The call copies the storage struct, as a declaration of a memory copy does.
+            entry = ("copy", *path, self._identity(node, scope), None)
+        members = {m["name"]: m for m in definition["members"]}
+        return [self._field_read(entry, members[field], node, scope) for field, _ in fields]
+
+    def _field_read(self, entry, member, node, scope: dict) -> Var:
+        """The input of a field of a memory copy, a storage pointer or a struct parameter of the modeled function, as a
+        read of `w.field` there gives it, for a struct passed whole to a callee: the same key, and the same identity
+        (reads._identity of the field's member access)."""
+        key = f"{entry[1]}.{member['name']}"
+        if entry[0] == "param":
+            what, root = "a field of the struct parameter", entry[2]
+        else:
+            what, root = "a storage field", entry[3]
+        if entry[0] == "pointer" and entry[2] is None:
+            what = "a field of the storage parameter"
+        mapped = self.read_map.get(_normal(key))
+        if mapped is None:
+            self.fail(node, f"reads {what} {key}, which the read map does not name", Missing(key, what, self.src(node)))
+        identity = (("member", member["name"], member["id"]), *root)
+        if self.key_identities.setdefault(_normal(key), identity) != identity:
+            self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
+        if entry[0] != "copy" and (_normal(key), None) in self.outputs and not self.stack:
+            return self.outputs[(_normal(key), None)].var
+        if entry[0] == "copy" and entry[4] in self.written_copies:
+            self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
+        if entry[0] == "pointer":
+            self._storage_read(entry[2], node)
+        if _normal(key) not in self.reads:
+            var = Var(mapped[1], self._type(member), input=True, src=self.src(node))
+            self.reads[_normal(key)] = Read(var, mapped[0])
+        return self.reads[_normal(key)].var
 
     def _struct_field(self, node, entry) -> Var:
         """The local of a field of a flattened struct, as `w.end`."""

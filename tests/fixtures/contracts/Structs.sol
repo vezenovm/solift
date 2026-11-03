@@ -19,9 +19,17 @@ interface IFeed {
     function quote(uint256 n) external view returns (uint256);
 }
 
+library Windows {
+    function opened(Window memory _w, uint256 _t) internal pure returns (uint256) {
+        return _t < _w.start ? 0 : _t - _w.start;
+    }
+}
+
 // Memory structs that the function builds, and their aliases, as one local for each field; and the cases that the
 // extractor refuses, as the model could miss a write that an alias or assembly makes.
 contract Structs {
+    using Windows for Window;
+
     IFeed internal feed;
     Window internal config;
 
@@ -160,6 +168,52 @@ contract Structs {
         Window memory w = Window(_x, _x);
         uint256 ignored = _smash();
         return w.end + ignored;
+    }
+
+    // A struct passed whole to a callee, which takes a parameter for each field: a struct that the function builds,
+    // through `using`; a parameter of the target; a storage struct, which the call copies; a memory copy; a constructor.
+    function openedBuilt(uint256 _s, uint256 _t) external pure returns (uint256) {
+        Window memory w = Window(_s, _s + 10);
+        return w.opened(_t);
+    }
+
+    function openedParameter(Window memory _w, uint256 _t) external pure returns (uint256) {
+        return Windows.opened(_w, _t);
+    }
+
+    function openedConfig(uint256 _t) external view returns (uint256) {
+        return Windows.opened(config, _t);
+    }
+
+    function openedCopy(uint256 _t) external view returns (uint256) {
+        Window memory w = config;
+        return w.opened(_t) + w.end;
+    }
+
+    function openedConstructed(uint256 _s, uint256 _t) external pure returns (uint256) {
+        return Windows.opened(Window(_s, _s), _t);
+    }
+
+    function _writes(Window memory _w) internal pure returns (uint256) {
+        _w.end = 1;
+        return _w.end;
+    }
+
+    // A callee that writes a field of its struct parameter, which the caller's struct would see.
+    function writesParameter(uint256 _a) external pure returns (uint256) {
+        Window memory w = Window(_a, _a);
+        return _writes(w);
+    }
+
+    function _quotedParameter(Window memory _w) internal view returns (uint256) {
+        return feed.quote(_w.end);
+    }
+
+    // _quotedParameter runs twice, and its read map key names a field of its struct parameter.
+    function quotedParameterTwice(uint256 _x) external view returns (uint256) {
+        uint256 a = _quotedParameter(Window(1, 1));
+        uint256 b = _quotedParameter(Window(2, 2));
+        return _x + a - b;
     }
 
     // A cut whose assembly is marked memory-safe.

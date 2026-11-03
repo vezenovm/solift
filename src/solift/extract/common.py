@@ -82,3 +82,15 @@ def _unwrapped(callee):
             callee = callee["components"][0]
         else:
             return callee
+
+
+def memory_struct(decl) -> bool:
+    """Whether a declaration is a memory struct, as `Window memory w`."""
+    return decl["typeDescriptions"]["typeString"].startswith("struct ") and decl.get("storageLocation") == "memory"
+
+
+def memory_safe(assembly) -> bool:
+    """Whether an inline assembly block is marked memory-safe, by its flag or by the older comment."""
+    flags = assembly.get("flags") or ()
+    documentation = assembly.get("documentation") or ""
+    return "memory-safe" in flags or re.search(r"@solidity\s+memory-safe-assembly\b", documentation) is not None
