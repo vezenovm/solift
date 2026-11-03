@@ -158,6 +158,15 @@ PULL = (
 STRUCTS = "tests/fixtures/contracts/Structs.sol"
 ALIASED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.aliased(_a, _b)"))
 OPENED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.openedBuilt(_s, _t)"))
+WINDOW_END = (
+    {"config.start": "start"},
+    None,
+    Link(
+        setup="tests/fixtures/test/StructsSetup.sol:StructsSetup",
+        call="structs.windowEnd(_x)",
+        adapters={"start": "structs.setConfig(start, 0);"},
+    ),
+)
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
 # the contract reverts: a result, each value of several returns, the key of a storage pointer, and outputs: an
 # argument of a call, a written value, and a write at another key.
@@ -171,6 +180,7 @@ CHANGES = {
     "written-key": (f"{EFFECTS}:Effects.pull", PULL, "allowance.last =", "$allowances[address(0)].last ="),
     "struct-field": (f"{STRUCTS}:Structs.aliased", ALIASED, "return v.start + w.end;", "return v.end + w.end;"),
     "struct-argument": (f"{STRUCTS}:Structs.openedBuilt", OPENED, "Window(_s, _s + 10);", "Window(_s + 10, _s);"),
+    "returned-struct": (f"{STRUCTS}:Structs.windowEnd", WINDOW_END, "end: config.start + 10", "end: config.start + 11"),
 }
 
 

@@ -852,3 +852,60 @@ def test_a_struct_passed_to_a_callee_is_a_value_for_each_field(build, function, 
 def test_a_struct_parameter_of_a_callee_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{STRUCTS}.{function}", reads)
+
+
+START = {"config.start": "start"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("fromInternal", START, {"start": 3, "_t": 12}, 0),
+        ("fromInternal", START, {"start": 3, "_t": 13}, 1),
+        ("windowEnd", START, {"start": 3, "_x": 1}, 14),
+        ("owed", CONFIG, {"start": 3, "end": 10, "_t": 5}, 8),
+        ("nestedReturn", START, {"start": 3, "_t": 1}, 14),
+        ("copyReturned", CONFIG, {"start": 3, "end": 9, "_t": 1}, 4),
+    ],
+)
+def test_a_struct_that_an_internal_call_returns_is_its_fields(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_a_field_of_a_constructed_struct_keeps_the_reverts_of_its_other_fields(build):
+    model = extract(build, f"{STRUCTS}.projected", {}).model
+    assert evaluate(model, {"_x": 3, "_y": 1}) == (False, 3, False)
+    assert evaluate(model, {"_x": 3, "_y": 0})[0] is True
+
+
+@pytest.mark.parametrize("x, result", [(0, 0), (4, 5)])
+def test_a_named_struct_return_starts_at_zero(build, x, result):
+    model = extract(build, f"{STRUCTS}.namedWindowEnd", {}).model
+    assert evaluate(model, {"_x": x}) == (False, result, False)
+
+
+def test_a_one_field_struct_is_one_value_and_a_target_returns_a_struct_as_its_fields(build):
+    one = extract(build, f"{STRUCTS}.oneField", {}).model
+    assert evaluate(one, {"_x": 4}) == (False, 5, False)
+    window = extract(build, f"{STRUCTS}.window", {"config.start": "start"}).model
+    assert window.function.returns.solidity == "uint256, uint256"
+
+
+def test_a_struct_valued_call_in_an_expression_is_unpacked_just_before_its_statement(build):
+    model = extract(build, f"{STRUCTS}.windowEnd", {"config.start": "start"}).model
+    first, second = model.function.body
+    assert type(first).__name__ == "Unpack" and [v.name for v in first.vars] == ["window_start", "window_end"]
+    assert type(second).__name__ == "Return"
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("returnsParameter", {}, r"returns its struct parameter _w, or an alias of it"),
+        ("guardedCall", START, r"the struct of window\(\), under &&, \|\| or \?:"),
+    ],
+)
+def test_a_returned_struct_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)

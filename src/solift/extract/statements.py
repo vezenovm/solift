@@ -6,7 +6,7 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct, memory_struct
+from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct, guarded, memory_struct
 from solift.ir import (
     BOOL,
     Assign,
@@ -59,13 +59,21 @@ class Statements:
         returns = node["returnParameters"]["parameters"]
         if not returns and not top:
             self.fail(node["returnParameters"], f"{name} returns no value")
-        # A modeled function without a value has its outputs only, which come after its own values (_with_outputs).
-        return_type = tuple_of(tuple(self._type(r) for r in returns)) if returns else Type("tuple")
+        # A modeled function without a value has its outputs only, which come after its own values (_with_outputs). A
+        # memory struct is the tuple of its fields (structs.py).
+        if any(memory_struct(r) for r in returns):
+            return_type = self._struct_return(node, returns)
+        else:
+            return_type = tuple_of(tuple(self._type(r) for r in returns)) if returns else Type("tuple")
+        self.guarded |= guarded(node["body"])
         for p in (*node["parameters"]["parameters"], *returns):
             self._not_inputs_name(p)
         scope = {}
         results = ()
-        if any(r["name"] for r in returns):
+        if returns and memory_struct(returns[0]) and returns[0]["name"]:
+            results = self._named_struct_return(returns[0], scope)
+            scope["return"] = results
+        elif any(r["name"] for r in returns):
             results = tuple(Var(r["name"], self._type(r), src=self.src(r)) if r["name"] else None for r in returns)
             scope.update({r["id"]: v for r, v in zip(returns, results, strict=True) if v is not None})
             scope["return"] = results
@@ -103,50 +111,62 @@ class Statements:
         scope = dict(scope)
         out = []
         for node in statements:
-            kind = node["nodeType"]
-            if kind == "VariableDeclarationStatement":
-                stmt = self._declaration(node, scope)
-                if isinstance(stmt, tuple):
-                    out += stmt
-                elif stmt is not None:
-                    out.append(stmt)
-            elif kind == "IfStatement":
-                cond = self._expr(node["condition"], scope)
-                if cond.type != BOOL:
-                    self.fail(node["condition"], "the condition is not a bool")
-                then = self._block(_statements(node["trueBody"]), scope, return_type)
-                orelse = ()
-                if node.get("falseBody") is not None:
-                    orelse = self._block(_statements(node["falseBody"]), scope, return_type)
-                out.append(If(cond, then, orelse, self.src(node)))
-            elif kind == "Return":
-                if node.get("expression") is None and not parts(return_type):
-                    out.append(Return(Tuple((), return_type), self.src(node)))
-                    continue
-                if node.get("expression") is None:
-                    if "return" not in scope:
-                        self.fail(node, "a return without a value")
-                    out.append(Return(self._named_results(scope["return"], return_type), self.src(node)))
-                    continue
-                self.statement_value = node["expression"]["id"]
-                value = self._expr(node["expression"], scope)
-                self._assignable(node["expression"], value.type, return_type)
-                out.append(Return(value, self.src(node)))
-            elif kind == "ExpressionStatement":
-                stmt = self._expression_statement(node["expression"], scope)
-                if isinstance(stmt, tuple):
-                    out += stmt
-                elif stmt is not None:
-                    out.append(stmt)
-            elif kind == "RevertStatement":
-                out.append(Revert(self.src(node)))
-            elif kind == "EmitStatement":
-                for arg in node["eventCall"]["arguments"]:
-                    self._cannot_revert(arg, scope)
-                self._effect(node, "event", self._event(node["eventCall"]))
-            else:
-                self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
+            # A struct-valued call inside the statement is unpacked into temporaries just before it (structs.py).
+            saved, self.hoisted = self.hoisted, []
+            mark = len(out)
+            self._statement(node, scope, return_type, out)
+            out[mark:mark] = self.hoisted
+            self.hoisted = saved
         return tuple(out)
+
+    def _statement(self, node, scope: dict, return_type: Type, out: list) -> None:
+        """Appends the IR of one statement to `out`."""
+        kind = node["nodeType"]
+        if kind == "VariableDeclarationStatement":
+            stmt = self._declaration(node, scope)
+            if isinstance(stmt, tuple):
+                out += stmt
+            elif stmt is not None:
+                out.append(stmt)
+        elif kind == "IfStatement":
+            cond = self._expr(node["condition"], scope)
+            if cond.type != BOOL:
+                self.fail(node["condition"], "the condition is not a bool")
+            then = self._block(_statements(node["trueBody"]), scope, return_type)
+            orelse = ()
+            if node.get("falseBody") is not None:
+                orelse = self._block(_statements(node["falseBody"]), scope, return_type)
+            out.append(If(cond, then, orelse, self.src(node)))
+        elif kind == "Return":
+            if node.get("expression") is None and not parts(return_type):
+                out.append(Return(Tuple((), return_type), self.src(node)))
+                return
+            if node.get("expression") is None:
+                if "return" not in scope:
+                    self.fail(node, "a return without a value")
+                out.append(Return(self._named_results(scope["return"], return_type), self.src(node)))
+                return
+            self.statement_value = node["expression"]["id"]
+            if memory_struct(node["expression"]):
+                value = self._returned_struct(node["expression"], scope, return_type)
+            else:
+                value = self._expr(node["expression"], scope)
+            self._assignable(node["expression"], value.type, return_type)
+            out.append(Return(value, self.src(node)))
+        elif kind == "ExpressionStatement":
+            stmt = self._expression_statement(node["expression"], scope)
+            if isinstance(stmt, tuple):
+                out += stmt
+            elif stmt is not None:
+                out.append(stmt)
+        elif kind == "RevertStatement":
+            out.append(Revert(self.src(node)))
+        elif kind == "EmitStatement":
+            for arg in node["eventCall"]["arguments"]:
+                self._cannot_revert(arg, scope)
+            self._effect(node, "event", self._event(node["eventCall"]))
+        else:
+            self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
 
     def _named_results(self, results: tuple, return_type: Type) -> Expr:
         """The value of a bare `return;`: the named return variables, and zero for a value without a name."""
@@ -167,6 +187,7 @@ class Statements:
             path = self._storage_path(init, scope) if init is not None else None
             if path is None:
                 self._not_inputs_name(decl)
+                self.statement_value = init["id"] if init is not None else None
                 return self._struct_declaration(decl, init, scope)
             self._storage_read(path[1], init)
             # The copy is new memory: its object is this declaration, which its aliases share.

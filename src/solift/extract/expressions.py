@@ -73,6 +73,16 @@ class Expressions:
             if isinstance(target, tuple):
                 self.fail(node, f"the struct {node['name']} is used other than by field")
             return self._named(node)
+        if (
+            kind == "MemberAccess"
+            and node["expression"]["nodeType"] == "FunctionCall"
+            and memory_struct(node["expression"])
+        ):
+            # A field of the struct that an internal call returns or a constructor builds, as `window().end`: every
+            # field is computed, as each can revert, into temporaries before the statement (structs.py).
+            fields = self._struct_fields(self._struct_definition(node["expression"]), node)
+            values = self._hoisted(node["expression"], fields, scope)
+            return values[[f for f, _ in fields].index(node["memberName"])]
         if kind in ("MemberAccess", "IndexAccess"):
             self._unmapped_storage(node)
         if kind == "MemberAccess":

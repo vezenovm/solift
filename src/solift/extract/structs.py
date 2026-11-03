@@ -21,7 +21,7 @@ import re
 from solift.extract.common import _normal
 from solift.extract.errors import Missing
 from solift.extract.reads import _LOCALS
-from solift.ir import BOOL, Const, Expr, Let, Read, Stmt, Type, Var
+from solift.ir import BOOL, Const, Expr, Let, Read, Stmt, Tuple, Type, Unpack, Var, tuple_of
 
 _STRUCT = re.compile(r"t_struct\$_\w+_\$(\d+)")
 
@@ -78,6 +78,14 @@ class Structs:
                 return ()
         definition = self._struct_definition(decl)
         fields = self._struct_fields(definition, decl)
+        if init is not None and init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall":
+            # A struct that an internal call returns: the callee returns its fields, which unpack into the locals.
+            call = self._expr(init, scope)
+            self._parts_of(init, call, len(fields))
+            locals_ = {f: self._generated(f"{name}_{f}", t, decl, scope) for f, t in fields}
+            scope[decl["id"]] = ("struct", decl["id"], definition["id"], locals_)
+            self.flattened += 1
+            return (self._unpacked(tuple(locals_.values()), call, init),)
         if init is None:
             values = [_zero(t) for _, t in fields]
         elif init["nodeType"] == "FunctionCall" and init["kind"] == "structConstructorCall":
@@ -131,6 +139,85 @@ class Structs:
             )
         return Var(name, type_, src=self.src(node))
 
+    def _struct_return(self, node, returns) -> Type:
+        """The return type of a function that returns a memory struct: the tuple of its fields, or the one field's type.
+        The struct must be the function's only value."""
+        if len(returns) != 1:
+            self.fail(node["returnParameters"], f"{node['name']} returns a memory struct among several values")
+        fields = self._struct_fields(self._struct_definition(returns[0]), returns[0])
+        return tuple_of(tuple(t for _, t in fields))
+
+    def _named_struct_return(self, returned, scope: dict) -> tuple[Var, ...]:
+        """The named results of a function whose named return is a memory struct: a local for each field, which starts
+        at zero, as the new struct does, and which nothing writes."""
+        definition = self._struct_definition(returned)
+        fields = self._struct_fields(definition, returned)
+        locals_ = {f: self._generated(f"{returned['name']}_{f}", t, returned, scope) for f, t in fields}
+        scope[returned["id"]] = ("struct", returned["id"], definition["id"], locals_)
+        self.flattened += 1
+        return tuple(locals_.values())
+
+    def _returned_struct(self, node, scope: dict, return_type: Type) -> Expr:
+        """The value of `return <struct>`: the tuple of its fields. A callee must return new memory: a struct that it
+        builds, a copy of storage or what an internal call returns. Its struct parameter, or an alias of it, is refused,
+        as the caller would have two structs that are one memory."""
+        if node["nodeType"] == "FunctionCall" and node["kind"] == "functionCall":
+            return self._expr(node, scope)
+        entry = scope.get(node.get("referencedDeclaration")) if node["nodeType"] == "Identifier" else None
+        if self.stack and isinstance(entry, tuple) and entry[0] == "struct" and entry[1] in self.parameter_objects:
+            self.fail(
+                node,
+                f"returns its struct parameter {self.text(node)}, or an alias of it: the caller's struct and the "
+                "returned one would be one memory, which the model has as two",
+            )
+        values = self._struct_values(node, scope)
+        return (
+            values[0] if len(values) == 1 else Tuple(tuple(values), Type("tuple", parts=tuple(v.type for v in values)))
+        )
+
+    def _hoisted(self, node, fields, scope: dict) -> list[Expr]:
+        """The fields of the struct that an internal call inside an expression returns, as `window().end`, or that a
+        constructor there builds: the call unpacks, or the constructor's values go, into temporaries just before the
+        statement (Statements._block), so that each field is computed, as each can revert. Under `&&`, `||` or `?:`, the
+        temporaries would run where the struct is not built, so that is refused."""
+        if node["id"] in self.guarded:
+            self.fail(
+                node,
+                f"the struct of {self.text(node)}, under &&, || or ?:: its fields would be computed where it does not "
+                "run",
+            )
+        if node["kind"] == "structConstructorCall":
+            definition = self._struct_definition(node)
+            values = self._constructed(node, definition, fields, scope)
+            callee = definition["name"]
+        else:
+            call = self._expr(node, scope)
+            self._parts_of(node, call, len(fields))
+            callee = node["expression"].get("name") or node["expression"].get("memberName")
+        temporaries = []
+        for field, type_ in fields:
+            name, n = f"{callee}_{field}", 1
+            while name in self.temporaries:
+                n += 1
+                name = f"{callee}_{field}_{n}"
+            self.temporaries.add(name)
+            temporaries.append(self._generated(name, type_, node, scope))
+        if node["kind"] == "structConstructorCall":
+            self.hoisted += [Let(t, v, self.src(node)) for t, v in zip(temporaries, values, strict=True)]
+        else:
+            self.hoisted.append(self._unpacked(tuple(temporaries), call, node))
+        return temporaries
+
+    def _parts_of(self, node, call: Expr, count: int) -> None:
+        if len(call.type.parts if call.type.kind == "tuple" else (call.type,)) != count:
+            self.fail(node, f"{self.text(node)} does not return the {count} fields of its struct")
+
+    def _unpacked(self, vars_: tuple[Var, ...], call: Expr, node) -> Stmt:
+        """The statement that declares `vars_` as the fields that `call` returns: a `Let` for a one-field struct."""
+        if len(vars_) == 1:
+            return Let(vars_[0], call, self.src(node))
+        return Unpack(vars_, call, True, self.src(node))
+
     def _struct_parameter(self, param, scope: dict) -> list[Var]:
         """The parameters of a callee for a memory struct parameter, one for each field (`_w_start`, `_w_end`). The
         struct is a flattened one in the callee, so a write to its fields is refused there."""
@@ -139,6 +226,7 @@ class Structs:
         for field, type_ in self._struct_fields(definition, param):
             locals_[field] = self._generated(f"{param['name']}_{field}", type_, param, scope)
         scope[param["id"]] = ("struct", param["id"], definition["id"], locals_)
+        self.parameter_objects.add(param["id"])
         self.flattened += 1
         return list(locals_.values())
 
@@ -150,6 +238,8 @@ class Structs:
         fields = self._struct_fields(definition, node)
         if node["nodeType"] == "FunctionCall" and node["kind"] == "structConstructorCall":
             return self._constructed(node, definition, fields, scope)
+        if node["nodeType"] == "FunctionCall" and node["kind"] == "functionCall":
+            return self._hoisted(node, fields, scope)
         entry = scope.get(node.get("referencedDeclaration")) if node["nodeType"] == "Identifier" else None
         if isinstance(entry, tuple) and entry[0] == "struct":
             return [entry[3][field] for field, _ in fields]

@@ -578,3 +578,44 @@ def test_structs_passed_to_callees_link_to_their_models(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_structs_that_internal_calls_return_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    start = {"config.start": "start"}
+    config = {"config.start": "start", "config.end": "end"}
+    set_start = {"start": "structs.setConfig(start, 0);"}
+    set_config = {("start", "end"): "structs.setConfig(start, end);"}
+    cases = [
+        ("fromInternal", "_t", start, set_start),
+        ("windowEnd", "_x", start, set_start),
+        ("owed", "_t", config, set_config),
+        ("nestedReturn", "_t", start, set_start),
+        ("copyReturned", "_t", config, set_config),
+        ("oneField", "_x", {}, {}),
+        ("namedWindowEnd", "_x", {}, {}),
+        ("projected", "_x, _y", {}, {}),
+        ("namedWindow", "_x", {}, {}),
+        ("window", "", start, set_start),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+
+    @specs[-1].theorem(witness=lambda q: q.result[0] > 0)
+    def the_window_is_ten_long(q):
+        """the window that window() returns ends ten after its start, where it does not revert"""
+        return z3.Implies(z3.Not(q.reverts), q.result[1] == q.result[0] + 10)
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

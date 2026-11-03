@@ -84,9 +84,28 @@ def _unwrapped(callee):
             return callee
 
 
-def memory_struct(decl) -> bool:
-    """Whether a declaration is a memory struct, as `Window memory w`."""
-    return decl["typeDescriptions"]["typeString"].startswith("struct ") and decl.get("storageLocation") == "memory"
+def memory_struct(node) -> bool:
+    """Whether a declaration or an expression is a memory struct, as `Window memory w` or `window()`."""
+    type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+    # A declaration has its location apart (`struct Window`, `memory`), an expression in its type
+    # (`struct Window memory`).
+    return type_string.startswith("struct ") and (
+        node.get("storageLocation") == "memory" or type_string.endswith(" memory")
+    )
+
+
+def guarded(node) -> set[int]:
+    """The nodes in `node` that run only on some paths of their expression: the right operand of `&&` and `||`, and the
+    branches of `?:`."""
+    found = set()
+    for n in _subtree(node):
+        if n.get("nodeType") == "BinaryOperation" and n["operator"] in ("&&", "||"):
+            found |= {m["id"] for m in _subtree(n["rightExpression"])}
+        elif n.get("nodeType") == "Conditional":
+            found |= {m["id"] for m in _subtree(n["trueExpression"])} | {
+                m["id"] for m in _subtree(n["falseExpression"])
+            }
+    return found
 
 
 def memory_safe(assembly) -> bool:

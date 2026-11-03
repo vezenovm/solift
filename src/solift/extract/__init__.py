@@ -20,8 +20,9 @@ local at each read, and belongs to the modeled function or to a callee that runs
 reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 
 A memory struct that the function builds, by a constructor or zero, is a local of the model for each field (`w_start`
-for `w.start`), shared by its aliases, and a callee takes a parameter for each field of a struct parameter (structs.py).
-Its fields are never written after it is built.
+for `w.start`), shared by its aliases. A callee takes a parameter for each field of a struct parameter, and returns
+the fields of a struct that it returns, which a call inside an expression unpacks into temporaries just before its
+statement (structs.py). The fields are never written after the struct is built.
 
 Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
 the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.

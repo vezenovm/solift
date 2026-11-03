@@ -11,6 +11,10 @@ struct Owner {
     bool flag;
 }
 
+struct One {
+    uint256 v;
+}
+
 struct Nested {
     Window window;
 }
@@ -214,6 +218,84 @@ contract Structs {
         uint256 a = _quotedParameter(Window(1, 1));
         uint256 b = _quotedParameter(Window(2, 2));
         return _x + a - b;
+    }
+
+    // Structs that internal calls return: as a declaration, a field of the call, a bound value, through another
+    // callee, a copy of storage, a one-field struct, and the target itself.
+    function window() public view returns (Window memory) {
+        return Window({start: config.start, end: config.start + 10});
+    }
+
+    function fromInternal(uint256 _t) external view returns (uint256) {
+        Window memory w = window();
+        return _t < w.end ? 0 : 1;
+    }
+
+    function windowEnd(uint256 _x) external view returns (uint256) {
+        return window().end + _x;
+    }
+
+    function owed(uint256 _t) external view returns (uint256) {
+        return config.end - window().opened(_t);
+    }
+
+    function _nestedWindow() internal view returns (Window memory) {
+        return window();
+    }
+
+    function nestedReturn(uint256 _t) external view returns (uint256) {
+        return _nestedWindow().end + _t;
+    }
+
+    function _copyReturn() internal view returns (Window memory) {
+        Window memory w = config;
+        return w;
+    }
+
+    function copyReturned(uint256 _t) external view returns (uint256) {
+        return _copyReturn().start + _t;
+    }
+
+    function _one(uint256 _x) internal pure returns (One memory) {
+        return One(_x + 1);
+    }
+
+    function oneField(uint256 _x) external pure returns (uint256) {
+        One memory o = _one(_x);
+        return o.v;
+    }
+
+    function _id(Window memory _w) internal pure returns (Window memory) {
+        return _w;
+    }
+
+    // A callee that returns its struct parameter: the two names are one memory.
+    function returnsParameter(uint256 _a) external pure returns (uint256) {
+        Window memory w = Window(_a, _a);
+        Window memory v = _id(w);
+        return v.end;
+    }
+
+    // A field of a constructor's struct, whose other field can revert.
+    function projected(uint256 _x, uint256 _y) external pure returns (uint256) {
+        return Window(_x, 1 / _y).start;
+    }
+
+    // A named struct return, which starts at zero.
+    function namedWindow(uint256 _x) public pure returns (Window memory result) {
+        if (_x == 0) {
+            return result;
+        }
+        return Window(_x, _x + 1);
+    }
+
+    function namedWindowEnd(uint256 _x) external pure returns (uint256) {
+        return namedWindow(_x).end;
+    }
+
+    // A struct-valued call that runs on one branch of ?:.
+    function guardedCall(bool _c) external view returns (uint256) {
+        return _c ? window().end : 0;
     }
 
     // A cut whose assembly is marked memory-safe.
