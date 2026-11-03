@@ -73,10 +73,16 @@ class Structs:
         name = decl["name"]
         if init is not None and init["nodeType"] == "Identifier":
             entry = scope.get(init.get("referencedDeclaration"))
-            if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param"):
+            if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param", "returned"):
                 scope[decl["id"]] = entry
                 return ()
         definition = self._struct_definition(decl)
+        if init is not None and init["nodeType"] == "FunctionCall" and self._external(init):
+            # A struct from an external view call: each field that the function reads is a read map key,
+            # `PARAMS.window().end`, of the call as it runs here.
+            prefix = self._external_parts(init, scope)
+            scope[decl["id"]] = ("returned", prefix, self._identity(init, scope), definition["id"])
+            return ()
         fields = self._struct_fields(definition, decl)
         if init is not None and init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall":
             # A struct that an internal call returns: the callee returns its fields, which unpack into the locals.
@@ -243,6 +249,9 @@ class Structs:
         entry = scope.get(node.get("referencedDeclaration")) if node["nodeType"] == "Identifier" else None
         if isinstance(entry, tuple) and entry[0] == "struct":
             return [entry[3][field] for field, _ in fields]
+        if isinstance(entry, tuple) and entry[0] == "returned":
+            members = {m["name"]: m for m in definition["members"]}
+            return [self._returned_field(entry, members[field], node) for field, _ in fields]
         if not (isinstance(entry, tuple) and entry[0] in ("copy", "param", "pointer")):
             path = self._storage_path(node, scope)
             if path is None:
@@ -280,6 +289,55 @@ class Structs:
             var = Var(mapped[1], self._type(member), input=True, src=self.src(node))
             self.reads[_normal(key)] = Read(var, mapped[0])
         return self.reads[_normal(key)].var
+
+    def _external_parts(self, call, scope: dict) -> str:
+        """Checks an external view call whose values the function reads one by one, a struct's fields or a tuple's
+        values, where the call runs: it keeps the rules of a read map call (_fallback_read) and of a key (_stable). The
+        key of each value is the call's text, without whitespace, and the value's place in it."""
+        prefix = _normal(self.text(call))
+        self._stable(prefix, call, scope)
+        self._fallback_read(call, scope)
+        return prefix
+
+    def _part(self, prefix: str, place: str, step: tuple, type_: Type, node, identity: tuple) -> Var:
+        """The input of one value of an external call: the field `.end` or the value `[3]` of the call `prefix`."""
+        key = prefix + place
+        mapped = self.read_map.get(_normal(key))
+        if mapped is None:
+            what = "a value of an external call"
+            self.fail(node, f"reads {what} {key}, which the read map does not name", Missing(key, what, self.src(node)))
+        whole = (step, *identity)
+        if self.key_identities.setdefault(_normal(key), whole) != whole:
+            self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
+        if _normal(key) not in self.reads:
+            self.reads[_normal(key)] = Read(Var(mapped[1], type_, input=True, src=self.src(node)), mapped[0])
+        return self.reads[_normal(key)].var
+
+    def _returned_field(self, entry, member, node) -> Var:
+        """A field of a struct from an external call, as `w.end` for `PARAMS.window()`: the key
+        `PARAMS.window().end`, with the identity that a read of `PARAMS.window().end` in an expression has."""
+        step = ("member", member["name"], member["id"])
+        return self._part(entry[1], f".{member['name']}", step, self._type(member), node, entry[2])
+
+    def _external_unpack(self, node, scope: dict) -> tuple[Stmt, ...]:
+        """A tuple declaration from an external view call, as `(,,, uint256 at,) = FEED.latestRoundData();`: each value
+        that it declares is the read map key `FEED.latestRoundData()[3]`."""
+        init = node["initialValue"]
+        prefix = self._external_parts(init, scope)
+        identity = self._identity(init, scope)
+        returns = self.nodes[init["expression"]["referencedDeclaration"]]["returnParameters"]["parameters"]
+        if len(returns) != len(node["declarations"]):
+            self.fail(node, f"{self.text(init)} is not a tuple of {len(node['declarations'])} values")
+        stmts = []
+        for n, (decl, returned) in enumerate(zip(node["declarations"], returns, strict=True)):
+            if decl is None:
+                continue
+            var = self._local(decl, scope)
+            value = self._part(prefix, f"[{n}]", ("part", n), self._type(returned), init, identity)
+            self._assignable(init, value.type, var.type)
+            scope[decl["id"]] = var
+            stmts.append(Let(var, value, self.src(node)))
+        return tuple(stmts)
 
     def _struct_field(self, node, entry) -> Var:
         """The local of a field of a flattened struct, as `w.end`."""

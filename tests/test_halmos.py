@@ -158,6 +158,15 @@ PULL = (
 STRUCTS = "tests/fixtures/contracts/Structs.sol"
 ALIASED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.aliased(_a, _b)"))
 OPENED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.openedBuilt(_s, _t)"))
+FROM_EXTERNAL = (
+    {"params.window().end": "end"},
+    None,
+    Link(
+        setup="tests/fixtures/test/StructsSetup.sol:StructsSetup",
+        call="structs.fromExternal(_t)",
+        adapters={"end": "params.set(0, end);"},
+    ),
+)
 WINDOW_END = (
     {"config.start": "start"},
     None,
@@ -181,6 +190,12 @@ CHANGES = {
     "struct-field": (f"{STRUCTS}:Structs.aliased", ALIASED, "return v.start + w.end;", "return v.end + w.end;"),
     "struct-argument": (f"{STRUCTS}:Structs.openedBuilt", OPENED, "Window(_s, _s + 10);", "Window(_s + 10, _s);"),
     "returned-struct": (f"{STRUCTS}:Structs.windowEnd", WINDOW_END, "end: config.start + 10", "end: config.start + 11"),
+    "external-field": (
+        f"{STRUCTS}:Structs.fromExternal",
+        FROM_EXTERNAL,
+        "_t < w.end ? 0 : 2;",
+        "_t < w.start ? 0 : 2;",
+    ),
 }
 
 

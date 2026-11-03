@@ -909,3 +909,37 @@ def test_a_struct_valued_call_in_an_expression_is_unpacked_just_before_its_state
 def test_a_returned_struct_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{STRUCTS}.{function}", reads)
+
+
+EXTERNAL_WINDOW = {"params.window().start": "start", "params.window().end": "end"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("fromExternal", {"params.window().end": "end"}, {"end": 5, "_t": 4}, 0),
+        ("externalPassed", EXTERNAL_WINDOW, {"start": 2, "end": 5, "_t": 4}, 2),
+        ("externalPart", {"params.triple()[1]": "second"}, {"second": 7, "_x": 1}, 8),
+    ],
+)
+def test_a_struct_field_or_a_tuple_value_of_an_external_call_is_a_read(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert [r.source for r in model.reads] == list(reads)
+    assert evaluate(model, values) == (False, result, False)
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        (
+            "fromExternal",
+            {},
+            r"reads a value of an external call params.window\(\).end, which the read map does not name",
+        ),
+        ("externalPart", {}, r"reads a value of an external call params.triple\(\)\[1\]"),
+        ("externalWritten", {"params.window().end": "end"}, r"a write to w, which is not a field of a memory copy"),
+    ],
+)
+def test_a_value_of_an_external_call_needs_its_key_and_stays_as_read(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)

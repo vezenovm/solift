@@ -149,6 +149,12 @@ class Reads:
         if isinstance(through, tuple) and through[0] == "struct":
             # A field of a struct that the function builds is a local of the model, not a read.
             return self._struct_field(node, through)
+        if isinstance(through, tuple) and through[0] == "returned":
+            # A field of a struct from an external call is a read of the call's field (structs.py).
+            if node["nodeType"] != "MemberAccess" or node["expression"] is not root:
+                self.fail(node, f"{self.text(node)} is not a field of the struct that an external call returns")
+            member = self.nodes[node["referencedDeclaration"]]
+            return self._returned_field(through, member, node)
         below = isinstance(through, tuple) and through[0] in ("copy", "param", "pointer")
         if below:
             if node["typeDescriptions"]["typeString"].startswith(("struct ", "mapping(")):
@@ -217,7 +223,7 @@ class Reads:
             if kind == "Assignment" or (kind == "UnaryOperation" and n["operator"] in ("++", "--", "delete")):
                 self.fail(n, f"the read {key} changes {self.text(n)}: {_LOCALS}")
             var = scope.get(n.get("referencedDeclaration")) if kind == "Identifier" else None
-            if isinstance(var, tuple) and var[0] == "struct" and self.stack:
+            if isinstance(var, tuple) and var[0] in ("struct", "returned") and self.stack:
                 # The fields of a struct that a callee builds or takes can differ at each run of the callee.
                 self.keyed.add(self.stack[-1])
             if isinstance(var, Var) and not var.input:

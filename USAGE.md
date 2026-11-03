@@ -188,7 +188,7 @@ The README says what a run proves and what it trusts.
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
 | `if`, early returns, `require`, `assert`, `revert` | loops |
 | locals, also assigned in branches; compound assignments; named returns | modifiers |
-| several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
+| several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`), also of an external view call, each value a read | a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`) |
 | `Math.min`, `Math.max` and `Math.mulDiv`, also with `Math.Rounding.Floor`, backed by lemmas | other `Math` functions, `Math.mulDiv` rounded up (Halmos cannot prove its `mulmod` at a symbolic denominator) |
@@ -212,6 +212,7 @@ A key names a value that the function reads from outside itself, and maps it to 
 | `tx.gasprice`, `block.timestamp`, `msg.sender` | a field of `tx`, `block` or `msg` |
 | `address(this).balance`, `_who.balance` | the balance of an address, which no external call that can change state may precede |
 | `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
+| `PARAMS.window().end`, `FEED.latestRoundData()[3]` | a field of a struct, or a value of a tuple, that an external view call returns: also through a local that holds it (`Window memory w = PARAMS.window();`, `(,,, uint256 at,) = FEED.latestRoundData();`) |
 | `_price()` | an internal call: a cut point, whose result becomes an input |
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction

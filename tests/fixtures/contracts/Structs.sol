@@ -23,6 +23,11 @@ interface IFeed {
     function quote(uint256 n) external view returns (uint256);
 }
 
+interface IParams {
+    function window() external view returns (Window memory);
+    function triple() external view returns (uint256, uint256, uint256);
+}
+
 library Windows {
     function opened(Window memory _w, uint256 _t) internal pure returns (uint256) {
         return _t < _w.start ? 0 : _t - _w.start;
@@ -35,7 +40,12 @@ contract Structs {
     using Windows for Window;
 
     IFeed internal feed;
+    IParams internal params;
     Window internal config;
+
+    function setParams(IParams _params) external {
+        params = _params;
+    }
 
     function setConfig(uint256 _start, uint256 _end) external {
         config = Window(_start, _end);
@@ -296,6 +306,28 @@ contract Structs {
     // A struct-valued call that runs on one branch of ?:.
     function guardedCall(bool _c) external view returns (uint256) {
         return _c ? window().end : 0;
+    }
+
+    // A struct and a tuple from an external view call: each field or value that the function reads is a read map key.
+    function fromExternal(uint256 _t) external view returns (uint256) {
+        Window memory w = params.window();
+        return _t < w.end ? 0 : 2;
+    }
+
+    function externalPassed(uint256 _t) external view returns (uint256) {
+        Window memory w = params.window();
+        return w.opened(_t);
+    }
+
+    function externalPart(uint256 _x) external view returns (uint256) {
+        (, uint256 b,) = params.triple();
+        return b + _x;
+    }
+
+    function externalWritten(uint256 _x) external view returns (uint256) {
+        Window memory w = params.window();
+        w.end = _x;
+        return w.end;
     }
 
     // A cut whose assembly is marked memory-safe.

@@ -619,3 +619,29 @@ def test_structs_that_internal_calls_return_link_to_their_models(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_values_of_an_external_call_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    window = {"params.window().start": "start", "params.window().end": "end"}
+    set_window = {("start", "end"): "params.set(start, end);"}
+    cases = [
+        ("fromExternal", "_t", {"params.window().end": "end"}, {"end": "params.set(0, end);"}),
+        ("externalPassed", "_t", window, set_window),
+        ("externalPart", "_x", {"params.triple()[1]": "second"}, {"second": "params.setTriple(0, second, 0);"}),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

@@ -13,6 +13,8 @@ key is one of:
 - a balance (`address(this).balance`), read before any external call that can change state;
 - any other expression by its source text without whitespace (`TOKEN.balanceOf(address(this))`). An internal call in
   the read map is a cut point: its result is an input.
+- a field of a struct or a value of a tuple that an external view call returns, by the call's text and the field or
+  the value's index (`PARAMS.window().end`, `FEED.latestRoundData()[3]`), also through a local that holds it.
 
 An entry that the function does not read is an error, except a field of `tx`, `block` or `msg`, which is always an
 input. A key names one value for the whole call, so each local in it is assigned only by its declaration, is the same

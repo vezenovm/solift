@@ -218,12 +218,15 @@ class Statements:
             self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
         return var
 
-    def _unpack(self, node, scope: dict) -> Unpack:
-        """A tuple declaration, as `(, uint256 y) = limits(a, b);`."""
+    def _unpack(self, node, scope: dict) -> Unpack | tuple[Stmt, ...]:
+        """A tuple declaration, as `(, uint256 y) = limits(a, b);`. From an external view call, each value is a read
+        (structs.py)."""
         init = node.get("initialValue")
         if init is None:
             self.fail(node, "a tuple declaration without a value")
         self.statement_value = init["id"]
+        if init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall" and self._external(init):
+            return self._external_unpack(node, scope)
         value = self._expr(init, scope)
         declarations = node["declarations"]
         self._parts(init, value, len(declarations))
