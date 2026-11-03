@@ -14,6 +14,8 @@
     ite      c ? a : b              If(c, a, b)         never
     widen    uint<n>(a)             a                   never
     narrow   uint<n>(a)             a % 2**n            never
+    shr      a >> k                 a / 2**k            never                            for a constant k < 256
+    mask     a & (2**k - 1)         a % 2**k            never                            for a constant mask
 
 An expression also reverts when an operand that runs reverts, and is outside when such an operand is outside. `and`
 and `or` skip their second operand, and `ite` the branch not taken (smt.py).
@@ -25,6 +27,10 @@ explicit conversion does: `uint192(a)` of a uint256 is `a % 2**192`. Each takes 
 and library calls take operands of any unsigned width. `eq` and `ne` also compare two bools, two addresses, or two
 members of one enum, and `ite` selects between two values of one such type. z3 sees an address or an enum member as its
 integer value.
+
+`shr` and `mask` take their constant as the second operand, and the table has a row for each constant that a model
+uses, which Halmos proves too (`constant_proof`): Solidity does not check a shift, so `<<` would wrap, and is not in
+the table.
 
 Halmos proves on the bytecode each row that can revert, and the OpenZeppelin facts that the min, max and mulDiv rows
 rest on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, `Math.max(a, b)` is `a > b ? a : b`, and
@@ -39,7 +45,7 @@ from dataclasses import dataclass
 
 import z3
 
-from solift.ir import BOOL, UINT256, Expr, Op, Src, Type, uint
+from solift.ir import BOOL, UINT256, Const, Expr, Op, Src, Type, uint
 
 U256 = 2**256
 HALF = 2**128
@@ -141,6 +147,8 @@ TABLE = {
         Operator("ite", 3, "{0} ? {1} : {2}", "select", z3.If),
         Operator("widen", 1, "{type}({0})", "convert", lambda a: a),
         Operator("narrow", 1, "{type}({0})", "convert", None),
+        Operator("shr", 2, "{0} >> {1}", "bits", None),
+        Operator("mask", 2, "{0} & {1}", "bits", None),
     ]
 }
 
@@ -195,6 +203,21 @@ def make(op: str, *args: Expr, src: Src | None = None, to: Type = UINT256) -> Op
         if types[0].kind == "uint" and (types[0].bits <= to.bits) != (op == "widen"):
             raise TypeError(f"{op}{where} of a {types[0].solidity} to {to.solidity}")
         result = to
+    elif operator.kind == "bits":
+        _numbers(op, types, where)
+        constant = args[1]
+        if not isinstance(constant, Const) or isinstance(constant.value, bool):
+            raise TypeError(f"{op}{where} by a value that is not a constant")
+        if types[0].kind == "literal":
+            raise TypeError(f"{op}{where} of a literal: solc folds it, and the extractor does not")
+        if op == "shr":
+            if constant.value >= 256:
+                raise TypeError(f"{op}{where} by {constant.value}, which shifts every bit out")
+            result = types[0]
+        else:
+            if constant.value <= 0 or constant.value & (constant.value + 1):
+                raise TypeError(f"{op}{where} with {constant.text or constant.value}, which is not a mask of low bits")
+            result = common_type(*types)
     elif operator.kind == "logic":
         if any(t != BOOL for t in types):
             raise TypeError(f"{op}{where} takes bool operands")
@@ -247,6 +270,36 @@ _MULMOD = """\
       mm := mulmod(_x, _y, not(0))
     }
 """
+
+
+def constant_proof(e: Op) -> Proof:
+    """The row of a shift or a mask by the constant of `e`, at its result type: `x >> k` is `x / 2**k`, and `x & m` for
+    `m = 2**k - 1` is `x % 2**k`."""
+    type_ = e.type.solidity
+    if e.op == "shr":
+        k = e.args[1].value
+        function, name, value = f"shr{k}Of{e.type.bits}", f"check_row_shr{k}Of{e.type.bits}IsTheQuotient", f"/ 2**{k}"
+        body = f"_x >> {k}"
+    else:
+        k = (e.args[1].value + 1).bit_length() - 1
+        function = f"mask{k}Of{e.type.bits}"
+        name = f"check_row_mask{k}Of{e.type.bits}IsTheRemainder"
+        # A full mask keeps every bit, and 2**256 is no uint256. A mask written in hex of 40 digits would be an address
+        # literal, so the wrapper writes it as a power of two.
+        value = "" if k == 256 else f"% 2**{k}"
+        body = "_x & type(uint256).max" if k == 256 else f"_x & (2**{k} - 1)"
+    wrapper = f"""\
+  function {function}({type_} _x) external pure returns ({type_}) {{
+    return {body};
+  }}
+"""
+    check = f"""\
+  function {name}({type_} _x) public view {{
+    assert(uint256(ops.{function}(_x)) == uint256(_x) {value});
+  }}
+"""
+    return Proof(name, check, wrapper)
+
 
 PROOFS = {
     proof.name: proof

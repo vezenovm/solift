@@ -184,7 +184,7 @@ The README says what a run proves and what it trusts.
 
 | Accepts | Refuses, with the place in the source |
 |---|---|
-| checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
+| checked `uint` arithmetic, comparisons, boolean logic, ternaries; `x >> k` by a constant and `x & m` with a constant mask of low bits, as `x / 2**k` and `x % 2**k`, with a Halmos row for each constant; `T.wrap` and `T.unwrap` of a user-defined value type over an unsigned type | `unchecked`, signed integers, `**`, `%`, `<<`, a shift by a value that is not a constant, other masks, user-defined operators, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
 | `if`, early returns, `require`, `assert`, `revert` | loops |
 | locals, also assigned in branches; compound assignments; named returns | modifiers |

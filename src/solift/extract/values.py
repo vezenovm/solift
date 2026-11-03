@@ -111,6 +111,15 @@ class Values:
             self.fail(node, "a signed integer")
         if type_string in ("address", "address payable") or re.fullmatch(r"contract \w+", type_string):
             return ADDRESS
+        # A user-defined value type over an unsigned type is a value of that type, as wrap and unwrap convert it.
+        match = re.fullmatch(
+            r"t_userDefinedValueType\$_\w+_\$(\d+)", node["typeDescriptions"].get("typeIdentifier") or ""
+        )
+        definition = self.nodes.get(int(match.group(1))) if match else None
+        if definition is not None and definition["nodeType"] == "UserDefinedValueTypeDefinition":
+            underlying = re.fullmatch(r"uint(\d+)", definition["underlyingType"]["typeDescriptions"]["typeString"])
+            if underlying:
+                return uint(int(underlying.group(1)))
         # The type string names an enum by its canonical name, which two files can share, and the identifier by the id
         # of its definition.
         match = re.fullmatch(r"t_enum\$_\w+_\$(\d+)", node["typeDescriptions"].get("typeIdentifier") or "")

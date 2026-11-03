@@ -655,3 +655,41 @@ def test_the_link_check_of_a_model_with_many_inputs_and_two_outputs_fits_the_sta
     assert record["ok"], summary(record)
     (result,) = record["specs"]
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
+
+
+def test_shifts_and_masks_by_constants_link_with_a_row_for_each_constant(tmp_path):
+    setup = "tests/fixtures/test/BitsSetup.sol:BitsSetup"
+    target = "tests/fixtures/contracts/Bits.sol:Bits"
+    packed = {"packed": "packed"}
+    set_packed = {"packed": "bits.set(packed);"}
+    cases = [
+        ("both", "", packed, set_packed),
+        ("maskFirst", "_x", {}, {}),
+        ("narrow", "_x", {}, {}),
+        ("fullMask", "_x", {}, {}),
+        ("addressWideMask", "_x", {}, {}),
+        ("wrappedNarrow", "_x", {}, {}),
+    ]
+    specs = [
+        Spec(
+            name=f"bits-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"bits.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+
+    @specs[0].theorem(witness=lambda q: q.result[0] > 0)
+    def the_two_halves_make_the_slot(q):
+        """the high half times 2**128 plus the low half is the packed slot"""
+        return q.result[0] * 2**128 + q.result[1] == q.packed
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    links = [r for result in record["specs"] for r in result["link"]] + record["link"]["shared"]
+    checks = {r["check"]: r["verdict"] for r in links}
+    assert set(checks.values()) == {"PASS"}
+    assert {"check_row_shr128Of256IsTheQuotient", "check_row_mask128Of256IsTheRemainder"} <= set(checks)
+    assert {"check_row_mask8Of256IsTheRemainder", "check_row_shr64Of128IsTheQuotient"} <= set(checks)

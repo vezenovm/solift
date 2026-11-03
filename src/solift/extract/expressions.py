@@ -39,6 +39,11 @@ BINARY = {
 }
 
 
+def _mask(e: Expr) -> bool:
+    """Whether an expression is a constant mask of low bits, `2**k - 1`."""
+    return isinstance(e, Const) and not isinstance(e.value, bool) and e.value > 0 and not e.value & (e.value + 1)
+
+
 class Expressions:
     def _expr(self, node, scope: dict) -> Expr:
         self._signed(node)
@@ -78,10 +83,14 @@ class Expressions:
                 self.fail(node, "a tuple with an empty part outside the left of an assignment")
             args = tuple(self._expr(c, scope) for c in components)
             return Tuple(args, Type("tuple", parts=tuple(a.type for a in args)), src)
+        if kind in ("BinaryOperation", "UnaryOperation") and node.get("function") is not None:
+            self.fail(node, f"the user-defined operator {node['operator']}")
         if kind == "BinaryOperation":
             operator = node["operator"]
             if operator == "**":
                 self.fail(node, "exponentiation")
+            if operator in (">>", "&"):
+                return self._bits(node, operator, scope)
             if operator not in BINARY:
                 self.fail(node, f"the operator {operator}")
             return self._make(node, BINARY[operator], node["leftExpression"], node["rightExpression"], scope=scope)
@@ -97,6 +106,14 @@ class Expressions:
         if kind == "Assignment":
             self.fail(node, "an assignment inside an expression")
         self.fail(node, f"a {kind} expression is not supported")
+
+    def _bits(self, node, operator: str, scope: dict) -> Expr:
+        """`x >> k` by a constant `k`, and `x & m` or `m & x` for a constant mask `m` of low bits: a division and a
+        remainder by a power of two (ops.py)."""
+        left, right = self._expr(node["leftExpression"], scope), self._expr(node["rightExpression"], scope)
+        if operator == "&" and _mask(left) and not _mask(right):
+            left, right = right, left
+        return self._op(node, "shr" if operator == ">>" else "mask", left, right)
 
     def _make(self, node, op: str, *operands, scope: dict) -> Expr:
         return self._op(node, op, *(self._expr(operand, scope) for operand in operands))
@@ -148,6 +165,17 @@ class Expressions:
         if node["kind"] != "functionCall":
             self.fail(node, f"a {node['kind']}")
         callee = node["expression"]
+        if self._wrapping(callee):
+            # T.wrap(x) and T.unwrap(x) of a user-defined value type over an unsigned type are x, which the model has
+            # at the underlying type (Values._type).
+            argument = node["arguments"][0]
+            value = self._expr(argument, scope)
+            to = self._type(node)
+            self._assignable(argument, value.type, to)
+            # wrap converts a narrower value implicitly, as an assignment does.
+            if value.type.kind == "uint" and value.type.bits < to.bits:
+                return ops.make("widen", value, src=self.src(node), to=to)
+            return value
         decl = self.nodes.get(callee.get("referencedDeclaration"))
         if decl is None:
             name = callee.get("name") or callee.get("memberName")
@@ -172,6 +200,13 @@ class Expressions:
             path = self._place(owner)[0]
             if path.endswith(MATH_PATH):
                 op = MATH_OPERATORS.get(decl["name"])
+                # The lemmas are of the overloads on unsigned integers. One on a user-defined value type, which the
+                # model has at its underlying type, can compute anything.
+                if any(
+                    not re.fullmatch(r"uint\d+", p["typeDescriptions"]["typeString"])
+                    for p in decl["parameters"]["parameters"][:3]
+                ):
+                    op = None
                 if decl["name"] == "mulDiv" and len(arguments) == 4:
                     op, arguments = (self._rounding(arguments[3]), 3), arguments[:3]
                 if op is None or len(arguments) != op[1]:
@@ -224,6 +259,13 @@ class Expressions:
         for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
+
+    def _wrapping(self, callee) -> bool:
+        """Whether a callee is `T.wrap` or `T.unwrap` of a user-defined value type."""
+        if callee["nodeType"] != "MemberAccess" or callee["memberName"] not in ("wrap", "unwrap"):
+            return False
+        decl = self.nodes.get(callee["expression"].get("referencedDeclaration"))
+        return decl is not None and decl["nodeType"] == "UserDefinedValueTypeDefinition"
 
     def _runs(self, callee, decl, within: int, contract: dict | None = None) -> dict:
         """The function that a call of `decl` through the expression `callee` runs, in a function of the contract

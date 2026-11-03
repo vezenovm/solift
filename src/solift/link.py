@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
-from solift.ops import PROOFS, TABLE
+from solift.ops import PROOFS, TABLE, constant_proof
 from solift.solidity import encoded_call, encoded_calls, imports, names, oldest, version
 from solift.solidity import source as model_source
 
@@ -252,6 +252,8 @@ def _proofs(model: Model):
                 operator = TABLE[e.op]
                 for name in operator.proofs:
                     yield PROOFS[name], operator.kind == "library"
+                if operator.kind == "bits":
+                    yield constant_proof(e), False
 
 
 def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -> Generated:
