@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
 from solift.ops import PROOFS, TABLE
-from solift.solidity import encoded_call, encoded_calls, imports, names, oldest
+from solift.solidity import encoded_call, encoded_calls, imports, names, oldest, version
 from solift.solidity import source as model_source
 
 RESERVED = {"i", "host", "codeOk", "codeOut", "modelOk", "modelOut", "codeResults", "modelResults"}
@@ -303,7 +303,7 @@ def _operators_test(models, stem: str, test_import: str, math: str, proofs: list
         f"    ops = new {stem}CheckedOperators();",
         "  }",
         "",
-        encoded_calls("\n".join(p.check for p in proofs).rstrip("\n"), oldest(models)),
+        encoded_calls("\n".join(p.text(version(oldest(models))) for p in proofs).rstrip("\n"), oldest(models)),
         "}",
         "",
     ]

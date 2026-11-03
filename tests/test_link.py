@@ -192,3 +192,14 @@ def test_below_solc_0_8_11_the_generated_tests_call_by_selector(solc, old):
     else:
         assert "abi.encodeWithSelector" not in text
         assert "abi.encodeCall(host.run, (i))" in text
+
+
+@pytest.mark.parametrize(
+    "solc, form",
+    [("0.8.16", "_b <= type(uint256).max / _a"), ("0.8.17", "product / _a == _b"), ("", "product / _a == _b")],
+)
+def test_the_mul_row_takes_the_form_that_halmos_proves_on_the_compilers_code(solc, form):
+    model = dataclasses.replace(quote(), solc=solc)
+    (text,) = [t for name, t in generate(model, QUOTER_LINK).files.items() if name.endswith("Operators.t.sol")]
+    row = text[text.index("function check_row_mulRevertsExactlyOnOverflow") :]
+    assert form in row[: row.index("\n  }\n")]

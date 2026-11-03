@@ -226,11 +226,19 @@ def _numbers(op: str, types: list[Type], where: str) -> None:
 @dataclass(frozen=True)
 class Proof:
     """A Halmos check of one row or lemma. A row check calls `wrapper`, an external function of the generated
-    CheckedOperators contract, so that it checks the operator as compiled code. A lemma has no wrapper."""
+    CheckedOperators contract, so that it checks the operator as compiled code. A lemma has no wrapper. `older`, where
+    it is set, is the same check in another form, for code that solc builds below the version `before`: Halmos proves
+    each form only on the code of its own compilers."""
 
     name: str
     check: str
     wrapper: str = ""
+    older: str = ""
+    before: tuple[int, ...] = ()
+
+    def text(self, solc: tuple[int, ...]) -> str:
+        """The check for code that solc `solc` builds, as (0, 8, 16), or () where the version is not known."""
+        return self.older if self.older and solc and solc < self.before else self.check
 
 
 _MULMOD = """\
@@ -299,6 +307,20 @@ PROOFS = {
     assert(!ok || abi.decode(out, (uint256)) == product);
   }
 """,
+            # solc 0.8.16 and older check a multiplication's overflow by comparing with type(uint256).max / _a, and
+            # Halmos proves the row in that form only (in the other it times out), and the other form only from 0.8.17.
+            older="""\
+  function check_row_mulRevertsExactlyOnOverflow(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.mul, (_a, _b)));
+    uint256 product;
+    unchecked {
+      product = _a * _b;
+    }
+    assert(ok == (_a == 0 || _b <= type(uint256).max / _a));
+    assert(!ok || abi.decode(out, (uint256)) == product);
+  }
+""",
+            before=(0, 8, 17),
         ),
         Proof(
             "check_row_divRevertsExactlyOnZero",

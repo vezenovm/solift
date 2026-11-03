@@ -1,5 +1,6 @@
 import dataclasses
 
+import pytest
 import z3
 
 from examples.pricer.spec import SPECS as PRICER_SPECS
@@ -521,7 +522,7 @@ contract Old {
     }
 
     function share(uint256 _a, uint256 _b) external view returns (uint256) {
-        return (total + _a - _b) / 4;
+        return (total + _a - _b) * 3 / 4;
     }
 }
 """
@@ -581,10 +582,12 @@ def old_solc_project(tmp_path, solc: str, contract: str = OLD_SOLC):
     return root
 
 
-def test_a_project_on_solc_0_8_10_links_with_its_operator_rows_and_vectors(tmp_path):
+@pytest.mark.parametrize("solc", ["0.8.10", "0.8.16"])
+def test_a_project_on_an_older_solc_links_with_its_operator_rows_and_vectors(tmp_path, solc):
     """solc 0.8.10 has no abi.encodeCall, which the link, the operator rows and the vectors call the code with from
-    0.8.11 on."""
-    root = old_solc_project(tmp_path, "0.8.10")
+    0.8.11 on. Up to 0.8.16, solc checks a multiplication's overflow in another way, and Halmos proves the `*` row on
+    it only in the form that compares with type(uint256).max / a."""
+    root = old_solc_project(tmp_path, solc)
     spec = Spec(
         name="old-solc",
         target="src/Old.sol:Old.share",
@@ -599,9 +602,9 @@ def test_a_project_on_solc_0_8_10_links_with_its_operator_rows_and_vectors(tmp_p
     record = run(spec, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     (result,) = record["specs"]
-    assert result["versions"]["solc"].startswith("0.8.10")
+    assert result["versions"]["solc"].startswith(solc)
     assert {r["verdict"] for r in result["link"]} == {"PASS"}
-    assert len(result["link"]) == 4
+    assert len(result["link"]) == 5
     assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
 
 
