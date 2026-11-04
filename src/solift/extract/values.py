@@ -118,6 +118,14 @@ class Values:
             return self._enum(self.nodes[int(match.group(1))])
         self.fail(node, f"the type {type_string} is not supported")
 
+    def _enum_named(self, name: str, key: str):
+        """The definition of the enum of the canonical name `name`, the type of the read map key `key`, which one file
+        must declare."""
+        found = [n for n in self.nodes.values() if n.get("nodeType") == "EnumDefinition" and n["canonicalName"] == name]
+        if len(found) != 1:
+            raise ExtractionError(f"the read map key {key} has the enum type {name}, which {len(found)} files declare")
+        return found[0]
+
     def _enum(self, definition) -> Type:
         """The enum type, and the import of the contract or file-level enum that declares it, for the emitted
         Solidity."""
