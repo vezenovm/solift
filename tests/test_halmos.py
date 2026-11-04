@@ -133,6 +133,30 @@ PER_PERIOD = (
         adapters={"perPeriod": "pointers.set(_who, 0, perPeriod, 0, 0);"},
     ),
 )
+PARAMETERS = "tests/fixtures/contracts/Parameters.sol"
+PARAMETERS_SETUP = "tests/fixtures/test/ParametersSetup.sol:ParametersSetup"
+CAPPED = (
+    {"$bonus": "bonus"},
+    None,
+    Link(
+        setup=PARAMETERS_SETUP,
+        call="parameters.capped(_ceiling, _gas, _fresh)",
+        adapters={"bonus": "parameters.setBonus(bonus);"},
+    ),
+)
+SPREAD = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.spread(_a, _b)"))
+EARLY_RETURN = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.earlyReturn(_a, _small)"))
+RECORDED = (
+    {"$bonus": "bonus"},
+    {"$last": "last"},
+    Link(
+        setup=PARAMETERS_SETUP,
+        call="parameters.recorded(_amount)",
+        adapters={"bonus": "parameters.setBonus(bonus);"},
+        post={"last": "parameters.last()"},
+    ),
+)
+NESTED = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.nested(_a)"))
 EFFECTS = "tests/fixtures/contracts/Effects.sol"
 EFFECTS_SETUP = "tests/fixtures/test/EffectsSetup.sol:EffectsSetup"
 BUY = (
@@ -156,17 +180,28 @@ PULL = (
     ),
 )
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
-# the contract reverts: a result, each value of several returns, the key of a storage pointer, and outputs: an
-# argument of a call, a written value, and a write at another key.
+# the contract reverts: a result, each value of several returns, an assignment to a parameter, the key of a storage
+# pointer, and outputs: an argument of a call, a written value, and a write at another key.
 CHANGES = {
     "result": (f"{QUOTER}:Quoter._quote", QUOTE, "_cost + _margin;", "(_cost + _margin) / 2;"),
     "first-value": (f"{TUPLES}:Tuples.limits", LIMITS, "sum = _a + _b;", "sum = (_a + _b) / 2;"),
     "second-value": (f"{TUPLES}:Tuples.limits", LIMITS, "_a < _b ? _a : _b;", "_a < _b ? _b : _a;"),
+    "assigned-parameter": (f"{PARAMETERS}:Parameters.capped", CAPPED, "_ceiling += $bonus;", "_ceiling += $bonus / 2;"),
     "pointer-key": (f"{POINTERS}:Pointers.perPeriod", PER_PERIOD, "[_who].config;", "[msg.sender].config;"),
     "call-argument": (f"{EFFECTS}:Effects.buy", BUY, "(msg.sender, amount);", "(msg.sender, amount / 2);"),
     "written-value": (f"{EFFECTS}:Effects.pull", PULL, "uint192(left - _amount);", "uint192(left - _amount / 2);"),
     "written-key": (f"{EFFECTS}:Effects.pull", PULL, "allowance.last =", "$allowances[address(0)].last ="),
 }
+
+
+@pytest.mark.parametrize(
+    "function, spec",
+    [("capped", CAPPED), ("spread", SPREAD), ("earlyReturn", EARLY_RETURN), ("recorded", RECORDED), ("nested", NESTED)],
+)
+def test_functions_that_assign_their_parameters_link_to_their_models(workspace, function, spec):
+    reads, outputs, link = spec
+    run = link_run(workspace, f"{PARAMETERS}:Parameters.{function}", reads, link, outputs=outputs)
+    assert run.ok, [(r.check.function, r.verdict) for r in run.results]
 
 
 @pytest.mark.parametrize("change", CHANGES)

@@ -7,6 +7,7 @@ import re
 
 from solift import ops
 from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct
+from solift.extract.reads import _assigned
 from solift.ir import (
     BOOL,
     Assign,
@@ -69,7 +70,10 @@ class Statements:
             results = tuple(Var(r["name"], self._type(r), src=self.src(r)) if r["name"] else None for r in returns)
             scope.update({r["id"]: v for r, v in zip(returns, results, strict=True) if v is not None})
             scope["return"] = results
-        params = []
+        params, copies = [], []
+        # A parameter of the modeled function that the body assigns is an input, its value at the call, and a local of
+        # the same name that starts at it. The body reads and assigns the local.
+        assigned = _assigned(node["body"]) if top else set()
         for p in node["parameters"]["parameters"]:
             if _storage_struct(p):
                 scope[p["id"]] = ("pointer", p["name"], None, (p["id"],)) if top else ("pointer", *bindings[p["id"]])
@@ -87,7 +91,13 @@ class Statements:
             var = Var(p["name"], self._type(p), input=top, src=self.src(p))
             scope[p["id"]] = var
             params.append(var)
-        body = self._block(node["body"]["statements"], scope, return_type)
+            if p["id"] in assigned:
+                local = Var(var.name, var.type, src=var.src)
+                copies.append(Let(local, var, var.src))
+                scope[p["id"]] = local
+        if top:
+            self.parameter_locals = {let.var.name for let in copies}
+        body = (*copies, *self._block(node["body"]["statements"], scope, return_type))
         return Function(name, tuple(params), return_type, body, self.src(node), results)
 
     def _user_value_type(self, param) -> bool:
@@ -280,8 +290,6 @@ class Statements:
         var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
         if not isinstance(var, Var):
             self.fail(expression, f"an assignment to {self.text(lhs)}")
-        if var.input:
-            self.fail(expression, f"an assignment to the input {var.name}")
         operator = expression["operator"]
         if operator not in ASSIGNMENTS:
             self.fail(expression, f"the assignment operator {operator}")
@@ -305,8 +313,6 @@ class Statements:
             var = scope.get(component.get("referencedDeclaration")) if component["nodeType"] == "Identifier" else None
             if not isinstance(var, Var):
                 self.fail(component, f"a tuple assignment to {self.text(component)}, which is not a local")
-            if var.input:
-                self.fail(component, f"an assignment to the input {var.name}")
             if var in vars_:
                 self.fail(component, f"a tuple assignment to {var.name} twice: solc does not fix which value it keeps")
             vars_.append(var)

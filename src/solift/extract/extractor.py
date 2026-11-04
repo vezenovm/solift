@@ -125,6 +125,8 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         # the callees that name their own locals in a read map key; and each call of a callee, by its caller (None for
         # the modeled function), which counts how many times a callee runs.
         self.assigned: set[int] = set()
+        # The parameters of the modeled function that the body assigns, each also a local of its name (_function).
+        self.parameter_locals: set[str] = set()
         self.key_identities: dict[str, tuple] = {}
         self.keyed: set[int] = set()
         self.calls: list[tuple[int | None, int]] = []
@@ -253,7 +255,7 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
             self.fail(node, f"two inputs have the same name: {', '.join(inputs)}")
         locals_ = [v.name for v in declared_locals(function.body)] + [v.name for v in function.named]
         for name in locals_:
-            if name in inputs:
+            if name in inputs and name not in self.parameter_locals:
                 self.fail(node, f"the local {name} has the name of an input")
             if locals_.count(name) > 1:
                 self.fail(node, f"two locals are named {name}")
