@@ -12,6 +12,7 @@ from solift.extract.common import (
     _normal,
     _root,
     _storage_struct,
+    _subtree,
     _through_contract,
     guarded,
     memory_struct,
@@ -73,7 +74,7 @@ class Statements:
         name = node["name"]
         if node["kind"] != "function" or not node["implemented"]:
             self.fail(node, f"{name} is not an implemented function")
-        if node["modifiers"]:
+        if node["modifiers"] and not top:
             self.fail(node["modifiers"][0], f"{name} has a modifier")
         returns = node["returnParameters"]["parameters"]
         if not returns and not top:
@@ -116,7 +117,8 @@ class Statements:
             var = Var(p["name"], self._type(p), input=top, src=self.src(p))
             scope[p["id"]] = var
             params.append(var)
-        body = self._block(node["body"]["statements"], scope, return_type)
+        prefix = self._modifiers(node, scope) if top else ()
+        body = prefix + self._block(node["body"]["statements"], scope, return_type)
         return Function(name, tuple(params), return_type, body, self.src(node), results)
 
     def _user_value_type(self, param) -> bool:
@@ -286,6 +288,51 @@ class Statements:
                 return self._external_call(expression, scope)
             return self._checking_call(expression, scope)
         self.fail(expression, "an expression statement")
+
+    def _modifiers(self, node, scope: dict) -> tuple[Stmt, ...]:
+        """The modifiers of the target, inlined before its body: each runs its statements before a single `_;` that
+        ends it, with its parameters bound to the invocation's arguments. The modifier that runs is the one that the
+        linearization of the target's contract gives (_runs). Each is a run of the modifier for the rules of keys, and
+        its assignments count as the function's. A modifier with code after `_;`, a return, or invoked twice is
+        refused."""
+        stmts = []
+        seen = set()
+        for invocation in node["modifiers"]:
+            name_node = invocation["modifierName"]
+            decl = self.nodes.get(name_node.get("referencedDeclaration"))
+            if decl is None or decl["nodeType"] != "ModifierDefinition":
+                self.fail(invocation, f"the modifier {self.text(name_node)}, which the extractor cannot resolve")
+            decl = self._runs(name_node, decl, self._within())
+            name = decl["name"]
+            if decl["id"] in seen:
+                self.fail(invocation, f"the modifier {name} is invoked twice")
+            seen.add(decl["id"])
+            if not decl.get("body"):
+                self.fail(invocation, f"the modifier {name} has no body")
+            statements = decl["body"]["statements"]
+            places = [n for n in _subtree(decl["body"]) if n.get("nodeType") == "PlaceholderStatement"]
+            if len(places) != 1 or not statements or statements[-1] is not places[0]:
+                self.fail(decl, f"the modifier {name} runs code after `_;`, or has no single `_;` that ends it")
+            inner = {}
+            arguments = invocation.get("arguments") or []
+            for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
+                value = self._expr(arg, scope)
+                var = self._local(param, inner)
+                self._assignable(arg, value.type, var.type)
+                inner[param["id"]] = var
+                stmts.append(Let(var, value, self.src(arg)))
+            # The modifier runs once, from the target: an edge for _run_once, so that the callees it calls count.
+            self.calls.append((None, decl["id"]))
+            self.assigned |= _assigned(decl)
+            self.guarded |= guarded(decl["body"])
+            self.used.add(self._place(decl)[0])
+            self.stack.append(decl["id"])
+            prefix = self._block(statements[:-1], inner, Type("tuple"))
+            self.stack.pop()
+            if any(isinstance(s, Return) for s in _flat(prefix)):
+                self.fail(decl, f"the modifier {name} returns, which would end the function")
+            stmts += prefix
+        return tuple(stmts)
 
     def _struct_argument(self, param, arg, scope: dict) -> tuple[tuple, list[Stmt]]:
         """The scope entry of a struct parameter of an inlined check, and the statements that it needs: a storage

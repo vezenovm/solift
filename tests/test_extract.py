@@ -1130,3 +1130,48 @@ def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, functio
 def test_a_statement_call_that_returns_early_writes_or_runs_a_key_twice_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{CHECKS}.{function}", reads)
+
+
+GATED = "tests/fixtures/contracts/Gated.sol:Gated"
+KEEPER = {"keeper": "keeper", "msg.sender": "caller", "total": "total"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("keeperAdd", KEEPER, {"keeper": 1, "caller": 2, "total": 0, "_a": 1}, True),
+        ("keeperAdd", KEEPER, {"keeper": 2, "caller": 2, "total": 0, "_a": 1}, False),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 1, "caller": 2, "total": 0, "_a": 1},
+            True,
+        ),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 2, "caller": 2, "total": 0, "_a": 1},
+            False,
+        ),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 9}, True),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 11}, False),
+    ],
+)
+def test_the_modifiers_of_the_target_run_before_its_body(build, function, reads, values, reverts):
+    model = extract(build, f"{GATED}.{function}", reads).model
+    assert evaluate(model, values)[0] is reverts
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("resetting", {}, r"the modifier resetAfter runs code after `_;`"),
+        ("runTwice", {}, r"the modifier twice runs code after `_;`, or has no single `_;`"),
+        ("quoted", {"quotes.quote(n)": "quote"}, r"names n, which an assignment changes, at a second place"),
+        ("gated", {"quotes.quote(_n)": "quote"}, r"_get runs 2 times in the call"),
+        ("keeperTwice", {"keeper": "keeper", "msg.sender": "caller"}, r"the modifier onlyKeeper is invoked twice"),
+    ],
+)
+def test_a_modifier_that_runs_code_after_its_body_or_reads_a_key_twice_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{GATED}.{function}", reads)

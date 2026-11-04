@@ -28,7 +28,8 @@ the fields of a struct that it returns, which a call inside an expression unpack
 statement (structs.py). The fields are never written after the struct is built.
 
 Internal and library calls are inlined. An internal call as a statement to a function that returns nothing and only
-reads and reverts, as a check, is its statements, with its parameters as locals. A call of a contract's function runs
+reads and reverts, as a check, is its statements, with its parameters as locals. The target's modifiers run their
+statements before a single `_;` that ends them, before its body. A call of a contract's function runs
 the function that the linearization of the target's contract gives it: the most derived override, or for `super.f()`
 the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member

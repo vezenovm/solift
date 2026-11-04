@@ -309,8 +309,10 @@ class Expressions:
         return found
 
     def _within(self) -> int:
-        """The contract of the function being extracted."""
-        return self.nodes[self.stack[-1]]["scope"] if self.stack else self.top["scope"]
+        """The contract of the function or modifier being extracted. solc gives a modifier no scope, so its contract
+        comes from `owners`."""
+        node = self.nodes[self.stack[-1]] if self.stack else self.top
+        return node["scope"] if "scope" in node else self.owners[node["id"]]
 
     def _rounding(self, node) -> str:
         """The operator of Math.mulDiv with a rounding, which must be Math.Rounding.Floor, as written."""

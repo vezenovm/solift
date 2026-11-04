@@ -116,7 +116,7 @@ Loop-free functions in checked `uint` arithmetic, with branches, `require` and `
 calls, several returns, storage pointers to structs, conversions between unsigned widths, and `Math.min`, `Math.max` and
 `Math.mulDiv`. A storage write or an external call argument can be an output of the model, which the link compares after
 the call, so a function without a value fits too. The extractor refuses loops, `unchecked`, signed values, `**`, `%`,
-assembly and modifiers, and names the place in the source. A view or pure call that does not fit can go in the read map:
+assembly and modifiers with code after `_;`, and names the place in the source. A view or pure call that does not fit can go in the read map:
 its result becomes an input. [USAGE.md](USAGE.md#what-the-extractor-accepts) has the full list.
 
 ## Proof performance
@@ -171,7 +171,7 @@ gives a counterexample.
 ## Roadmap
 
 Coverage: generated names that never clash with the source's, constant expressions, arithmetic below `uint256`, `%`,
-and library summaries through the operator table. Then, as projects need them: `unchecked`, modifiers, `**`,
+and library summaries through the operator table. Then, as projects need them: `unchecked`, modifiers with code after `_;`, `**`,
 `Math.mulDiv` rounded up (once Halmos can prove its `mulmod` at a symbolic denominator), bounded loops.
 
 Past arithmetic:

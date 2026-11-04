@@ -757,3 +757,38 @@ def test_checks_called_as_statements_link_to_their_models(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_modifiers_of_a_target_link_to_its_model(tmp_path):
+    setup = "tests/fixtures/test/GatedSetup.sol:GatedSetup"
+    keeper = {"keeper": "gated.setKeeper(keeper);"}
+    owner = {"owner": "vm.store(address(gated), bytes32(uint256(0)), bytes32(uint256(uint160(owner))));"}
+    cases = [
+        (
+            "keeperAdd",
+            {"keeper": "keeper", "msg.sender": "caller", "total": "total"},
+            {**keeper, "total": "gated.setTotal(total);"},
+        ),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {**owner, "total": "gated.setTotal(total);"},
+        ),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, keeper),
+    ]
+    specs = [
+        Spec(
+            name=f"gated-{function}",
+            target=f"tests/fixtures/contracts/Gated.sol:Gated.{function}",
+            reads=reads,
+            link=Link(
+                setup=setup, call=f"gated.{function}(_a)", adapters=adapters, observed={"caller": "address(this)"}
+            ),
+            project=SPEC.project,
+        )
+        for function, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
