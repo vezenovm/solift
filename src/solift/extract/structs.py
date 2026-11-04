@@ -80,8 +80,8 @@ class Structs:
         if init is not None and init["nodeType"] == "FunctionCall" and self._external(init):
             # A struct from an external view call: each field that the function reads is a read map key,
             # `PARAMS.window().end`, of the call as it runs here.
-            prefix = self._external_parts(init, scope)
-            scope[decl["id"]] = ("returned", prefix, self._identity(init, scope), definition["id"])
+            prefix, place = self._external_parts(init, scope)
+            scope[decl["id"]] = ("returned", prefix, self._identity(init, scope), definition["id"], place)
             return ()
         fields = self._struct_fields(definition, decl)
         if init is not None and init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall":
@@ -290,17 +290,24 @@ class Structs:
             self.reads[_normal(key)] = Read(var, mapped[0])
         return self.reads[_normal(key)].var
 
-    def _external_parts(self, call, scope: dict) -> str:
+    def _external_parts(self, call, scope: dict) -> tuple[str, int | None]:
         """Checks an external view call whose values the function reads one by one, a struct's fields or a tuple's
         values, where the call runs: it keeps the rules of a read map call (_fallback_read) and of a key (_stable). The
-        key of each value is the call's text, without whitespace, and the value's place in it."""
+        key of each value is the call's text, without whitespace, and the value's place in it. Returns that text, and
+        the call's place where the call names a local that an assignment changes: each value's key then has that one
+        place (_part), as a key in an expression does, rather than the call's text."""
         prefix = _normal(self.text(call))
         self._stable(prefix, call, scope)
+        place = self.key_places.pop(prefix, None)
         self._fallback_read(call, scope)
-        return prefix
+        return prefix, place
 
-    def _part(self, prefix: str, place: str, step: tuple, type_: Type, node, identity: tuple) -> Var:
-        """The input of one value of an external call: the field `.end` or the value `[3]` of the call `prefix`."""
+    def _part(
+        self, prefix: str, place: str, step: tuple, type_: Type, node, identity: tuple, at: int | None = None
+    ) -> Var:
+        """The input of one value of an external call: the field `.end` or the value `[3]` of the call `prefix`. `at`
+        is the call's place, where it names a local that an assignment changes (_external_parts): the key may then have
+        no other place, also as a read of `PARAMS.window().end` in an expression."""
         key = prefix + place
         mapped = self.read_map.get(_normal(key))
         if mapped is None:
@@ -309,6 +316,8 @@ class Structs:
         whole = (step, *identity)
         if self.key_identities.setdefault(_normal(key), whole) != whole:
             self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
+        if at is not None and self.key_places.setdefault(_normal(key), at) != at:
+            self.fail(node, f"the read {key} names a local that an assignment changes, at a second place: {_LOCALS}")
         if _normal(key) not in self.reads:
             self.reads[_normal(key)] = Read(Var(mapped[1], type_, input=True, src=self.src(node)), mapped[0])
         return self.reads[_normal(key)].var
@@ -317,13 +326,13 @@ class Structs:
         """A field of a struct from an external call, as `w.end` for `PARAMS.window()`: the key
         `PARAMS.window().end`, with the identity that a read of `PARAMS.window().end` in an expression has."""
         step = ("member", member["name"], member["id"])
-        return self._part(entry[1], f".{member['name']}", step, self._type(member), node, entry[2])
+        return self._part(entry[1], f".{member['name']}", step, self._type(member), node, entry[2], entry[4])
 
     def _external_unpack(self, node, scope: dict) -> tuple[Stmt, ...]:
         """A tuple declaration from an external view call, as `(,,, uint256 at,) = FEED.latestRoundData();`: each value
         that it declares is the read map key `FEED.latestRoundData()[3]`."""
         init = node["initialValue"]
-        prefix = self._external_parts(init, scope)
+        prefix, place = self._external_parts(init, scope)
         identity = self._identity(init, scope)
         returns = self.nodes[init["expression"]["referencedDeclaration"]]["returnParameters"]["parameters"]
         if len(returns) != len(node["declarations"]):
@@ -333,7 +342,7 @@ class Structs:
             if decl is None:
                 continue
             var = self._local(decl, scope)
-            value = self._part(prefix, f"[{n}]", ("part", n), self._type(returned), init, identity)
+            value = self._part(prefix, f"[{n}]", ("part", n), self._type(returned), init, identity, place)
             self._assignable(init, value.type, var.type)
             scope[decl["id"]] = var
             stmts.append(Let(var, value, self.src(node)))

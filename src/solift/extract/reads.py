@@ -71,7 +71,7 @@ def _mapping(node) -> bool:
 
 _LOCALS = (
     "a read map key names one value for the whole call, so it must change nothing, and each local in it must be one "
-    "that only its declaration assigns, in a function that runs once"
+    "that only its declaration assigns, or the key must be read at one place only, in a function that runs once"
 )
 
 
@@ -222,9 +222,10 @@ class Reads:
         return self.reads[_normal(key)].var
 
     def _stable(self, key: str, node, scope: dict) -> None:
-        """A read map key names one value for the whole call. So it changes nothing, a local that it names, or a
-        parameter of a callee, is one that only its declaration assigns, in a callee that runs once (_run_once), and
-        each read of the key names the same things (_identity)."""
+        """A read map key names one value for the whole call. So it changes nothing, it runs in a callee that runs once
+        if it names the callee's locals or parameters (_run_once), each read of it names the same things (_identity),
+        and a local that it names is one that only its declaration assigns, or else the key is read at one place only,
+        where it names the local's value there."""
         for n in _subtree(node):
             kind = n.get("nodeType")
             if kind == "Assignment" or (kind == "UnaryOperation" and n["operator"] in ("++", "--", "delete")):
@@ -235,7 +236,14 @@ class Reads:
                 self.keyed.add(self.stack[-1])
             if isinstance(var, Var) and not var.input:
                 if n["referencedDeclaration"] in self.assigned:
-                    self.fail(n, f"the read {key} names {n['name']}, which an assignment changes: {_LOCALS}")
+                    # The key's one place runs at most once in the call, so the input is the value that it has there.
+                    place = self.key_places.setdefault(_normal(key), node["id"])
+                    if place != node["id"]:
+                        self.fail(
+                            n,
+                            f"the read {key} names {n['name']}, which an assignment changes, at a second place: "
+                            f"{_LOCALS}",
+                        )
                 if self.stack:
                     self.keyed.add(self.stack[-1])
         identity = self._identity(node, scope)

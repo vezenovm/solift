@@ -216,7 +216,8 @@ A key names a value that the function reads from outside itself, and maps it to 
 | `_price()` | an internal call: a cut point, whose result becomes an input. Its memory arguments must be new memory that nothing else reaches: a struct constructor of values, a new array of a value type, or an internal call that takes no memory and has no assembly (`window().opened(t)`) |
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
-has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, the same
+has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, or else
+the key is read at one place only, where the input is the local's value there; it is the same
 one at each read of the key, in the target or in a callee that runs once. A call in the read map must not reach code
 whose value changes during the call: `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards. The
 check reads the code in the build: a low-level call runs what its calldata names in Solidity, and an external call the

@@ -17,7 +17,8 @@ key is one of:
   the value's index (`PARAMS.window().end`, `FEED.latestRoundData()[3]`), also through a local that holds it.
 
 An entry that the function does not read is an error, except a field of `tx`, `block` or `msg`, which is always an
-input. A key names one value for the whole call, so each local in it is assigned only by its declaration, is the same
+input. A key names one value for the whole call, so each local in it is assigned only by its declaration (or the key has
+one place, where it names the local's value there), is the same
 local at each read, and belongs to the modeled function or to a callee that runs once. A call in the read map must not
 reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 

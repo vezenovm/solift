@@ -683,3 +683,24 @@ def test_cuts_that_take_new_memory_link_with_the_cut_value_observed(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_a_key_on_an_assigned_local_links_to_its_model(tmp_path):
+    specs = [
+        Spec(
+            name=f"keys-{function}",
+            target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
+            reads={"gate.quote(_who,amount)": "quote"},
+            link=Link(
+                setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
+                call=f"keys.{function}({args})",
+                adapters={"quote": "gate.set(quote);"},
+            ),
+            project=SPEC.project,
+        )
+        for function, args in [("quoted", "_who, _byShares, _byAmount"), ("quotedThenAssigned", "_who, _a")]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

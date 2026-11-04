@@ -564,8 +564,11 @@ def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointer
     # pointer or in a callee too, nor at other declarations of the same names, nor in a callee that runs twice, also
     # through another callee, though it can be at the parameter of a callee that runs once.
     for function, key, message in [
-        ("owedTwice", "$book.owed[who]", r"Pointers.sol:\d+:31: the read \$book.owed\[who\] names who, which an"),
-        ("owedReset", "$book.owed[_who]", r"the read \$book.owed\[_who\] names _who, which an assignment changes"),
+        (
+            "owedTwice",
+            "$book.owed[who]",
+            r"Pointers.sol:\d+:30: the read \$book.owed\[who\] names who, .* second place",
+        ),
         ("slotsIncremented", "$book.slots[n++]", r"Pointers.sol:\d+:33: the read \$book.slots\[n\+\+\] changes n\+\+"),
         ("slotsAssigned", "$book.slots[_n = _m]", r"the read \$book.slots\[_n = _m\] changes _n = _m: a read map"),
         ("owedInBranches", "$book.owed[who]", r"the read \$book.owed\[who\] names other things than at its"),
@@ -586,6 +589,9 @@ def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointer
     assert [r.source for r in extract(build, f"{POINTERS}.owedOnce", {"$book.owed[_who]": "owed"}).model.reads] == [
         "$book.owed[_who]"
     ]
+    # A callee that runs once reads its parameter after an assignment, at one place: the input is the read there.
+    reset = extract(build, f"{POINTERS}.owedReset", {"$book.owed[_who]": "owed"}).model
+    assert [r.source for r in reset.reads] == ["$book.owed[_who]"]
     # A parameter with the name of a storage variable in the read map is the parameter.
     shadowed = extract(build, f"{POINTERS}.valueIs", {"level": "owed"}).model
     assert [v.name for v in shadowed.inputs] == ["level", "owed"]
@@ -737,7 +743,10 @@ def test_the_balance_of_an_address_is_a_read_and_the_bounds_of_a_type_are_consta
 def test_a_balance_after_an_external_call_or_of_a_local_that_changes_is_refused_and_an_interface_cannot_revert(build):
     with pytest.raises(ExtractionError, match=r"reads address\(this\).balance after an external call"):
         extract(build, f"{BALANCES}.balanceAfterACall", {"address(this).balance": "held"})
-    with pytest.raises(ExtractionError, match=r"Balances.sol:\d+:21: the read who.balance names who, which an"):
+    with pytest.raises(
+        ExtractionError,
+        match=r"Balances.sol:\d+:20: the read who.balance names who, which an assignment changes, at a second place",
+    ):
         extract(build, f"{BALANCES}.balancesOfTwo", {"who.balance": "held"})
     with pytest.raises(ExtractionError, match=r"calls pot, which reads a balance, after an external call"):
         extract(build, f"{BALANCES}.potAfterACall", {"address(this).balance": "held"})
@@ -977,3 +986,36 @@ def test_a_cut_may_take_new_memory_that_nothing_reaches_after_the_call(build, fu
 def test_a_cut_whose_memory_argument_could_be_reached_or_written_unseen_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{STRUCTS}.{function}", reads)
+
+
+KEYS = "tests/fixtures/contracts/Keys.sol:Keys"
+
+
+@pytest.mark.parametrize(
+    "function, values, result",
+    [
+        ("quoted", {"_who": 1, "_byShares": 0, "_byAmount": 3, "quote": 7}, 7),
+        ("quotedThenAssigned", {"_who": 1, "_a": 3, "quote": 7}, 11),
+    ],
+)
+def test_a_key_on_an_assigned_local_with_one_place_is_the_value_there(build, function, values, result):
+    model = extract(build, f"{KEYS}.{function}", {"gate.quote(_who,amount)": "quote"}).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_two_fields_of_one_external_call_text_at_two_places_are_each_the_value_there(build):
+    model = extract(build, f"{KEYS}.twoFields", {"pairs.get(n).x": "x", "pairs.get(n).y": "y"}).model
+    assert evaluate(model, {"x": 3, "y": 4}) == (False, 7, False)
+
+
+@pytest.mark.parametrize(
+    "function, message",
+    [
+        ("quotedTwice", r"names amount, which an assignment changes, at a second place"),
+        ("quotedInACalleeTwice", r"_quoteOf runs 2 times in the call"),
+        ("fieldThenDirect", r"the read pairs.get\(n\).x names n, which an assignment changes, at a second place"),
+    ],
+)
+def test_a_key_on_an_assigned_local_at_two_places_or_runs_is_refused(build, function, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{KEYS}.{function}", {"gate.quote(_who,amount)": "quote", "pairs.get(n).x": "x"})

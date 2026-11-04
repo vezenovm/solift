@@ -140,6 +140,8 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         # the modeled function), which counts how many times a callee runs.
         self.assigned: set[int] = set()
         self.key_identities: dict[str, tuple] = {}
+        # The one place of each read map key that names a local that an assignment changes (_stable).
+        self.key_places: dict[str, int] = {}
         self.keyed: set[int] = set()
         self.calls: list[tuple[int | None, int]] = []
         self.reading: list[set] = []
