@@ -312,26 +312,47 @@ class Statements:
             places = [n for n in _subtree(decl["body"]) if n.get("nodeType") == "PlaceholderStatement"]
             if len(places) != 1 or not statements or statements[-1] is not places[0]:
                 self.fail(decl, f"the modifier {name} runs code after `_;`, or has no single `_;` that ends it")
-            inner = {}
-            arguments = invocation.get("arguments") or []
-            for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
-                value = self._expr(arg, scope)
-                var = self._local(param, inner)
-                self._assignable(arg, value.type, var.type)
-                inner[param["id"]] = var
-                stmts.append(Let(var, value, self.src(arg)))
-            # The modifier runs once, from the target: an edge for _run_once, so that the callees it calls count.
-            self.calls.append((None, decl["id"]))
-            self.assigned |= _assigned(decl)
-            self.guarded |= guarded(decl["body"])
-            self.used.add(self._place(decl)[0])
-            self.stack.append(decl["id"])
-            prefix = self._block(statements[:-1], inner, Type("tuple"))
-            self.stack.pop()
-            if any(isinstance(s, Return) for s in _flat(prefix)):
+            # The modifier runs once, from the target.
+            bindings, body = self._inlined(decl, invocation.get("arguments") or [], scope, statements[:-1])
+            if any(isinstance(s, Return) for s in _flat(body)):
                 self.fail(decl, f"the modifier {name} returns, which would end the function")
-            stmts += prefix
+            stmts += [*bindings, *body]
         return tuple(stmts)
+
+    def _inlined(self, decl, arguments, scope: dict, statements, suffix: str = "") -> tuple[list[Stmt], tuple]:
+        """A check or a modifier `decl` inlined where it runs: a local for each parameter, bound to its argument in
+        `scope`, and then `statements`. The arguments run first, so the temporaries of a struct-valued call in one come
+        before the bindings (structs.py), and such a call under `&&`, `||` or `?:` is refused. The locals take
+        `suffix`. It runs as a callee does for the rules of keys (_run_once), and its assignments count as the
+        function's. Returns the bindings and the statements, which the caller checks for what it refuses."""
+        inner = {}
+        saved, self.hoisted = self.hoisted, []
+        for arg in arguments:
+            self.guarded |= guarded(arg)
+        self.suffixes.append(suffix)
+        bindings = []
+        for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
+            if _storage_struct(param) or memory_struct(param):
+                # The inlined code reads the caller's struct: nothing writes it there (structs.py).
+                inner[param["id"]], lets = self._struct_argument(param, arg, scope)
+                bindings += lets
+                continue
+            value = self._expr(arg, scope)
+            var = self._local(param, inner)
+            self._assignable(arg, value.type, var.type)
+            inner[param["id"]] = var
+            bindings.append(Let(var, value, self.src(arg)))
+        bindings[:0] = self.hoisted
+        self.hoisted = saved
+        self.calls.append((self.stack[-1] if self.stack else None, decl["id"]))
+        self.assigned |= _assigned(decl)
+        self.guarded |= guarded(decl["body"])
+        self.used.add(self._place(decl)[0])
+        self.stack.append(decl["id"])
+        body = self._block(statements, inner, Type("tuple"))
+        self.stack.pop()
+        self.suffixes.pop()
+        return bindings, body
 
     def _struct_argument(self, param, arg, scope: dict) -> tuple[tuple, list[Stmt]]:
         """The scope entry of a struct parameter of an inlined check, and the statements that it needs: a storage
@@ -370,42 +391,20 @@ class Statements:
             self.fail(decl["modifiers"][0], f"{name} has a modifier")
         if decl["id"] in self.stack:
             self.fail(call, f"{name} calls itself")
-        inner = {}
-        stmts = []
         runs = self.inlined[decl["id"]] = self.inlined.get(decl["id"], 0) + 1
         # The inlined parameters are locals of the caller's model: a later inlining, or a name that the caller has,
         # takes a suffix.
         names = {v.name for v in scope.values() if isinstance(v, Var)}
         clash = any(p["name"] in names for p in decl["parameters"]["parameters"])
         suffix = f"_{runs}" if runs > 1 or clash else ""
-        self.suffixes.append(suffix)
-        for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
-            if _storage_struct(param) or memory_struct(param):
-                # The check reads the caller's struct: nothing writes it there (structs.py).
-                inner[param["id"]], lets = self._struct_argument(param, arg, scope)
-                stmts += lets
-                continue
-            value = self._expr(arg, scope)
-            var = self._local(param, inner)
-            self._assignable(arg, value.type, var.type)
-            inner[param["id"]] = var
-            stmts.append(Let(var, value, self.src(arg)))
-        self.suffixes.pop()
+        # The arguments make no effect: a call in one that writes, or that calls out, must be a statement's whole value.
         effects, written, outputs = len(self.effects), set(self.written), len(self.outputs)
-        self.calls.append((self.stack[-1] if self.stack else None, decl["id"]))
-        self.assigned |= _assigned(decl)
-        self.guarded |= guarded(decl["body"])
-        self.used.add(self._place(decl)[0])
-        self.stack.append(decl["id"])
-        self.suffixes.append(suffix)
-        body = self._block(decl["body"]["statements"], inner, Type("tuple"))
-        self.suffixes.pop()
-        self.stack.pop()
+        bindings, body = self._inlined(decl, arguments, scope, decl["body"]["statements"], suffix)
         if any(isinstance(s, Return) for s in _flat(body)):
             self.fail(call, f"{name}, which a statement calls, returns early, which would return from the caller")
         if len(self.effects) != effects or self.written != written or len(self.outputs) != outputs:
             self.fail(call, f"{name}, which a statement calls, writes storage, emits or calls out")
-        return (*stmts, *body)
+        return (*bindings, *body)
 
     def _require(self, call, scope: dict) -> Stmt:
         """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require

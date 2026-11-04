@@ -1161,6 +1161,8 @@ KEEPER = {"keeper": "keeper", "msg.sender": "caller", "total": "total"}
         ),
         ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 9}, True),
         ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 11}, False),
+        ("boundedByCall", {}, {"_a": 4}, True),
+        ("boundedByCall", {}, {"_a": 5}, False),
     ],
 )
 def test_the_modifiers_of_the_target_run_before_its_body(build, function, reads, values, reverts):
@@ -1176,6 +1178,7 @@ def test_the_modifiers_of_the_target_run_before_its_body(build, function, reads,
         ("quoted", {"quotes.quote(n)": "quote"}, r"names n, which an assignment changes, at a second place"),
         ("gated", {"quotes.quote(_n)": "quote"}, r"_get runs 2 times in the call"),
         ("keeperTwice", {"keeper": "keeper", "msg.sender": "caller"}, r"the modifier onlyKeeper is invoked twice"),
+        ("boundedIf", {}, r"the struct of _bound\(5\), under &&, \|\| or \?:"),
     ],
 )
 def test_a_modifier_that_runs_code_after_its_body_or_reads_a_key_twice_is_refused(build, function, reads, message):
