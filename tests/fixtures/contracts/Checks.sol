@@ -124,3 +124,17 @@ contract Checks {
         return _x;
     }
 }
+
+library Limits {
+    function requirePositive(uint256 _x) public pure {
+        require(_x > 0);
+    }
+}
+
+// A public library function runs by delegatecall, as an external call: no check that the extractor inlines.
+contract DelegatedChecks {
+    function delegated(uint256 _x) external pure returns (uint256) {
+        Limits.requirePositive(_x);
+        return _x;
+    }
+}
