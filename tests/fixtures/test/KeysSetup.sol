@@ -6,13 +6,24 @@ import {IGate, Keys} from "tests/fixtures/contracts/Keys.sol";
 
 contract GateStub is IGate {
     uint256 internal quoted;
+    uint256 internal answer;
+    uint256 public calls;
 
     function set(uint256 _quoted) external {
         quoted = _quoted;
     }
 
+    function setAnswer(uint256 _answer) external {
+        answer = _answer;
+    }
+
     function quote(address, uint256) external view returns (uint256) {
         return quoted;
+    }
+
+    function allowed(address, uint256) external returns (uint256) {
+        calls += 1;
+        return answer;
     }
 }
 

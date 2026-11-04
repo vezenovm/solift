@@ -322,6 +322,7 @@ class Statements:
         if operator not in ASSIGNMENTS:
             self.fail(expression, f"the assignment operator {operator}")
         rhs = expression["rightHandSide"]
+        self.statement_value = rhs["id"] if operator == "=" else None
         value = self._expr(rhs, scope)
         if ASSIGNMENTS[operator] is not None:
             value = self._op(expression, ASSIGNMENTS[operator], var, value)

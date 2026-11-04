@@ -1019,3 +1019,61 @@ def test_two_fields_of_one_external_call_text_at_two_places_are_each_the_value_t
 def test_a_key_on_an_assigned_local_at_two_places_or_runs_is_refused(build, function, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{KEYS}.{function}", {"gate.quote(_who,amount)": "quote", "pairs.get(n).x": "x"})
+
+
+ALLOWED = "gate.allowed(_who,_amount)"
+
+
+def test_a_call_that_is_not_a_view_may_be_assigned_and_leaves_immutables_as_they_are(build):
+    assigned = extract(build, f"{KEYS}.assigned", {ALLOWED: "answer"}).model
+    assert evaluate(assigned, {"_who": 1, "_amount": 2, "answer": 5}) == (False, 5, False)
+    around = extract(build, f"{KEYS}.immutableAround", {ALLOWED: "answer", "START": "start"}).model
+    assert evaluate(around, {"_who": 1, "_amount": 2, "answer": 5, "start": 7}) == (False, 19, False)
+
+
+@pytest.mark.parametrize(
+    "function, values, result",
+    [
+        ("take", {"_who": 1, "_amount": 5, "answer": 0}, (False, 5, False)),
+        ("takeByShares", {"_who": 1, "_byShares": 2, "_byAmount": 9, "answer": 0}, (False, 4, False)),
+    ],
+)
+def test_the_result_of_a_call_that_is_not_a_view_is_an_input(build, function, values, result):
+    reads = {"gate.allowed(_who,_amount)" if function == "take" else "gate.allowed(_who,amount)": "answer"}
+    model = extract(build, f"{KEYS}.{function}", reads).model
+    assert evaluate(model, values) == result
+    assert evaluate(model, {**values, "answer": 1})[0] is True
+    assert [e.kind for e in model.effects] == ["call"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("takeThenRead", {"gate.allowed(_who,_amount)": "ok", "total": "total"}, r"reads total after an external call"),
+        ("takeInAnExpression", {"gate.allowed(_who,_amount)": "answer"}, r"must be the whole value of its statement"),
+        (
+            "takeTwice",
+            {"gate.allowed(_who,_amount)": "answer"},
+            r"can change state: a call that can change state, at a",
+        ),
+        (
+            "takeAfterAWrite",
+            {"gate.allowed(_who,_amount)": "answer"},
+            r"follows a write, and its call could read the change",
+        ),
+        ("bumped", {"_bump()": "b"}, r"calls _bump, which can change state: an internal call that can change state"),
+        ("selfCall", {"this.bumpItself()": "answer"}, r"a call to the contract itself, which can change its storage"),
+        ("libraryCall", {"Counter.bump(box)": "answer"}, r"a library call, which runs in the contract's own storage"),
+        ("selfCallStatement", {}, r"a call to the contract itself, this.bumpItself\(\), which can change its storage"),
+        (
+            "balanceAfter",
+            {ALLOWED: "answer", "address(gate).balance+0": "cash"},
+            r"reads address\(gate\).balance after an external call",
+        ),
+    ],
+)
+def test_a_call_that_is_not_a_view_whose_result_could_be_two_values_or_hide_a_change_is_refused(
+    build, function, reads, message
+):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{KEYS}.{function}", reads)

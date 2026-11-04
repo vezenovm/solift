@@ -234,7 +234,12 @@ class Expressions:
             arguments += [arg] * len(values)
         args = tuple(args)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
-        stale = sorted(self.nodes[r]["name"] for r in reads - MARKERS if r in written or EXTERNAL in written)
+        # An external call can change the contract's mutable storage only, not an immutable.
+        stale = sorted(
+            self.nodes[r]["name"]
+            for r in reads - MARKERS
+            if r in written or (EXTERNAL in written and self.nodes[r].get("mutability") == "mutable")
+        )
         if "balance" in reads and EXTERNAL in written:
             self.fail(node, f"calls {decl['name']}, which reads a balance, after an external call that could change it")
         if stale or (reads & {"call", "any"} and written):

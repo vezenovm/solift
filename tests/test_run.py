@@ -704,3 +704,27 @@ def test_a_key_on_an_assigned_local_links_to_its_model(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_result_of_a_call_that_is_not_a_view_links_to_its_model(tmp_path):
+    specs = [
+        Spec(
+            name=f"keys-{function}",
+            target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
+            reads={key: "answer"},
+            link=Link(
+                setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
+                call=f"keys.{function}({args})",
+                adapters={"answer": "gate.setAnswer(answer);"},
+            ),
+            project=SPEC.project,
+        )
+        for function, args, key in [
+            ("take", "_who, _amount", "gate.allowed(_who,_amount)"),
+            ("takeByShares", "_who, _byShares, _byAmount", "gate.allowed(_who,amount)"),
+        ]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

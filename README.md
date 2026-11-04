@@ -107,7 +107,8 @@ result is not the expected one. [USAGE.md](USAGE.md#reference) has the details.
 
 The integer translation and the operator table (the vectors check them on samples), Halmos, the solvers, the compiler,
 and your harness. External view calls and cut points are assumed not to revert, and an external call that the
-function makes as a statement is assumed not to revert and not to call back into the contract.
+function makes as a statement, or whose result it uses as a read, is assumed not to revert and not to call back into
+the contract.
 
 ## What it accepts
 

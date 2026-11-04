@@ -340,6 +340,7 @@ class Reads:
                 why = UNSAFE_ASSEMBLY
         if why is not None:
             self.fail(node, f"the read {self.text(node)} {why}")
+        changes = []
         for n in _subtree(node):
             ref = n.get("referencedDeclaration")
             if n.get("nodeType") == "Identifier":
@@ -351,6 +352,14 @@ class Reads:
                     self._state_read(declared, n)
                 if isinstance(entry, tuple) and entry[0] == "copy" and entry[4] in self.written_copies:
                     self.fail(n, f"reads {n['name']} after a write to it: the model does not see the write")
+            elif (
+                n is not node
+                and n.get("nodeType") == "MemberAccess"
+                and n["memberName"] == "balance"
+                and _address(n["expression"])
+            ):
+                # A balance inside a larger key: an external call that can change state may precede no read of it.
+                self._balance_read(n, scope)
             elif n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
                 callee = n["expression"]
                 if callee["nodeType"] == "NewExpression":
@@ -364,13 +373,13 @@ class Reads:
                 decl = self._runs(callee, decl, self._within())
                 # A getter, which a public state variable that overrides the function gives, is a view.
                 mutability = decl.get("stateMutability", "view")
-                if mutability not in ("view", "pure"):
-                    self.fail(n, f"the read {self.text(node)} calls {decl['name']}, which can change state")
                 internal = (
                     decl["visibility"] in ("internal", "private")
                     or callee["nodeType"] == "Identifier"
                     or _through_contract(callee)
                 )
+                if mutability not in ("view", "pure"):
+                    changes.append(self._state_changing(node, n, decl, internal))
                 given = [*n["arguments"], *([callee["expression"]] if callee["nodeType"] == "MemberAccess" else [])]
                 memory = [a for a in given if _memory(a)]
                 if internal and memory:
@@ -389,6 +398,42 @@ class Reads:
                         self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
                     for reads in self.reading:
                         reads.add("call")
+        for call in changes:
+            # The call can change state as an external call statement can: no storage read may follow it.
+            self.written.add(EXTERNAL)
+            for writes in self.writing:
+                writes.add(EXTERNAL)
+            arguments = tuple(_normal(self.text(a)) for a in call["arguments"])
+            self._effect(call, "call", _normal(self.text(call)), arguments)
+
+    def _state_changing(self, node, call, decl, internal: bool):
+        """A call in a read map key that can change state: taken when it is an external call that is the whole key and
+        the whole value of its statement, at one place, under the assumption for external calls that it does not revert
+        and does not call back into the contract. Its result is the input. It is an effect of the model, and no storage
+        read may follow it (_fallback_read)."""
+        key = _normal(self.text(node))
+        why = None
+        library = self.nodes.get(self.owners.get(decl["id"]), {}).get("contractKind") == "library"
+        if internal:
+            why = "an internal call that can change state"
+        elif library:
+            # A library's external function runs by delegatecall, in the contract's own storage.
+            why = "a library call, which runs in the contract's own storage"
+        elif _this(call["expression"]):
+            # A call to the contract itself enters it, which the assumption for external calls excludes.
+            why = "a call to the contract itself, which can change its storage"
+        elif call is not node:
+            why = "a call that can change state inside a larger key"
+        elif node["id"] != self.statement_value:
+            why = "a call that can change state, which must be the whole value of its statement"
+        elif self.key_places.setdefault(key, node["id"]) != node["id"]:
+            why = "a call that can change state, at a second place"
+        if why is not None:
+            self.fail(call, f"the read {self.text(node)} calls {decl['name']}, which can change state: {why}")
+        if self.stack:
+            # Each run of a callee would make the call again, with its own result.
+            self.keyed.add(self.stack[-1])
+        return call
 
     def _fresh(self, node) -> bool:
         """Whether nothing but the call that takes `node` can reach the memory that it is: a struct constructor whose

@@ -49,7 +49,9 @@ read of its place after the write reads the output. The model leaves out the oth
 - a write to an output's storage variable at another place is refused, and so is an output in a callee. Two outputs
   of one storage variable must differ at a field.
 - a call that writes storage must be the whole value of its statement, as solc does not fix the order of evaluation.
-- a call in the read map must be to a view or pure function.
+- a call in the read map must be to a view or pure function, or else an external call that is the whole key and the
+  whole value of its statement, read at one place: its result is an input, and it is an effect, after which no storage
+  read may follow.
 
 The model assumes that each read succeeds, and that each external call succeeds and does not call back into the
 contract.
