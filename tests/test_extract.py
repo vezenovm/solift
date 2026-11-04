@@ -1110,6 +1110,13 @@ def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, functio
     assert evaluate(model, values)[0] is reverts
 
 
+def test_a_check_whose_argument_emits_is_inlined_and_the_event_is_the_caller_s(build):
+    model = extract(build, f"{CHECKS}.loggedCheck", {}).model
+    assert [e.kind for e in model.effects] == ["event"]
+    assert evaluate(model, {"_x": 0})[0] is True
+    assert evaluate(model, {"_x": 3}) == (False, 3, False)
+
+
 @pytest.mark.parametrize(
     "function, reads, message",
     [
