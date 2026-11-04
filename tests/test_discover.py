@@ -1,20 +1,10 @@
-import pathlib
-
 import pytest
 
 from examples.quoter.spec import READS as QUOTER_READS
-from solift import forge
 from solift.discover import _propose, as_json, discover, report, skeleton
 from solift.extract import ExtractionError, extract
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTE = "tests/fixtures/contracts/Quoter.sol:Quoter._quote"
-
-
-@pytest.fixture(scope="module")
-def build(tmp_path_factory):
-    work = tmp_path_factory.mktemp("forge")
-    return forge.build(ROOT, work / "out", work / "cache")
 
 
 def test_the_reads_of_the_quote_are_the_read_map_of_its_example(build):

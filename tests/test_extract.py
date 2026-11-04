@@ -1,10 +1,9 @@
-import pathlib
 import random
 
 import pytest
 import z3
 
-from solift import forge, ops
+from solift import ops
 from solift.extract import ExtractionError, extract
 from solift.ir import Op, declared_locals, uint, walk
 from solift.smt import symbols, terms
@@ -12,7 +11,6 @@ from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
 from tests.test_smt import evaluate
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTER = "tests/fixtures/contracts/Quoter.sol:Quoter"
 OUT_OF_SCOPE = "tests/fixtures/contracts/OutOfScope.sol:OutOfScope"
 READS = {
@@ -23,12 +21,6 @@ READS = {
     "tx.gasprice": "txGasPrice",
     "block.basefee": "baseFee",
 }
-
-
-@pytest.fixture(scope="session")
-def build(tmp_path_factory):
-    work = tmp_path_factory.mktemp("forge")
-    return forge.build(ROOT, work / "out", work / "cache")
 
 
 def test_the_quoter_model_is_the_function_with_its_reads_as_inputs(build):

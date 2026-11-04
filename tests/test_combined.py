@@ -1,22 +1,12 @@
 """The extractor's features together, across the PRs that added them: memory structs, keys on assigned locals, cuts
 that take new memory, checks called as statements and modifiers."""
 
-import pathlib
-
 import pytest
 
-from solift import forge
 from solift.extract import ExtractionError, extract
 from tests.test_smt import evaluate
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 COMBINED = "tests/fixtures/contracts/Combined.sol:Combined"
-
-
-@pytest.fixture(scope="module")
-def build(tmp_path_factory):
-    work = tmp_path_factory.mktemp("forge")
-    return forge.build(ROOT, work / "out", work / "cache")
 
 
 @pytest.mark.parametrize(
