@@ -112,6 +112,13 @@ def test_a_function_without_a_value_gets_its_call_arguments_as_outputs(build):
     assert as_json(found)["outputs"] == [{"key": "SWAPPER.buy(msg.sender,amount)", "names": (None, "amount2")}]
 
 
+def test_a_call_in_the_read_map_that_can_change_state_is_no_call_whose_arguments_are_outputs(build):
+    found = discover(build, "tests/fixtures/contracts/Keys.sol:Keys.takeAndStore")
+    assert found.complete, found.diagnostic
+    assert list(found.outputs) == ["total"]
+    assert [e.kind for e in found.effects] == ["read"]
+
+
 def test_a_write_that_can_revert_is_an_output_and_one_on_some_paths_gets_its_value_before_the_call(build):
     pull = discover(build, f"{EFFECTS}.pull")
     assert pull.complete

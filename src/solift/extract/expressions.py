@@ -173,19 +173,7 @@ class Expressions:
             self.fail(node, f"the builtin {name}" if callee.get("referencedDeclaration", 0) < 0 else "a call")
         if decl["nodeType"] != "FunctionDefinition":
             self.fail(node, f"a call to {self.text(callee)}")
-        owner = self.nodes[decl["scope"]]
-        # A library call on a value, as `x.mulDivDown(y, d)` under `using MathLib for uint256`, passes the value first.
-        bound = (
-            callee["nodeType"] == "MemberAccess"
-            and owner.get("contractKind") == "library"
-            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
-        )
-        # Named arguments name the parameters of the declaration that solc resolved. An override can name its own
-        # parameters otherwise, and takes the arguments in their order.
-        arguments = self._arguments(node, decl, bound)
-        if bound:
-            arguments = [callee["expression"], *arguments]
-        decl = self._runs(callee, decl, self._within())
+        decl, arguments = self._runs_with(node, decl)
         owner = self.nodes[decl["scope"]]
         if owner.get("contractKind") == "library" and owner["name"] == "Math":
             path = self._place(owner)[0]
@@ -198,16 +186,7 @@ class Expressions:
                 self.math_path = path
                 self.used.add(path)
                 return self._make(node, op[0], *arguments, scope=scope)
-        internal = (
-            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
-            or (
-                callee["nodeType"] == "MemberAccess"
-                and owner.get("contractKind") == "library"
-                and decl["visibility"] in ("internal", "private")
-            )
-            or _through_contract(callee)
-        )
-        if not internal:
+        if not self._internal(callee, decl):
             text = self.text(node)
             missing = Missing(_normal(text), "an external call", self.src(node))
             self.fail(node, f"an external call that the read map does not name: {text}", missing)
@@ -255,6 +234,38 @@ class Expressions:
         for arg, param, arg_node in zip(args, function.params, arguments, strict=True):
             self._assignable(arg_node, arg.type, param.type)
         return Call(function.name, args, function.returns, self.src(node))
+
+    def _runs_with(self, call, decl) -> tuple[dict, list]:
+        """The function that `call` of the FunctionDefinition `decl` runs (_runs), and its arguments in the order of
+        `decl`'s parameters. A library call on a value, as `x.mulDivDown(y, d)` under `using MathLib for uint256`,
+        passes the value first. Named arguments name the parameters of the declaration that solc resolved: an override
+        can name its own parameters otherwise, and takes the arguments in their order."""
+        callee = call["expression"]
+        owner = self.nodes[decl["scope"]]
+        bound = (
+            callee["nodeType"] == "MemberAccess"
+            and owner.get("contractKind") == "library"
+            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
+        )
+        arguments = self._arguments(call, decl, bound)
+        if bound:
+            arguments = [callee["expression"], *arguments]
+        return self._runs(callee, decl, self._within()), arguments
+
+    def _internal(self, callee, decl) -> bool:
+        """Whether a call of the function `decl` that runs through the expression `callee` is internal: a function of
+        the contract, by its name or `super`, or a library function that is internal or private. A public or external
+        library function runs by delegatecall."""
+        owner = self.nodes[decl["scope"]]
+        return (
+            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
+            or (
+                callee["nodeType"] == "MemberAccess"
+                and owner.get("contractKind") == "library"
+                and decl["visibility"] in ("internal", "private")
+            )
+            or _through_contract(callee)
+        )
 
     def _runs(self, callee, decl, within: int, contract: dict | None = None) -> dict:
         """The function that a call of `decl` through the expression `callee` runs, in a function of the contract

@@ -763,6 +763,7 @@ STRUCTS = "tests/fixtures/contracts/Structs.sol:Structs"
         ("smashedThroughCallee", {"_smash()": "smash"}),
         ("smashedBefore", {"_smash()": "smash"}),
         ("smashedCommented", {"_commented()": "smash"}),
+        ("externalSmashed", {"params.window().end": "end", "_smash()": "smash"}),
     ],
 )
 def test_a_cut_with_assembly_that_is_not_memory_safe_is_refused_wherever_it_runs(build, function, reads):
@@ -1043,7 +1044,7 @@ def test_the_result_of_a_call_that_is_not_a_view_is_an_input(build, function, va
     model = extract(build, f"{KEYS}.{function}", reads).model
     assert evaluate(model, values) == result
     assert evaluate(model, {**values, "answer": 1})[0] is True
-    assert [e.kind for e in model.effects] == ["call"]
+    assert [e.kind for e in model.effects] == ["read"]
 
 
 @pytest.mark.parametrize(
@@ -1130,6 +1131,11 @@ def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, functio
 def test_a_statement_call_that_returns_early_writes_or_runs_a_key_twice_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{CHECKS}.{function}", reads)
+
+
+def test_a_statement_call_of_a_public_library_function_is_refused_as_it_runs_by_delegatecall(build):
+    with pytest.raises(ExtractionError, match=r"a call to requirePositive as a statement"):
+        extract(build, "tests/fixtures/contracts/Checks.sol:DelegatedChecks.delegated", {})
 
 
 GATED = "tests/fixtures/contracts/Gated.sol:Gated"

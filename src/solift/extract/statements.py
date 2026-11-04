@@ -13,7 +13,6 @@ from solift.extract.common import (
     _root,
     _storage_struct,
     _subtree,
-    _through_contract,
     guarded,
     memory_struct,
 )
@@ -346,14 +345,11 @@ class Statements:
         entry = scope.get(arg.get("referencedDeclaration")) if arg["nodeType"] == "Identifier" else None
         if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param", "returned"):
             return entry, []
-        definition = self._struct_definition(param)
-        fields = self._struct_fields(definition, param)
         values = self._struct_values(arg, scope)
-        suffix = self.suffixes[-1] if self.suffixes else ""
-        locals_ = {f: self._generated(f"{param['name']}_{f}{suffix}", t, param, scope) for f, t in fields}
-        self.flattened += 1
+        # The locals are the caller's, so their names must differ from those in its scope, which gets the entry too.
+        locals_ = self._field_locals(param, scope, self.suffixes[-1] if self.suffixes else "")
         lets = [Let(var, value, self.src(arg)) for var, value in zip(locals_.values(), values, strict=True)]
-        return ("struct", param["id"], definition["id"], locals_), lets
+        return scope[param["id"]], lets
 
     def _checking_call(self, call, scope: dict) -> tuple[Stmt, ...]:
         """An internal call as a statement to a function that returns nothing and only reads and reverts, as a check
@@ -367,23 +363,8 @@ class Statements:
         decl = self.nodes.get(callee.get("referencedDeclaration"))
         if decl is None or decl["nodeType"] != "FunctionDefinition":
             self.fail(call, refused)
-        owner = self.nodes[decl["scope"]]
-        bound = (
-            callee["nodeType"] == "MemberAccess"
-            and owner.get("contractKind") == "library"
-            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
-        )
-        arguments = self._arguments(call, decl, bound)
-        if bound:
-            arguments = [callee["expression"], *arguments]
-        decl = self._runs(callee, decl, self._within())
-        owner = self.nodes[decl["scope"]]
-        internal = (
-            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
-            or (callee["nodeType"] == "MemberAccess" and owner.get("contractKind") == "library")
-            or _through_contract(callee)
-        )
-        if not internal or not decl.get("implemented") or decl["returnParameters"]["parameters"]:
+        decl, arguments = self._runs_with(call, decl)
+        if not self._internal(callee, decl) or not decl.get("implemented") or decl["returnParameters"]["parameters"]:
             self.fail(call, refused)
         if decl["modifiers"]:
             self.fail(decl["modifiers"][0], f"{name} has a modifier")
