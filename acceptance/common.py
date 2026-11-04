@@ -46,10 +46,26 @@ def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, li
         found = problems(mutant, record)
         failures += [f"mutant {mutant.id}: {p}" for p in found]
         status = "REJECTED" if not found else "NOT REJECTED"
-        print(f"{status} {mutant.id}: {mutant.breaks} fails" + (", and its link passes" if mutant.link else ""))
+        print(f"{status} {mutant.id}: {outcome(mutant, record)}")
         for problem in found:
             print(f"FAILED {problem}")
     return records, failures
+
+
+def outcome(mutant, record: dict) -> str:
+    """What a mutant's run did: the verdict of the theorem that it breaks, and for a mutant marked `link`, whether its
+    link passed, failed or did not run."""
+    specs = record.get("specs") or [{}]
+    theorems = {t["id"]: t for t in specs[0].get("theorems") or []}
+    verdict = theorems.get(mutant.breaks, {}).get("verdict")
+    text = f"{mutant.breaks} is {verdict}" if verdict else f"{mutant.breaks} did not run"
+    if not mutant.link:
+        return text
+    checks = specs[0].get("link")
+    if not checks:
+        return f"{text}, and its link did not run"
+    failed = [r["check"] for r in checks if r["verdict"] != "PASS"]
+    return f"{text}, and its link fails ({', '.join(failed)})" if failed else f"{text}, and its link passes"
 
 
 def finish(result: dict, failures: list[str], times: dict, path: pathlib.Path) -> int:

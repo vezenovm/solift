@@ -204,10 +204,11 @@ def run(
     if vectors:
         _vectors(checked, root, build, project, allow, record)
         clock.stage("vectors (forge test)")
-    if link:
+    if link and models:
         _link(models, shared, root, workspace, build, project, allow, engine, record)
         clock.stage("link (Halmos)")
     else:
+        # Without a model, as where every spec failed at extraction, there is nothing to link and Halmos does not run.
         record["link"] = None
         for c in models:
             c.record["link"] = None

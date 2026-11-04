@@ -85,3 +85,22 @@ def test_only_the_expected_counterexample_of_the_broken_theorem_is_exempt():
     no_values = {**unsure, "witness": "WITNESS", "detail": "the solver gave no value for x."}
     expected = "quoter: theorem t-broken: COUNTEREXAMPLE, expected PROVED"
     assert problems(mutant, mutant_record([no_values], [expected])) == ["t-broken: the solver gave no value for x."]
+
+
+def test_the_runner_says_what_the_theorem_and_the_link_did():
+    from acceptance.common import outcome
+
+    broken = {"id": "t-broken", "verdict": "COUNTEREXAMPLE", "ok": False}
+    linked = Mutant("m", "a", "b", breaks="t-broken", link=True)
+    passed = [{"check": "check_link", "verdict": "PASS"}]
+    failed = [{"check": "check_link", "verdict": "COUNTEREXAMPLE"}]
+    assert outcome(linked, mutant_record([broken], [], passed)) == "t-broken is COUNTEREXAMPLE, and its link passes"
+    assert outcome(linked, mutant_record([broken], [], failed)) == (
+        "t-broken is COUNTEREXAMPLE, and its link fails (check_link)"
+    )
+    assert outcome(linked, mutant_record([], ["extract: the read map names b"])) == (
+        "t-broken did not run, and its link did not run"
+    )
+    assert (
+        outcome(Mutant("m", "a", "b", breaks="t-broken"), mutant_record([broken], [])) == "t-broken is COUNTEREXAMPLE"
+    )

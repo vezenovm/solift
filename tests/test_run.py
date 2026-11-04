@@ -540,3 +540,16 @@ def forge_build(tmp_path):
     workspace = Workspace(tmp_path / "build")
     root = SPEC.project.overlay(workspace)
     return forge.build(root, workspace.fresh("out"), workspace.fresh("cache"))
+
+
+def test_a_run_whose_every_spec_fails_at_extraction_starts_no_halmos(tmp_path):
+    from solift.halmos import HalmosEngine
+
+    class Engine(HalmosEngine):
+        def run(self, *args, **kwargs):
+            raise AssertionError("Halmos ran with nothing to link")
+
+    spec = dataclasses.replace(SPEC, reads={**SPEC.reads, "$total": "total"})
+    record = run(spec, Workspace(tmp_path / "work"), vectors=False, engine=Engine())
+    assert any("does not read" in f for f in record["failures"])
+    assert record["link"] is None
