@@ -759,6 +759,7 @@ BITS = "tests/fixtures/contracts/Bits.sol:Bits"
         ("fullMask", {}, {"_x": 2**256 - 5}, 2**256 - 5),
         ("addressWideMask", {}, {"_x": 2**200 + 9}, 9),
         ("wrappedNarrow", {}, {"_x": 7}, 3),
+        ("wrappedLiteral", {}, {"_x": 255}, 256),
         ("constantMaskFirst", {}, {"_x": 1}, 0x1235),
     ],
 )
@@ -776,6 +777,7 @@ def test_a_shift_and_a_mask_by_constants_are_a_division_and_a_remainder(build, f
         ("everyBitOut", r"shr by 256, which shifts every bit out"),
         ("userOperator", r"the user-defined operator \+"),
         ("valueTypeOverload", r"Math.min with 2 arguments has no lemma"),
+        ("valueTypeRounded", r"Math.mulDiv with 4 arguments has no lemma"),
     ],
 )
 def test_a_shift_or_mask_that_is_not_by_a_constant_of_low_bits_is_refused(build, function, message):

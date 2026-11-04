@@ -190,8 +190,8 @@ class Expressions:
             value = self._expr(argument, scope)
             to = self._type(node)
             self._assignable(argument, value.type, to)
-            # wrap converts a narrower value implicitly, as an assignment does.
-            if value.type.kind == "uint" and value.type.bits < to.bits:
+            # wrap converts a literal or a narrower value implicitly, as an assignment does.
+            if value.type.kind == "literal" or (value.type.kind == "uint" and value.type.bits < to.bits):
                 return ops.make("widen", value, src=self.src(node), to=to)
             return value
         decl = self.nodes.get(callee.get("referencedDeclaration"))
@@ -225,7 +225,7 @@ class Expressions:
                     for p in decl["parameters"]["parameters"][:3]
                 ):
                     op = None
-                if decl["name"] == "mulDiv" and len(arguments) == 4:
+                if op is not None and decl["name"] == "mulDiv" and len(arguments) == 4:
                     op, arguments = (self._rounding(arguments[3]), 3), arguments[:3]
                 if decl["name"] == "ceilDiv" and op is not None:
                     op = (_ceil_div(decl), 2)
