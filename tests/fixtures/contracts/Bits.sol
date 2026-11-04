@@ -63,6 +63,10 @@ contract Bits {
         return Packed.unwrap(Packed.wrap(_x)) >> 1;
     }
 
+    function wrappedLiteral(uint8 _x) external pure returns (uint256) {
+        return Packed.unwrap(Packed.wrap(1)) + _x;
+    }
+
     uint256 internal constant VALUE = 0x1234;
 
     function constantMaskFirst(uint256 _x) external pure returns (uint256) {
@@ -73,6 +77,11 @@ contract Bits {
     // Math.min on the user-defined value type: the lemma is of the overload on uint256.
     function valueTypeOverload(uint256 _x) external pure returns (uint256) {
         return Packed.unwrap(Math.min(Packed.wrap(_x), Packed.wrap(0)));
+    }
+
+    // Math.mulDiv with a rounding on the user-defined value type, which the overload check comes before.
+    function valueTypeRounded(uint256 _x) external pure returns (uint256) {
+        return Packed.unwrap(Math.mulDiv(Packed.wrap(_x), Packed.wrap(1), Packed.wrap(1), Math.Rounding.Floor));
     }
 
     function userOperator(uint256 _x) external view returns (uint256) {
