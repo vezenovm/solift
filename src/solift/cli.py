@@ -22,6 +22,7 @@ import importlib
 import json
 import os
 import pathlib
+import re
 import sys
 from collections.abc import Sequence
 
@@ -122,6 +123,22 @@ def _run(specs: list[Spec], args, parser: argparse.ArgumentParser) -> int:
     return 0 if record["ok"] else 1
 
 
+# The file that `reads` adds to the overlay, which imports the target's file.
+READS_IMPORT = "SoliftReadsTarget.sol"
+
+
+def _import_target(project: Project, overlay: pathlib.Path, target: str) -> None:
+    """Adds a file to the overlay that imports the target's file, as a run's harness does: forge compiles a library's
+    file, under `lib/` for one, only when a source imports it. The file takes the target file's version pragma."""
+    path = target.rpartition(":")[0]
+    source = overlay / path
+    if not path or not source.is_file():
+        return
+    pragma = re.search(r"pragma\s+solidity\s+[^;]+;", source.read_text())
+    lines = ["// SPDX-License-Identifier: UNLICENSED", pragma.group(0) if pragma else "", f'import "{path}";', ""]
+    project.write(overlay, READS_IMPORT, "\n".join(line for line in lines if line is not None))
+
+
 def _reads(args) -> int:
     root = args.root.resolve()
     link, copy = (tuple(paths) if paths else None for paths in (args.link, args.copy))
@@ -130,6 +147,7 @@ def _reads(args) -> int:
         workspace = Workspace(args.workspace)
         guard = project.guard(workspace)
         overlay = project.overlay(workspace)
+        _import_target(project, overlay, args.target)
     except (forge.BuildError, WorkspaceError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
