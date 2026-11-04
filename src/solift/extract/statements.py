@@ -6,7 +6,17 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct, guarded, memory_struct
+from solift.extract.common import (
+    _STORAGE,
+    ASSIGNMENTS,
+    _normal,
+    _root,
+    _storage_struct,
+    _through_contract,
+    guarded,
+    memory_struct,
+)
+from solift.extract.reads import _assigned
 from solift.ir import (
     BOOL,
     Assign,
@@ -35,6 +45,15 @@ _STATEMENT_ERRORS = {
     "Block": "a nested block",
     "TryStatement": "a try statement",
 }
+
+
+def _flat(stmts):
+    """Each statement, also in branches."""
+    for stmt in stmts:
+        yield stmt
+        if isinstance(stmt, If):
+            yield from _flat(stmt.then)
+            yield from _flat(stmt.orelse)
 
 
 def _statements(node) -> list:
@@ -213,7 +232,9 @@ class Statements:
 
     def _local(self, decl, scope: dict) -> Var:
         self._not_inputs_name(decl)
-        var = Var(decl["name"], self._type(decl), src=self.src(decl))
+        # The second and later inlining of one checking call names its locals apart (_checking_call).
+        suffix = self.suffixes[-1] if self.suffixes else ""
+        var = Var(decl["name"] + suffix, self._type(decl), src=self.src(decl))
         if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
             self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
         return var
@@ -263,9 +284,100 @@ class Statements:
         if kind == "FunctionCall" and expression["kind"] == "functionCall":
             if self._external(expression):
                 return self._external_call(expression, scope)
-            name = callee.get("name") or callee.get("memberName")
-            self.fail(expression, f"a call to {name} as a statement: an internal call is taken only as a value")
+            return self._checking_call(expression, scope)
         self.fail(expression, "an expression statement")
+
+    def _struct_argument(self, param, arg, scope: dict) -> tuple[tuple, list[Stmt]]:
+        """The scope entry of a struct parameter of an inlined check, and the statements that it needs: a storage
+        pointer to the argument's storage; the caller's own entry for a struct that it holds, which nothing in the
+        check writes; or else a local for each field of the struct's values."""
+        if _storage_struct(param):
+            path = self._storage_path(arg, scope)
+            if path is None:
+                self.fail(arg, f"the storage argument {self.text(arg)}: {_STORAGE}")
+            return ("pointer", *path, self._identity(arg, scope)), []
+        entry = scope.get(arg.get("referencedDeclaration")) if arg["nodeType"] == "Identifier" else None
+        if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param", "returned"):
+            return entry, []
+        definition = self._struct_definition(param)
+        fields = self._struct_fields(definition, param)
+        values = self._struct_values(arg, scope)
+        suffix = self.suffixes[-1] if self.suffixes else ""
+        locals_ = {f: self._generated(f"{param['name']}_{f}{suffix}", t, param, scope) for f, t in fields}
+        self.flattened += 1
+        lets = [Let(var, value, self.src(arg)) for var, value in zip(locals_.values(), values, strict=True)]
+        return ("struct", param["id"], definition["id"], locals_), lets
+
+    def _checking_call(self, call, scope: dict) -> tuple[Stmt, ...]:
+        """An internal call as a statement to a function that returns nothing and only reads and reverts, as a check
+        (`_checkOwner();`): its statements, inlined, with its parameters as locals. It runs as a callee does, for the
+        rules of keys (_run_once), and may not write storage, emit, call out or return early. A call to any other
+        function as a statement is refused."""
+        callee = call["expression"]
+        name = callee.get("name") or callee.get("memberName")
+        refused = f"a call to {name} as a statement: an internal call is taken only as a value, or as a statement to a"
+        refused += " function that returns nothing and only reads and reverts"
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "FunctionDefinition":
+            self.fail(call, refused)
+        owner = self.nodes[decl["scope"]]
+        bound = (
+            callee["nodeType"] == "MemberAccess"
+            and owner.get("contractKind") == "library"
+            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
+        )
+        arguments = self._arguments(call, decl, bound)
+        if bound:
+            arguments = [callee["expression"], *arguments]
+        decl = self._runs(callee, decl, self._within())
+        owner = self.nodes[decl["scope"]]
+        internal = (
+            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
+            or (callee["nodeType"] == "MemberAccess" and owner.get("contractKind") == "library")
+            or _through_contract(callee)
+        )
+        if not internal or not decl.get("implemented") or decl["returnParameters"]["parameters"]:
+            self.fail(call, refused)
+        if decl["modifiers"]:
+            self.fail(decl["modifiers"][0], f"{name} has a modifier")
+        if decl["id"] in self.stack:
+            self.fail(call, f"{name} calls itself")
+        inner = {}
+        stmts = []
+        runs = self.inlined[decl["id"]] = self.inlined.get(decl["id"], 0) + 1
+        # The inlined parameters are locals of the caller's model: a later inlining, or a name that the caller has,
+        # takes a suffix.
+        names = {v.name for v in scope.values() if isinstance(v, Var)}
+        clash = any(p["name"] in names for p in decl["parameters"]["parameters"])
+        suffix = f"_{runs}" if runs > 1 or clash else ""
+        self.suffixes.append(suffix)
+        for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
+            if _storage_struct(param) or memory_struct(param):
+                # The check reads the caller's struct: nothing writes it there (structs.py).
+                inner[param["id"]], lets = self._struct_argument(param, arg, scope)
+                stmts += lets
+                continue
+            value = self._expr(arg, scope)
+            var = self._local(param, inner)
+            self._assignable(arg, value.type, var.type)
+            inner[param["id"]] = var
+            stmts.append(Let(var, value, self.src(arg)))
+        self.suffixes.pop()
+        effects, written, outputs = len(self.effects), set(self.written), len(self.outputs)
+        self.calls.append((self.stack[-1] if self.stack else None, decl["id"]))
+        self.assigned |= _assigned(decl)
+        self.guarded |= guarded(decl["body"])
+        self.used.add(self._place(decl)[0])
+        self.stack.append(decl["id"])
+        self.suffixes.append(suffix)
+        body = self._block(decl["body"]["statements"], inner, Type("tuple"))
+        self.suffixes.pop()
+        self.stack.pop()
+        if any(isinstance(s, Return) for s in _flat(body)):
+            self.fail(call, f"{name}, which a statement calls, returns early, which would return from the caller")
+        if len(self.effects) != effects or self.written != written or len(self.outputs) != outputs:
+            self.fail(call, f"{name}, which a statement calls, writes storage, emits or calls out")
+        return (*stmts, *body)
 
     def _require(self, call, scope: dict) -> Stmt:
         """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require

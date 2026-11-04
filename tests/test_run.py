@@ -728,3 +728,32 @@ def test_the_result_of_a_call_that_is_not_a_view_links_to_its_model(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_checks_called_as_statements_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/ChecksSetup.sol:ChecksSetup"
+    owner = {"owner": "owner", "msg.sender": "caller", "total": "total"}
+    cases = [
+        ("checked", "_to, _a", {}, {}),
+        ("checkedTwice", "_to, _from, _a", {}, {}),
+        ("owned", "_a", owner, {"owner": "checks.setOwner(owner);", "total": "checks.setTotal(total);"}),
+    ]
+    specs = [
+        Spec(
+            name=f"checks-{function}",
+            target=f"tests/fixtures/contracts/Checks.sol:Checks.{function}",
+            reads=reads,
+            link=Link(
+                setup=setup,
+                call=f"checks.{function}({args})",
+                adapters=adapters,
+                observed={"caller": "address(this)"} if reads else {},
+            ),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]

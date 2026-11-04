@@ -244,6 +244,16 @@ class Structs:
         fields = self._struct_fields(definition, node)
         if node["nodeType"] == "FunctionCall" and node["kind"] == "structConstructorCall":
             return self._constructed(node, definition, fields, scope)
+        if node["nodeType"] == "FunctionCall" and node["kind"] == "functionCall" and self._external(node):
+            # A struct from an external view call, passed whole: each field is a read map key, as through a local
+            # that holds it.
+            prefix, place = self._external_parts(node, scope)
+            identity = self._identity(node, scope)
+            members = {m["name"]: m for m in definition["members"]}
+            return [
+                self._part(prefix, f".{f}", ("member", f, members[f]["id"]), t, node, identity, place)
+                for f, t in fields
+            ]
         if node["nodeType"] == "FunctionCall" and node["kind"] == "functionCall":
             return self._hoisted(node, fields, scope)
         entry = scope.get(node.get("referencedDeclaration")) if node["nodeType"] == "Identifier" else None

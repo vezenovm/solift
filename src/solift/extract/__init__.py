@@ -27,8 +27,10 @@ for `w.start`), shared by its aliases. A callee takes a parameter for each field
 the fields of a struct that it returns, which a call inside an expression unpacks into temporaries just before its
 statement (structs.py). The fields are never written after the struct is built.
 
-Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
-the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
+Internal and library calls are inlined. An internal call as a statement to a function that returns nothing and only
+reads and reverts, as a check, is its statements, with its parameters as locals. A call of a contract's function runs
+the function that the linearization of the target's contract gives it: the most derived override, or for `super.f()`
+the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
 its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n bits. Locals can be reassigned, also in
 branches, and a named return starts at zero. Several returns, tuple declarations and assignments, `type(uint<n>).max`

@@ -142,6 +142,10 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         self.key_identities: dict[str, tuple] = {}
         # The one place of each read map key that names a local that an assignment changes (_stable).
         self.key_places: dict[str, int] = {}
+        # How many times each checking call's function has been inlined, and the suffix of the locals of the one being
+        # inlined (Statements._checking_call).
+        self.inlined: dict[int, int] = {}
+        self.suffixes: list[str] = []
         self.keyed: set[int] = set()
         self.calls: list[tuple[int | None, int]] = []
         self.reading: list[set] = []

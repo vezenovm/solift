@@ -671,9 +671,9 @@ def test_an_output_with_its_value_before_the_call_is_written_on_some_paths_and_r
         ("nothing", {}, {}, r"Effects.nothing returns no value: name a write or an external call in the output map"),
         (
             "boundCallStatement",
+            {"SWAPPER": "swapper"},
             {},
-            {},
-            r"Effects.sol:\d+:5: a call to buyAll as a statement: an internal call is taken",
+            r"Effects.sol:\d+:5: buyAll, which a statement calls, writes storage, emits or calls out",
         ),
         ("add", {}, {"$total": "total"}, r"\+= to the output \$total needs its value before the call"),
         ("buy", {"SWAPPER.fee()": "fee"}, {"SWAPPER.buy(msg.sender,amount)": "x"}, r"names 1 values of SWAPPER.buy"),
@@ -1077,3 +1077,56 @@ def test_a_call_that_is_not_a_view_whose_result_could_be_two_values_or_hide_a_ch
 ):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{KEYS}.{function}", reads)
+
+
+CHECKS = "tests/fixtures/contracts/Checks.sol:Checks"
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("checked", {}, {"_to": 0, "_a": 3}, True),
+        ("checked", {}, {"_to": 1, "_a": 3}, False),
+        ("checkedTwice", {}, {"_to": 1, "_from": 0, "_a": 3}, True),
+        ("ranged", {}, {"_a": 3, "_b": 2}, True),
+        ("ranged", {}, {"_a": 2, "_b": 3}, False),
+        ("rangedConstructed", {}, {"_a": 3, "_b": 2}, True),
+        (
+            "rangedFromOutside",
+            {"quotes.range().low": "low", "quotes.range().high": "high"},
+            {"low": 3, "high": 2},
+            True,
+        ),
+        (
+            "owned",
+            {"owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 1, "caller": 2, "total": 0, "_a": 1},
+            True,
+        ),
+        (
+            "owned",
+            {"owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 2, "caller": 2, "total": 0, "_a": 1},
+            False,
+        ),
+    ],
+)
+def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, function, reads, values, reverts):
+    model = extract(build, f"{CHECKS}.{function}", reads).model
+    assert not model.callees
+    assert evaluate(model, values)[0] is reverts
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("early", {}, r"_early, which a statement calls, returns early"),
+        ("writes", {}, r"_write, which a statement calls, writes storage, emits or calls out"),
+        ("emits", {}, r"_emitted, which a statement calls, writes storage, emits or calls out"),
+        ("keyedTwice", {"quotes.quote(_n)": "quote"}, r"_keyed runs 2 times in the call"),
+        ("guardedInACheck", {}, r"the struct of _range\(_x\), under &&, \|\| or \?:"),
+    ],
+)
+def test_a_statement_call_that_returns_early_writes_or_runs_a_key_twice_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{CHECKS}.{function}", reads)
