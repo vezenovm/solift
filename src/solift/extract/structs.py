@@ -21,7 +21,7 @@ import re
 from solift.extract.common import _normal
 from solift.extract.errors import Missing
 from solift.extract.reads import _LOCALS
-from solift.ir import BOOL, Const, Expr, Let, Read, Stmt, Tuple, Type, Unpack, Var, tuple_of
+from solift.ir import BOOL, Const, Expr, Let, Stmt, Tuple, Type, Unpack, Var, tuple_of
 
 _STRUCT = re.compile(r"t_struct\$_\w+_\$(\d+)")
 
@@ -276,10 +276,7 @@ class Structs:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if entry[0] == "pointer":
             self._storage_read(entry[2], node)
-        if _normal(key) not in self.reads:
-            var = Var(mapped[1], self._type(member), input=True, src=self.src(node))
-            self.reads[_normal(key)] = Read(var, mapped[0])
-        return self.reads[_normal(key)].var
+        return self._input(key, member, node)
 
     def _struct_field(self, node, entry) -> Var:
         """The local of a field of a flattened struct, as `w.end`."""
