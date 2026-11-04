@@ -763,6 +763,7 @@ STRUCTS = "tests/fixtures/contracts/Structs.sol:Structs"
         ("smashedThroughCallee", {"_smash()": "smash"}),
         ("smashedBefore", {"_smash()": "smash"}),
         ("smashedCommented", {"_commented()": "smash"}),
+        ("externalSmashed", {"params.window().end": "end", "_smash()": "smash"}),
     ],
 )
 def test_a_cut_with_assembly_that_is_not_memory_safe_is_refused_wherever_it_runs(build, function, reads):
