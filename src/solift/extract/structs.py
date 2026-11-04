@@ -81,6 +81,8 @@ class Structs:
             # `PARAMS.window().end`, of the call as it runs here.
             prefix = self._external_parts(init, scope)
             scope[decl["id"]] = ("returned", prefix, self._identity(init, scope), definition["id"])
+            # Its memory is the struct's, which assembly could write as it could a flattened struct's (reads.py).
+            self.flattened += 1
             return ()
         fields = self._struct_fields(definition, decl)
         if init is not None and init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall":
@@ -291,8 +293,9 @@ class Structs:
         self._fallback_read(call, scope)
         return prefix
 
-    def _part(self, prefix: str, place: str, step: tuple, type_: Type, node, identity: tuple) -> Var:
-        """The input of one value of an external call: the field `.end` or the value `[3]` of the call `prefix`."""
+    def _part(self, prefix: str, place: str, step: tuple, typed, node, identity: tuple) -> Var:
+        """The input of one value of an external call: the field `.end` or the value `[3]` of the call `prefix`, of the
+        type of `typed`, the struct's member or the return parameter."""
         key = prefix + place
         mapped = self.read_map.get(_normal(key))
         if mapped is None:
@@ -301,15 +304,13 @@ class Structs:
         whole = (step, *identity)
         if self.key_identities.setdefault(_normal(key), whole) != whole:
             self.fail(node, f"the read {key} names other things than at its first read: {_LOCALS}")
-        if _normal(key) not in self.reads:
-            self.reads[_normal(key)] = Read(Var(mapped[1], type_, input=True, src=self.src(node)), mapped[0])
-        return self.reads[_normal(key)].var
+        return self._input(key, typed, node)
 
     def _returned_field(self, entry, member, node) -> Var:
         """A field of a struct from an external call, as `w.end` for `PARAMS.window()`: the key
         `PARAMS.window().end`, with the identity that a read of `PARAMS.window().end` in an expression has."""
         step = ("member", member["name"], member["id"])
-        return self._part(entry[1], f".{member['name']}", step, self._type(member), node, entry[2])
+        return self._part(entry[1], f".{member['name']}", step, member, node, entry[2])
 
     def _external_unpack(self, node, scope: dict) -> tuple[Stmt, ...]:
         """A tuple declaration from an external view call, as `(,,, uint256 at,) = FEED.latestRoundData();`: each value
@@ -325,7 +326,7 @@ class Structs:
             if decl is None:
                 continue
             var = self._local(decl, scope)
-            value = self._part(prefix, f"[{n}]", ("part", n), self._type(returned), init, identity)
+            value = self._part(prefix, f"[{n}]", ("part", n), returned, init, identity)
             self._assignable(init, value.type, var.type)
             scope[decl["id"]] = var
             stmts.append(Let(var, value, self.src(node)))

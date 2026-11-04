@@ -324,6 +324,13 @@ contract Structs {
         return b + _x;
     }
 
+    // A struct from an external call, then a cut whose assembly could write its memory.
+    function externalSmashed() external view returns (uint256) {
+        Window memory w = params.window();
+        uint256 a = _smash();
+        return w.end + a;
+    }
+
     function externalWritten(uint256 _x) external view returns (uint256) {
         Window memory w = params.window();
         w.end = _x;
