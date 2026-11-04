@@ -1044,7 +1044,7 @@ def test_the_result_of_a_call_that_is_not_a_view_is_an_input(build, function, va
     model = extract(build, f"{KEYS}.{function}", reads).model
     assert evaluate(model, values) == result
     assert evaluate(model, {**values, "answer": 1})[0] is True
-    assert [e.kind for e in model.effects] == ["call"]
+    assert [e.kind for e in model.effects] == ["read"]
 
 
 @pytest.mark.parametrize(

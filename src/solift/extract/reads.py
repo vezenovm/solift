@@ -410,7 +410,7 @@ class Reads:
             for writes in self.writing:
                 writes.add(EXTERNAL)
             arguments = tuple(_normal(self.text(a)) for a in call["arguments"])
-            self._effect(call, "call", _normal(self.text(call)), arguments)
+            self._effect(call, "read", _normal(self.text(call)), arguments)
 
     def _state_changing(self, node, call, decl, internal: bool):
         """A call in a read map key that can change state: taken when it is an external call that is the whole key and
