@@ -693,3 +693,22 @@ def test_shifts_and_masks_by_constants_link_with_a_row_for_each_constant(tmp_pat
     assert set(checks.values()) == {"PASS"}
     assert {"check_row_shr128Of256IsTheQuotient", "check_row_mask128Of256IsTheRemainder"} <= set(checks)
     assert {"check_row_mask8Of256IsTheRemainder", "check_row_shr64Of128IsTheQuotient"} <= set(checks)
+
+
+def test_ceil_div_links_with_the_row_of_its_copy_of_math(tmp_path):
+    specs = [
+        Spec(
+            name=f"ceil-{function}",
+            target=f"tests/fixtures/contracts/Ceil.sol:Ceil.{function}",
+            reads={},
+            link=Link(setup="tests/fixtures/test/CeilSetup.sol:CeilSetup", call=f"ceil.{function}({args})"),
+            project=SPEC.project,
+        )
+        for function, args in [("half", "_x"), ("ceil", "_a, _b"), ("olderCeil", "_a, _b")]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    checks = {r["check"]: r["verdict"] for r in record["link"]["shared"]}
+    checks |= {r["check"]: r["verdict"] for result in record["specs"] for r in result["link"]}
+    assert set(checks.values()) == {"PASS"}
+    assert {"check_row_ceilDivRevertsExactlyOnZero", "check_row_ceilDivRevertsExactlyOnZeroAboveZero"} <= set(checks)

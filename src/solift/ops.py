@@ -6,6 +6,8 @@
     mul      a * b                  a * b               a * b >= 2**256
     div      a / b                  a / b (floor)       b == 0
     mulDiv   Math.mulDiv(x, y, d)   x * y / d (floor)   d == 0 or x * y / d >= 2**256    x >= 2**128 or y >= 2**128
+    ceilDiv  Math.ceilDiv(a, b)     If(a == 0, 0, (a - 1) / b + 1)  b == 0
+    ceilDivFromZero  as ceilDiv     as ceilDiv          a > 0 and b == 0
     min      Math.min(a, b)         If(a < b, a, b)     never
     max      Math.max(a, b)         If(a > b, a, b)     never
     lt ... ne                       a < b ... a != b    never
@@ -118,6 +120,24 @@ TABLE = {
                 "check_lemma_mulModOfHalfWidthOperandsIsTheProduct",
                 "check_lemma_mulDivOfHalfWidthOperandsIsTheFloor",
             ),
+        ),
+        Operator(
+            "ceilDiv",
+            2,
+            "Math.ceilDiv({0}, {1})",
+            "library",
+            lambda a, b: z3.If(a == 0, 0, (a - 1) / b + 1),
+            reverts=lambda a, b: b == 0,
+            proofs=("check_row_ceilDivRevertsExactlyOnZero",),
+        ),
+        Operator(
+            "ceilDivFromZero",
+            2,
+            "Math.ceilDiv({0}, {1})",
+            "library",
+            lambda a, b: z3.If(a == 0, 0, (a - 1) / b + 1),
+            reverts=lambda a, b: z3.And(a > 0, b == 0),
+            proofs=("check_row_ceilDivRevertsExactlyOnZeroAboveZero",),
         ),
         Operator(
             "min",
@@ -426,6 +446,40 @@ PROOFS = {
     vm.assume(mm == product);
     assert(Math.mulDiv(_x, _y, _d) == product / _d);
   }}
+""",
+        ),
+        Proof(
+            "check_row_ceilDivRevertsExactlyOnZero",
+            wrapper="""\
+  function ceilDiv(uint256 _a, uint256 _b) external pure returns (uint256) {
+    return Math.ceilDiv(_a, _b);
+  }
+""",
+            check="""\
+  function check_row_ceilDivRevertsExactlyOnZero(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.ceilDiv, (_a, _b)));
+    assert(ok == (_b != 0));
+    if (ok) {
+      assert(abi.decode(out, (uint256)) == (_a == 0 ? 0 : (_a - 1) / _b + 1));
+    }
+  }
+""",
+        ),
+        Proof(
+            "check_row_ceilDivRevertsExactlyOnZeroAboveZero",
+            wrapper="""\
+  function ceilDiv(uint256 _a, uint256 _b) external pure returns (uint256) {
+    return Math.ceilDiv(_a, _b);
+  }
+""",
+            check="""\
+  function check_row_ceilDivRevertsExactlyOnZeroAboveZero(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.ceilDiv, (_a, _b)));
+    assert(ok == (_b != 0 || _a == 0));
+    if (ok) {
+      assert(abi.decode(out, (uint256)) == (_a == 0 ? 0 : (_a - 1) / _b + 1));
+    }
+  }
 """,
         ),
         Proof(

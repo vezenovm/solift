@@ -781,3 +781,26 @@ def test_a_shift_and_a_mask_by_constants_are_a_division_and_a_remainder(build, f
 def test_a_shift_or_mask_that_is_not_by_a_constant_of_low_bits_is_refused(build, function, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{BITS}.{function}", {"packed": "packed"} if function == "userOperator" else {})
+
+
+CEIL = "tests/fixtures/contracts/Ceil.sol:Ceil"
+
+
+@pytest.mark.parametrize(
+    "function, values, outcome",
+    [
+        ("half", {"_x": 5}, (False, 3, False)),
+        ("ceil", {"_a": 0, "_b": 3}, (False, 0, False)),
+        ("ceil", {"_a": 7, "_b": 3}, (False, 3, False)),
+        ("ceil", {"_a": 0, "_b": 0}, True),
+        ("olderCeil", {"_a": 0, "_b": 0}, (False, 0, False)),
+        ("olderCeil", {"_a": 1, "_b": 0}, True),
+    ],
+)
+def test_ceil_div_is_the_quotient_rounded_up_and_reverts_as_its_copy_does(build, function, values, outcome):
+    model = extract(build, f"{CEIL}.{function}", {}).model
+    if outcome is True:
+        reverts = terms(model, {v.name: z3.IntVal(values[v.name]) for v in model.inputs}).reverts
+        assert z3.is_true(z3.simplify(reverts))
+    else:
+        assert evaluate(model, values) == outcome

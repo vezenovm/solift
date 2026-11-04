@@ -14,7 +14,7 @@ from solift.ir import ADDRESS, BOOL, LITERAL, Call, Const, Expr, Function, Tuple
 MATH_PATH = "utils/math/Math.sol"
 
 
-MATH_OPERATORS = {"min": ("min", 2), "max": ("max", 2), "mulDiv": ("mulDiv", 3)}
+MATH_OPERATORS = {"min": ("min", 2), "max": ("max", 2), "mulDiv": ("mulDiv", 3), "ceilDiv": ("ceilDiv", 2)}
 
 
 # The operator of Math.mulDiv with a Rounding: Floor is the floor, as without one. Ceil adds one where
@@ -42,6 +42,24 @@ BINARY = {
 def _mask(e: Expr) -> bool:
     """Whether an expression is a constant mask of low bits, `2**k - 1`."""
     return isinstance(e, Const) and not isinstance(e.value, bool) and e.value > 0 and not e.value & (e.value + 1)
+
+
+def _ceil_div(decl) -> str:
+    """The operator of a copy's Math.ceilDiv: OpenZeppelin 4.5 to 4.9 return `a == 0 ? 0 : (a - 1) / b + 1`, which
+    gives 0 for ceilDiv(0, 0), and other versions revert where b == 0 (5.x checks it first, 4.4 and older divide by
+    it). The row of each is proved on the copy, so a wrong pick fails its row."""
+    statements = decl["body"]["statements"]
+    returned = (
+        statements[0].get("expression") if len(statements) == 1 and statements[0]["nodeType"] == "Return" else None
+    )
+    condition = returned.get("condition") if returned and returned["nodeType"] == "Conditional" else None
+    zero = (
+        condition is not None
+        and condition["nodeType"] == "BinaryOperation"
+        and condition["operator"] == "=="
+        and condition["rightExpression"].get("value") == "0"
+    )
+    return "ceilDivFromZero" if zero else "ceilDiv"
 
 
 class Expressions:
@@ -209,6 +227,8 @@ class Expressions:
                     op = None
                 if decl["name"] == "mulDiv" and len(arguments) == 4:
                     op, arguments = (self._rounding(arguments[3]), 3), arguments[:3]
+                if decl["name"] == "ceilDiv" and op is not None:
+                    op = (_ceil_div(decl), 2)
                 if op is None or len(arguments) != op[1]:
                     self.fail(node, f"Math.{decl['name']} with {len(arguments)} arguments has no lemma")
                 self.math_path = path
