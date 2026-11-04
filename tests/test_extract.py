@@ -1131,3 +1131,8 @@ def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, functio
 def test_a_statement_call_that_returns_early_writes_or_runs_a_key_twice_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{CHECKS}.{function}", reads)
+
+
+def test_a_statement_call_of_a_public_library_function_is_refused_as_it_runs_by_delegatecall(build):
+    with pytest.raises(ExtractionError, match=r"a call to requirePositive as a statement"):
+        extract(build, "tests/fixtures/contracts/Checks.sol:DelegatedChecks.delegated", {})
