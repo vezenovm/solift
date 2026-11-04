@@ -21,7 +21,7 @@ import re
 from solift.extract.common import _normal
 from solift.extract.errors import Missing
 from solift.extract.reads import _LOCALS
-from solift.ir import BOOL, Const, Expr, Let, Read, Stmt, Tuple, Type, Unpack, Var, tuple_of
+from solift.ir import BOOL, Const, Expr, Let, Stmt, Tuple, Type, Unpack, Var, tuple_of
 
 _STRUCT = re.compile(r"t_struct\$_\w+_\$(\d+)")
 
@@ -70,7 +70,6 @@ class Structs:
     def _struct_declaration(self, decl, init, scope: dict) -> tuple[Stmt, ...]:
         """A memory struct local that is not a copy of storage: an alias of a struct that the function has, or a new
         struct, built by a constructor or zero, with a local for each field."""
-        name = decl["name"]
         if init is not None and init["nodeType"] == "Identifier":
             entry = scope.get(init.get("referencedDeclaration"))
             if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param", "returned"):
@@ -88,9 +87,7 @@ class Structs:
             # A struct that an internal call returns: the callee returns its fields, which unpack into the locals.
             call = self._expr(init, scope)
             self._parts_of(init, call, len(fields))
-            locals_ = {f: self._generated(f"{name}_{f}", t, decl, scope) for f, t in fields}
-            scope[decl["id"]] = ("struct", decl["id"], definition["id"], locals_)
-            self.flattened += 1
+            locals_ = self._field_locals(decl, scope)
             return (self._unpacked(tuple(locals_.values()), call, init),)
         if init is None:
             values = [_zero(t) for _, t in fields]
@@ -98,15 +95,23 @@ class Structs:
             values = self._constructed(init, definition, fields, scope)
         else:
             self.fail(init, "a memory struct that is not built here, a copy of a storage struct, or an alias of one")
-        stmts = []
-        locals_ = {}
-        for (field, type_), value in zip(fields, values, strict=True):
-            var = self._generated(f"{name}_{field}", type_, decl, scope)
-            locals_[field] = var
-            stmts.append(Let(var, value, self.src(init or decl)))
+        locals_ = self._field_locals(decl, scope)
+        return tuple(
+            Let(var, value, self.src(init or decl)) for var, value in zip(locals_.values(), values, strict=True)
+        )
+
+    def _field_locals(self, decl, scope: dict, suffix: str = "") -> dict[str, Var]:
+        """A local of the model for each field of the memory struct that `decl` declares, as a local, a parameter or a
+        named return: `w_start` for the field `start` of `w`, then `suffix`. `scope` gets the struct's entry, whose
+        object is `decl`, and no other local in it may have one of their names."""
+        definition = self._struct_definition(decl)
+        locals_ = {
+            field: self._generated(f"{decl['name']}_{field}{suffix}", type_, decl, scope)
+            for field, type_ in self._struct_fields(definition, decl)
+        }
         scope[decl["id"]] = ("struct", decl["id"], definition["id"], locals_)
         self.flattened += 1
-        return tuple(stmts)
+        return locals_
 
     def _constructed(self, call, definition, fields, scope: dict) -> list:
         """The value of each field that a struct constructor gives, in the order of the struct's members."""
@@ -156,12 +161,7 @@ class Structs:
     def _named_struct_return(self, returned, scope: dict) -> tuple[Var, ...]:
         """The named results of a function whose named return is a memory struct: a local for each field, which starts
         at zero, as the new struct does, and which nothing writes."""
-        definition = self._struct_definition(returned)
-        fields = self._struct_fields(definition, returned)
-        locals_ = {f: self._generated(f"{returned['name']}_{f}", t, returned, scope) for f, t in fields}
-        scope[returned["id"]] = ("struct", returned["id"], definition["id"], locals_)
-        self.flattened += 1
-        return tuple(locals_.values())
+        return tuple(self._field_locals(returned, scope).values())
 
     def _returned_struct(self, node, scope: dict, return_type: Type) -> Expr:
         """The value of `return <struct>`: the tuple of its fields. A callee must return new memory: a struct that it
@@ -227,13 +227,8 @@ class Structs:
     def _struct_parameter(self, param, scope: dict) -> list[Var]:
         """The parameters of a callee for a memory struct parameter, one for each field (`_w_start`, `_w_end`). The
         struct is a flattened one in the callee, so a write to its fields is refused there."""
-        definition = self._struct_definition(param)
-        locals_ = {}
-        for field, type_ in self._struct_fields(definition, param):
-            locals_[field] = self._generated(f"{param['name']}_{field}", type_, param, scope)
-        scope[param["id"]] = ("struct", param["id"], definition["id"], locals_)
+        locals_ = self._field_locals(param, scope)
         self.parameter_objects.add(param["id"])
-        self.flattened += 1
         return list(locals_.values())
 
     def _struct_values(self, node, scope: dict) -> list[Expr]:
@@ -285,10 +280,7 @@ class Structs:
             self.fail(node, f"reads {key} after a write to its memory copy: the model does not see the write")
         if entry[0] == "pointer":
             self._storage_read(entry[2], node)
-        if _normal(key) not in self.reads:
-            var = Var(mapped[1], self._type(member), input=True, src=self.src(node))
-            self.reads[_normal(key)] = Read(var, mapped[0])
-        return self.reads[_normal(key)].var
+        return self._input(key, member, node)
 
     def _external_parts(self, call, scope: dict) -> str:
         """Checks an external view call whose values the function reads one by one, a struct's fields or a tuple's
