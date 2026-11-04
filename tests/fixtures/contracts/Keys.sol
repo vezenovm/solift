@@ -128,6 +128,13 @@ contract Keys {
         return a + b;
     }
 
+    // No value: its write is an output, and the call in the read map is no call whose arguments could be.
+    function takeAndStore(address _who, uint256 _amount) external {
+        uint256 ok = gate.allowed(_who, _amount);
+        require(ok == 0);
+        total = _amount;
+    }
+
     function takeAfterAWrite(address _who, uint256 _amount) external returns (uint256) {
         total = _amount;
         uint256 ok = gate.allowed(_who, _amount);

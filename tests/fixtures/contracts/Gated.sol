@@ -93,4 +93,22 @@ contract Gated is Ownable {
     function keeperTwice(uint256 _a) external view onlyKeeper onlyKeeper returns (uint256) {
         return _a;
     }
+
+    struct Bound {
+        uint256 low;
+    }
+
+    function _bound(uint256 _x) internal pure returns (Bound memory) {
+        return Bound(_x);
+    }
+
+    // A modifier argument that reads a field of a struct that an internal call returns, which unpacks before it; and
+    // one under ?:, which the extractor refuses, as the call would run on every path.
+    function boundedByCall(uint256 _a) external pure atLeast(_bound(5).low, _a) returns (uint256) {
+        return _a;
+    }
+
+    function boundedIf(bool _c, uint256 _a) external pure atLeast(_c ? _bound(5).low : 0, _a) returns (uint256) {
+        return _a;
+    }
 }
