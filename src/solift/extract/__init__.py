@@ -19,13 +19,14 @@ input. A key names one value for the whole call, so each local in it is assigned
 local at each read, and belongs to the modeled function or to a callee that runs once. A call in the read map must not
 reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 
-Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
-the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
+Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of the
+target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
 its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n bits. Locals can be reassigned, also in
-branches, and a named return starts at zero. Several returns, tuple declarations and assignments, `type(uint<n>).max`
-and `.min`, `require`, `assert` and `revert` are supported. A parameter of a user-defined value type or a signed type
-that only read map keys or effects use is not an input.
+branches, and a named return starts at zero. A parameter of the modeled function that the body assigns is an input, its
+value at the call, and a local of its name that starts at it, so a read map key must not name it. Several returns, tuple
+declarations and assignments, `type(uint<n>).max` and `.min`, `require`, `assert` and `revert` are supported. A
+parameter of a user-defined value type or a signed type that only read map keys or effects use is not an input.
 Anything else stops the extraction with an error that names the construct and its place.
 
 The model is the function's value, whether it reverts, and its outputs: the writes and external call arguments that

@@ -70,10 +70,11 @@ class Terms:
     modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for each
     value (`q.result[1]`). `post` holds each output by its name (`q.post.left`): the value that the function writes
     there, or passes to an external call. `declared(name)` is a local's value where it is declared, before any
-    assignment. `free(name, kind)` adds a variable that the theorem quantifies over, such as `shares`. `call(name,
-    *args)` runs a function of the model on terms, and `at(**values)` gives the terms with inputs replaced, as for one
-    configuration. Each theorem proves on its own `scoped()` view, which records its free variables and the runs of the
-    model that it makes (`evaluations`)."""
+    assignment. A parameter that the function assigns is an input and a local of one name: `q.<name>` is its value at
+    the call, and `locals[name]` its value at the return. `free(name, kind)` adds a variable that the theorem quantifies
+    over, such as `shares`. `call(name, *args)` runs a function of the model on terms, and `at(**values)` gives the
+    terms with inputs replaced, as for one configuration. Each theorem proves on its own `scoped()` view, which records
+    its free variables and the runs of the model that it makes (`evaluations`)."""
 
     def __init__(self, model: Model):
         self.model = model

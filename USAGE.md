@@ -128,7 +128,8 @@ The docstring is the statement. A theorem returns a z3 condition on `q`, which h
 
 - `result` and `reverts`; for a function of several returns, `result` is a tuple (`q.result[1]`);
 - `post`, each output by name (`q.post.remaining`): the value written, or passed to the external call;
-- each input, parameter and local, by name;
+- each input, parameter and local, by name. A parameter that the function assigns is its value at the call, and
+  `locals[name]` is its value at the return;
 - `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
   `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
 - `call(function, *args)`, with `.value` and `.reverts`;
@@ -187,7 +188,7 @@ The README says what a run proves and what it trusts.
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
 | `if`, early returns, `require`, `assert`, `revert` | loops |
-| locals, also assigned in branches; compound assignments; named returns | modifiers |
+| locals, also assigned in branches; compound assignments; named returns; a parameter that the body assigns, which is an input with its value at the call and a local of its name from there on | modifiers |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`) |
