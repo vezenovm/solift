@@ -17,7 +17,8 @@ from solift.extract.common import (
     guarded,
     memory_struct,
 )
-from solift.extract.reads import _assigned
+from solift.extract.errors import ExtractionError
+from solift.extract.reads import _assigned, _Scan
 from solift.ir import (
     BOOL,
     Assign,
@@ -428,7 +429,8 @@ class Statements:
 
     def _require(self, call, scope: dict) -> Stmt:
         """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require
-        must be a string literal or an error whose arguments cannot revert, so that it reverts only where c is false."""
+        must be a string literal or an error whose arguments cannot revert (_error_argument), so that it reverts only
+        where c is false."""
         name = call["expression"]["name"]
         if name == "revert":
             return Revert(self.src(call))
@@ -441,11 +443,45 @@ class Statements:
             error = self.nodes.get((message.get("expression") or {}).get("referencedDeclaration"))
             if message["nodeType"] == "FunctionCall" and error is not None and error["nodeType"] == "ErrorDefinition":
                 for arg in message["arguments"]:
-                    self._cannot_revert(arg, scope)
+                    self._error_argument(arg, args[0], scope)
             elif message["nodeType"] != "Literal" or message["kind"] not in ("string", "unicodeString"):
                 self.fail(message, f"the message of {name} is not a string literal or an error")
         negated = dataclasses.replace(ops.make("not", cond), src=self.src(call))
         return If(negated, (Revert(self.src(call)),), (), self.src(call))
+
+    def _error_argument(self, arg, condition, scope: dict) -> None:
+        """Refuses an argument of a require's custom error that could revert where the condition does not. solc
+        evaluates the arguments whether or not the condition holds, so an argument that can revert must be an
+        expression that the condition evaluates too, on every path of it (not under `&&`, `||` or `?:`), with the same
+        text and the same declarations (_identity), whose calls are views that give one value in the call (_varies):
+        it then reverts only where the condition does, at the same state."""
+        try:
+            self._cannot_revert(arg, scope)
+            return
+        except ExtractionError:
+            pass
+        text, identity = _normal(self.text(arg)), self._identity(arg, scope)
+        same = [
+            n
+            for n in _subtree(condition)
+            if n["id"] not in self.guarded and _normal(self.text(n)) == text and self._identity(n, scope) == identity
+        ]
+        if not same:
+            self.fail(
+                arg,
+                f"the argument {self.text(arg)} of the error can revert, which solc evaluates whether or not the "
+                "condition holds, and the condition does not make it on every path",
+            )
+        for n in _subtree(arg):
+            if n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
+                decl = self.nodes.get(n["expression"].get("referencedDeclaration"))
+                if decl is not None and decl.get("stateMutability", "view") not in ("view", "pure"):
+                    self.fail(
+                        n, f"the argument {self.text(arg)} of the error calls {decl['name']}, which can change state"
+                    )
+        why = self._varies(arg, _Scan(), self._within(), self.contract)
+        if why is not None:
+            self.fail(arg, f"the argument {self.text(arg)} of the error {why}")
 
     def _assignment(self, expression, scope: dict) -> Assign | Unpack | None:
         lhs = expression["leftHandSide"]

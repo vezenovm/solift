@@ -186,7 +186,7 @@ The README says what a run proves and what it trusts.
 |---|---|
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries | `unchecked`, signed integers, `**`, `%`, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
-| `if`, early returns, `require`, `assert`, `revert` | loops |
+| `if`, early returns, `require`, `assert`, `revert`; a custom error whose arguments cannot revert, or are expressions that the condition makes too, on every path of it | loops; an error argument that can revert where the condition does not run it |
 | locals, also assigned in branches; compound assignments; named returns; the modifiers of the target, whose statements before a single `_;` that ends them run before its body (OpenZeppelin's `onlyOwner`) | a modifier with code after `_;`, invoked twice, or on a callee |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`), also of an external view call, each value a read | a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |

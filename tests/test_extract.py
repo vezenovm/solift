@@ -1175,3 +1175,29 @@ def test_the_modifiers_of_the_target_run_before_its_body(build, function, reads,
 def test_a_modifier_that_runs_code_after_its_body_or_reads_a_key_twice_is_refused(build, function, reads, message):
     with pytest.raises(ExtractionError, match=message):
         extract(build, f"{GATED}.{function}", reads)
+
+
+KEPT = "tests/fixtures/contracts/Kept.sol:Kept"
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("kept", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 1, "caller": 2, "_a": 3}, True),
+        ("kept", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 3}, False),
+        ("kept", {"currentKeeper()": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 3}, False),
+        ("sameArgument", {}, {"_n": 1}, False),
+    ],
+)
+def test_a_call_in_an_error_argument_that_the_condition_makes_too_is_left_out(build, function, reads, values, reverts):
+    model = extract(build, f"{KEPT}.{function}", reads).model
+    assert evaluate(model, values)[0] is reverts
+
+
+@pytest.mark.parametrize(
+    "function",
+    ["skipped", "otherArgument"],
+)
+def test_a_call_in_an_error_argument_that_the_condition_may_not_make_is_refused(build, function):
+    with pytest.raises(ExtractionError, match=r"which solc evaluates whether or not the condition holds"):
+        extract(build, f"{KEPT}.{function}", {})

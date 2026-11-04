@@ -792,3 +792,22 @@ def test_the_modifiers_of_a_target_link_to_its_model(tmp_path):
     assert record["ok"], summary(record)
     for result in record["specs"]:
         assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_a_call_in_an_error_argument_links_to_its_model(tmp_path):
+    spec = Spec(
+        name="kept",
+        target="tests/fixtures/contracts/Kept.sol:Kept.kept",
+        reads={"keeper": "keeper", "msg.sender": "caller"},
+        link=Link(
+            setup="tests/fixtures/test/KeptSetup.sol:KeptSetup",
+            call="kept.kept(_a)",
+            adapters={"keeper": "kept.setKeeper(keeper);"},
+            observed={"caller": "address(this)"},
+        ),
+        project=SPEC.project,
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
