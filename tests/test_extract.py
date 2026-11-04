@@ -6,7 +6,7 @@ import z3
 
 from solift import forge, ops
 from solift.extract import ExtractionError, extract
-from solift.ir import Op, uint, walk
+from solift.ir import Op, enum, uint, walk
 from solift.smt import symbols, terms
 from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
@@ -288,6 +288,14 @@ def test_the_pricer_model_reads_struct_fields_an_immutable_address_and_an_enum(b
     assert "address internal constant OTHER = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;" in text
     assert "      gross = gross + EXTRA;\n      ceiling = ceiling + EXTRA;\n" in text
     assert "function _refund(Inputs memory i, address _token) internal pure returns (uint256 refund) {" in text
+
+
+def test_an_unread_key_of_an_enum_type_keeps_the_import_of_the_enum(build):
+    """A mutant that drops the only read of an enum keeps its key as an input of the enum type, which the emitted
+    Solidity must import, as a read of it would."""
+    extraction = extract(build, f"{QUOTER}._quote", {**READS, "$kind": "kind"}, unread={"$kind": enum("Kinds.Kind", 4)})
+    assert extraction.unread == ("$kind",)
+    assert 'import {Kinds} from "tests/fixtures/contracts/Kinds.sol";' in source(extraction.model)
 
 
 def test_the_pricer_terms_give_the_reference_result(build):

@@ -198,7 +198,11 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
             if key in self.reads:
                 continue
             if key in self.unread and key not in ENVIRONMENT:
-                self.reads[key] = Read(Var(name, self.unread[key], input=True), written)
+                type_ = self.unread[key]
+                if type_.kind == "enum":
+                    # The enum's import, which a read of it would have added (Values._enum).
+                    self._enum(self._enum_named(type_.name, written))
+                self.reads[key] = Read(Var(name, type_, input=True), written)
                 kept.append(written)
                 continue
             if key not in ENVIRONMENT:
