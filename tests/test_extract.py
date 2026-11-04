@@ -763,6 +763,7 @@ STRUCTS = "tests/fixtures/contracts/Structs.sol:Structs"
         ("smashedThroughCallee", {"_smash()": "smash"}),
         ("smashedBefore", {"_smash()": "smash"}),
         ("smashedCommented", {"_commented()": "smash"}),
+        ("externalSmashed", {"params.window().end": "end", "_smash()": "smash"}),
     ],
 )
 def test_a_cut_with_assembly_that_is_not_memory_safe_is_refused_wherever_it_runs(build, function, reads):
@@ -1043,7 +1044,7 @@ def test_the_result_of_a_call_that_is_not_a_view_is_an_input(build, function, va
     model = extract(build, f"{KEYS}.{function}", reads).model
     assert evaluate(model, values) == result
     assert evaluate(model, {**values, "answer": 1})[0] is True
-    assert [e.kind for e in model.effects] == ["call"]
+    assert [e.kind for e in model.effects] == ["read"]
 
 
 @pytest.mark.parametrize(

@@ -116,7 +116,8 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         # callees being extracted; and the expression that is the whole value of the statement being extracted.
         self.written: set[int] = set()
         self.written_copies: set[int] = set()
-        # The memory structs that the extraction has as scalar locals so far, the struct parameters of callees by their
+        # The memory structs whose fields the model has as values so far (locals, or the inputs of a struct that an
+        # external call returns), the struct parameters of callees by their
         # declaration, the statements that unpack struct-valued calls into temporaries before the statement being
         # extracted, the names of those temporaries, and the nodes that run only on some paths of their expression
         # (structs.py).
