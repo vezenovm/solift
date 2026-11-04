@@ -114,6 +114,21 @@ contract Checks {
         return _x;
     }
 
+    function _requirePositive(uint256 _n) internal pure {
+        require(_n > 0);
+    }
+
+    function _logged(uint256 _v) internal returns (uint256) {
+        emit Seen(_v);
+        return _v;
+    }
+
+    // A check whose argument emits: the event is the caller's, and the check only reverts.
+    function loggedCheck(uint256 _x) external returns (uint256) {
+        _requirePositive(_logged(_x));
+        return _x;
+    }
+
     function _keyed(uint256 _n) internal view {
         require(quotes.quote(_n) == 0);
     }
