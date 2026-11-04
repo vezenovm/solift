@@ -216,10 +216,16 @@ class Reads:
         if fallback or below:
             # The indexes below a copy, a parameter or a pointer are any expressions, as in other read map keys.
             self._fallback_read(node, scope)
-        if _normal(key) not in self.reads:
-            var = Var(entry[1], self._type(node), input=True, src=self.src(node))
-            self.reads[_normal(key)] = Read(var, entry[0])
-        return self.reads[_normal(key)].var
+        return self._input(key, node, node)
+
+    def _input(self, key: str, typed, node) -> Var:
+        """The input of the read map key `key`, made at its first read `node`, of the type of `typed`: the read, or the
+        declaration of the value that it reads, as a struct's member."""
+        key = _normal(key)
+        if key not in self.reads:
+            written, name = self.read_map[key]
+            self.reads[key] = Read(Var(name, self._type(typed), input=True, src=self.src(node)), written)
+        return self.reads[key].var
 
     def _stable(self, key: str, node, scope: dict) -> None:
         """A read map key names one value for the whole call. So it changes nothing, it runs in a callee that runs once
