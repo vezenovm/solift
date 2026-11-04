@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 from acceptance.mutants import apply, problems
-from solift.run import load, run
+from solift.run import link_status, load, run
 
 
 def pinned(root: pathlib.Path, commit: str) -> list[str]:
@@ -54,18 +54,19 @@ def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, li
 
 def outcome(mutant, record: dict) -> str:
     """What a mutant's run did: the verdict of the theorem that it breaks, and for a mutant marked `link`, whether its
-    link passed, failed or did not run."""
-    specs = record.get("specs") or [{}]
-    theorems = {t["id"]: t for t in specs[0].get("theorems") or []}
+    link passed, failed (with the checks that failed and the run's problems) or did not run (run.link_status)."""
+    spec = (record.get("specs") or [{}])[0]
+    theorems = {t["id"]: t for t in spec.get("theorems") or []}
     verdict = theorems.get(mutant.breaks, {}).get("verdict")
     text = f"{mutant.breaks} is {verdict}" if verdict else f"{mutant.breaks} did not run"
     if not mutant.link:
         return text
-    checks = specs[0].get("link")
-    if not checks:
-        return f"{text}, and its link did not run"
-    failed = [r["check"] for r in checks if r["verdict"] != "PASS"]
-    return f"{text}, and its link fails ({', '.join(failed)})" if failed else f"{text}, and its link passes"
+    status = link_status(spec, record)
+    if status != "failed":
+        return f"{text}, and its link {'passes' if status == 'passed' else 'did not run'}"
+    run = record["link"]
+    failed = [r["check"] for r in [*(spec.get("link") or []), *run["shared"]] if r["verdict"] != "PASS"]
+    return f"{text}, and its link fails ({', '.join(failed + run['problems']) or 'no check ran'})"
 
 
 def finish(result: dict, failures: list[str], times: dict, path: pathlib.Path) -> int:

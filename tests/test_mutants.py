@@ -98,6 +98,9 @@ def test_the_runner_says_what_the_theorem_and_the_link_did():
     assert outcome(linked, mutant_record([broken], [], failed)) == (
         "t-broken is COUNTEREXAMPLE, and its link fails (check_link)"
     )
+    warned = mutant_record([broken], [], passed)
+    warned["link"]["problems"] = ["Halmos reached its depth limit"]
+    assert outcome(linked, warned) == "t-broken is COUNTEREXAMPLE, and its link fails (Halmos reached its depth limit)"
     assert outcome(linked, mutant_record([], ["extract: the read map names b"])) == (
         "t-broken did not run, and its link did not run"
     )

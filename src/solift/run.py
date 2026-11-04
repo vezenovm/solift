@@ -213,7 +213,7 @@ def run(
         for c in models:
             c.record["link"] = None
     for c in models:
-        status = _link_status(c, record)
+        status = link_status(c.record, record)
         for t in c.record["theorems"]:
             t["link"] = status
     return _finish(record, checked, guard, clock)
@@ -268,13 +268,13 @@ def _link(models, shared, root, workspace, build, project, allow, engine, record
                            for r in record["link"]["shared"] if r["verdict"] != "PASS"]  # fmt: skip
 
 
-def _link_status(c: _Checked, record: dict) -> str:
-    """passed when the model's link check and every shared check passed in a run without problems, not-run when the
-    run did not link, and failed otherwise."""
+def link_status(spec: dict, record: dict) -> str:
+    """The link of a spec's record in a run's record: passed when the model's link check and every shared check passed
+    in a run without problems, not-run when the run did not link, and failed otherwise."""
     if record.get("link") is None:
         return "not-run"
     run = record["link"]
-    passed = c.record["link"] and all(r["verdict"] == "PASS" for r in c.record["link"] + run["shared"])
+    passed = spec["link"] and all(r["verdict"] == "PASS" for r in spec["link"] + run["shared"])
     return "passed" if passed and not run["problems"] else "failed"
 
 
