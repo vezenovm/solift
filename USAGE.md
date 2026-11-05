@@ -12,7 +12,8 @@ project outside this repo.
 solift reads 'src/Vault.sol:Vault._redeem' --root <project> [--profile deploy]
 ```
 
-`solift reads` builds the project into `build/reads` and runs the extractor until it has every read of the function:
+`solift reads` builds the project into `build/reads`, with a file that imports the target's file, so that a target in a
+library that no source imports is built too, and runs the extractor until it has every read of the function:
 storage variables and fields, mapping entries, fields of a struct parameter, fields of `tx`, `block` and `msg`, and
 external calls. It prints them as a read map with proposed input names, a link skeleton, the internal calls that a read
 map entry can cut, the outputs it needs, and the writes, calls and events that the model leaves out. `--json` prints

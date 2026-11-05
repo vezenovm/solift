@@ -197,3 +197,19 @@ def test_load_adds_a_harness_that_holds_the_target(tmp_path):
     spec = dataclasses.replace(SPEC, name="doubler", target=f"{at}:Doubler.twice", reads={}, link=link, theorems=[])
     (q,) = load([spec], Workspace(tmp_path / "work")).values()
     assert z3.simplify(q.at(_x=21).value).as_long() == 42
+
+
+def test_reads_takes_a_target_in_a_library_that_no_source_imports(tmp_path, capsys):
+    """forge compiles a library's file only when a source imports it, as a run's harness does. reads imports it too."""
+    (tmp_path / "foundry.toml").write_text('[profile.default]\nsrc = "src"\nlibs = ["lib"]\n')
+    (tmp_path / "src").mkdir()
+    (tmp_path / "lib/dep/src").mkdir(parents=True)
+    header = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n"
+    (tmp_path / "src/Other.sol").write_text(header + "contract Other {}\n")
+    (tmp_path / "lib/dep/src/Lib.sol").write_text(
+        header + "contract Dep {\n  uint256 internal total;\n\n"
+        "  function doubled() external view returns (uint256) {\n    return 2 * total;\n  }\n}\n"
+    )
+    reads = ["reads", "lib/dep/src/Lib.sol:Dep.doubled", "--root", str(tmp_path), "--workspace", str(tmp_path / "w")]
+    assert entrypoint(reads) == 0
+    assert "1 reads, complete" in capsys.readouterr().out
