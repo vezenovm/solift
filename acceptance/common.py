@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 from acceptance.mutants import apply, problems
-from solift.run import run
+from solift.run import link_status, load, run
 
 
 def pinned(root: pathlib.Path, commit: str) -> list[str]:
@@ -20,9 +20,16 @@ def pinned(root: pathlib.Path, commit: str) -> list[str]:
 
 
 def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, list[str]]:
-    """Runs each mutant on its spec, and returns the records and the failures: a mutant that is not rejected."""
+    """Runs each mutant on its spec, and returns the records and the failures: a mutant that is not rejected. A read map
+    key that a mutant's function no longer reads stays an input of its type in the unchanged model, so that the
+    theorems on it get a verdict (run's `unread`)."""
     print("\n== mutants")
     by_name = {spec.name: spec for spec in specs}
+    used = [by_name[name] for name in dict.fromkeys(m.spec for m in mutants)]
+    types = {
+        name: {r.source: r.var.type for r in terms.model.reads}
+        for name, terms in load(used, workspace.child("unchanged")).items()
+    }
     records, failures = {}, []
     for mutant in mutants:
         source = (root / mutant.path).read_text()
@@ -33,15 +40,33 @@ def run_mutants(mutants, specs, root: pathlib.Path, workspace) -> tuple[dict, li
             link=mutant.link,
             vectors=False,
             only=(mutant.breaks, *mutant.holds),
+            unread=types[mutant.spec],
         )
         records[mutant.id] = record
         found = problems(mutant, record)
         failures += [f"mutant {mutant.id}: {p}" for p in found]
         status = "REJECTED" if not found else "NOT REJECTED"
-        print(f"{status} {mutant.id}: {mutant.breaks} fails" + (", and its link passes" if mutant.link else ""))
+        print(f"{status} {mutant.id}: {outcome(mutant, record)}")
         for problem in found:
             print(f"FAILED {problem}")
     return records, failures
+
+
+def outcome(mutant, record: dict) -> str:
+    """What a mutant's run did: the verdict of the theorem that it breaks, and for a mutant marked `link`, whether its
+    link passed, failed (with the checks that failed and the run's problems) or did not run (run.link_status)."""
+    spec = (record.get("specs") or [{}])[0]
+    theorems = {t["id"]: t for t in spec.get("theorems") or []}
+    verdict = theorems.get(mutant.breaks, {}).get("verdict")
+    text = f"{mutant.breaks} is {verdict}" if verdict else f"{mutant.breaks} did not run"
+    if not mutant.link:
+        return text
+    status = link_status(spec, record)
+    if status != "failed":
+        return f"{text}, and its link {'passes' if status == 'passed' else 'did not run'}"
+    run = record["link"]
+    failed = [r["check"] for r in [*(spec.get("link") or []), *run["shared"]] if r["verdict"] != "PASS"]
+    return f"{text}, and its link fails ({', '.join(failed + run['problems']) or 'no check ran'})"
 
 
 def finish(result: dict, failures: list[str], times: dict, path: pathlib.Path) -> int:

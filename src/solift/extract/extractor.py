@@ -24,6 +24,7 @@ from solift.ir import (
     Output,
     Read,
     Src,
+    Type,
     Var,
     declared_locals,
     reserved,
@@ -51,14 +52,25 @@ ENVIRONMENT = {
 
 @dataclass(frozen=True)
 class Extraction:
-    """The model, and each source file it comes from, with the sha256 of its content."""
+    """The model, and each source file it comes from, with the sha256 of its content. `unread` are the read map keys
+    that the function does not read, which `extract` kept as inputs (its `unread`)."""
 
     model: Model
     sources: dict[str, str]
+    unread: tuple[str, ...] = ()
 
 
-def extract(build_infos: list[dict], target: str, reads: dict[str, str], outputs: dict | None = None) -> Extraction:
-    return _Extractor(_job(build_infos, target), reads, outputs or {}).extract(target)
+def extract(
+    build_infos: list[dict],
+    target: str,
+    reads: dict[str, str],
+    outputs: dict | None = None,
+    unread: dict[str, Type] | None = None,
+) -> Extraction:
+    """The model of `target`. `unread` gives a type to read map keys that the function may not read, as a mutant of it
+    that drops a read: such a key is an input of that type, which nothing constrains, instead of an error. A theorem on
+    it then gets a verdict on the mutant."""
+    return _Extractor(_job(build_infos, target), reads, outputs or {}, unread).extract(target)
 
 
 def declared(build_infos: list[dict], target: str) -> set[str]:
@@ -84,7 +96,7 @@ def _job(build_infos: list[dict], target: str) -> dict:
 
 
 class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
-    def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None):
+    def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None, unread: dict | None = None):
         self.sources = info["output"]["sources"]
         self.solc = info.get("solcVersion") or ""
         self.contents = {path: s["content"].encode() for path, s in info["input"]["sources"].items()}
@@ -96,6 +108,7 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         for s in self.sources.values():
             self._index(s["ast"])
         self.read_map = {_normal(key): (key, name) for key, name in reads.items()}
+        self.unread = {_normal(key): type_ for key, type_ in (unread or {}).items()}
         if len(self.read_map) != len(reads):
             raise ExtractionError("two read map keys differ only in whitespace")
         self.reads: dict[str, Read] = {}
@@ -204,8 +217,17 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         self._run_once()
         if self.flattened and self.unsafe_cut is not None:
             self.fail(self.unsafe_cut, f"the read {self.text(self.unsafe_cut)} {UNSAFE_ASSEMBLY}")
+        kept = []
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
+                continue
+            if key in self.unread and key not in ENVIRONMENT:
+                type_ = self.unread[key]
+                if type_.kind == "enum":
+                    # The enum's import, which a read of it would have added (Values._enum).
+                    self._enum(self._enum_named(type_.name, written))
+                self.reads[key] = Read(Var(name, type_, input=True), written)
+                kept.append(written)
                 continue
             if key not in ENVIRONMENT:
                 raise ExtractionError(f"the read map names {written}, which {qualified} does not read")
@@ -234,7 +256,7 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
         )
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}
-        return Extraction(model, sources)
+        return Extraction(model, sources, tuple(kept))
 
     def target(self, target: str) -> dict:
         """The FunctionDefinition node that the target names."""
