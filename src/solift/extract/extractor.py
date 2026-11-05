@@ -16,6 +16,7 @@ from solift.extract.values import Values
 from solift.ir import (
     ADDRESS,
     UINT256,
+    Call,
     Const,
     Effect,
     Function,
@@ -192,7 +193,7 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         if not function.params and not reads:
             raise ExtractionError(f"{qualified} has no inputs: its result is a constant")
         self._check_names(node, function, reads)
-        _check_constants((function, *self.callees.values()))
+        _check_shadowing((function, *self.callees.values()))
         imports = tuple(
             f'import {{{symbol}}} from "{self._import_of(unit, source)}";'
             for symbol, source in sorted(self.enum_imports.items())
@@ -284,14 +285,27 @@ def _parameter_type(param) -> str:
     return re.sub(r"^(struct|enum|contract) ", "", text).rpartition(".")[2]
 
 
-def _check_constants(functions) -> None:
-    """The emitted Solidity names a constant by its name alone, so a constant must not have the name of the inputs
-    struct, or of a parameter, a local or a return, which would shadow it there."""
+def _check_shadowing(functions) -> None:
+    """The emitted Solidity names a constant and a called function by its name alone. A constant must not have the
+    name of the inputs struct, or of a parameter, a local or a return, which would shadow it there. A function of the
+    model must not have the name of a parameter, a local or a return of a function that calls it, as a parameter of the
+    modeled function that its body assigns, which is a local there."""
     names = {"i"}
     for function in functions:
         names.update(p.name for p in function.params)
         names.update(v.name for v in declared_locals(function.body))
         names.update(v.name for v in function.named)
+    for function in functions:
+        # The modeled function reads its inputs as `i.<name>`: only its locals and returns are Solidity names there.
+        own = {p.name for p in function.params if not p.input}
+        own.update(v.name for v in declared_locals(function.body))
+        own.update(v.name for v in function.named)
+        for e in walk(function):
+            if isinstance(e, Call) and e.function in own:
+                raise ExtractionError(
+                    f"{e.src}: the call of {e.function} names a function of the emitted Solidity that a parameter, "
+                    f"local or return of {function.name} of the same name would shadow there"
+                )
     for function in functions:
         for e in walk(function):
             if isinstance(e, Const) and e.name in names:

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.27;
 
+library Doubling {
+  function twice(uint256 _x) internal pure returns (uint256) {
+    return _x * 2;
+  }
+}
+
 // Functions that assign their parameters, as a quote that raises its ceiling for a new account.
 contract Parameters {
   uint256 internal $bonus;
@@ -48,5 +54,16 @@ contract Parameters {
   function limitOf(uint256 _id) public view returns (uint256) {
     _id = _id + 1;
     return $limits[_id];
+  }
+
+  // A parameter local, and a local, of the name of a function of the model, which they would shadow there.
+  function shadowsCallee(uint256 twice) public pure returns (uint256) {
+    twice += 1;
+    return Doubling.twice(twice);
+  }
+
+  function localShadowsCallee(uint256 _a) public pure returns (uint256) {
+    uint256 twice = _a + 1;
+    return Doubling.twice(twice);
   }
 }

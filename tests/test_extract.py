@@ -558,6 +558,14 @@ def test_a_theorem_names_an_assigned_parameter_at_the_call_and_its_local_at_the_
     assert result.ok, (result.verdict, result.detail)
 
 
+@pytest.mark.parametrize("function", ["shadowsCallee", "localShadowsCallee"])
+def test_a_local_of_the_name_of_a_called_function_of_the_model_is_refused(build, function):
+    """The emitted Solidity calls a function of the model by its name, which a local of that name shadows: solc would
+    not compile the model, as `twice(i, twice)`."""
+    with pytest.raises(ExtractionError, match=r"the call of twice names a function of the emitted Solidity"):
+        extract(build, f"{PARAMETERS}.{function}", {})
+
+
 def test_a_read_map_key_on_a_parameter_that_the_body_assigns_is_refused(build):
     message = r"Parameters.sol:\d+:20: the read \$limits\[_id\] names _id, which an assignment changes"
     with pytest.raises(ExtractionError, match=message):
