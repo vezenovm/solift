@@ -196,7 +196,7 @@ The README says what a run proves and what it trusts.
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
-| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another; a parameter, local or return in scope where the emitted model names a function that it calls, `Math` or an enum, of that name (an input there is `i.<name>`) |
+| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another; a parameter, local or return in scope where the emitted model names a function that it calls, `Math`, an enum or `revert`, of that name (an input there is `i.<name>`) |
 
 ### Read map keys
 

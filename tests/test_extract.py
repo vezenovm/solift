@@ -559,20 +559,22 @@ def test_a_theorem_names_an_assigned_parameter_at_the_call_and_its_local_at_the_
 
 
 @pytest.mark.parametrize(
-    "function, message",
+    "function, name",
     [
-        ("shadowsCallee", r"the call of twice, a function of the emitted Solidity, which a parameter, local or return"),
-        ("localShadowsCallee", r"the call of twice, a function of the emitted Solidity"),
-        ("callsI", r"the call of i, a function of the emitted Solidity"),
-        ("mathShadowed", r"Math of the emitted Solidity, the library of an operator or the enum of a member"),
-        ("flagged", r"Mode of the emitted Solidity, the library of an operator or the enum of a member"),
-        ("Math", r"Math of the emitted Solidity, the library of an operator or the enum of a member"),
+        ("shadowsCallee", "twice"),
+        ("localShadowsCallee", "twice"),
+        ("callsI", "i"),
+        ("mathShadowed", "Math"),
+        ("flagged", "Mode"),
+        ("Math", "Math"),
+        ("flagLocal", "Mode"),
+        ("revertShadowed", "revert"),
     ],
 )
-def test_a_name_in_scope_that_would_shadow_a_name_of_the_emitted_solidity_is_refused(build, function, message):
+def test_a_name_in_scope_that_would_shadow_a_name_of_the_emitted_solidity_is_refused(build, function, name):
     """The emitted Solidity calls a function of the model, an operator's library and an enum's member by their names,
     which a parameter, local or return in scope there shadows: solc would not compile `twice(i, twice)`."""
-    with pytest.raises(ExtractionError, match=message):
+    with pytest.raises(ExtractionError, match=rf"{name}, which the emitted Solidity names by itself"):
         extract(build, f"{PARAMETERS}.{function}", {})
 
 
@@ -583,6 +585,7 @@ def test_a_name_in_scope_that_would_shadow_a_name_of_the_emitted_solidity_is_ref
         ("calleeBesideBranchLocal", {"_a": 3, "_small": True}, 3),
         ("calleeBesideBranchLocal", {"_a": 3, "_small": False}, 6),
         ("mathInput", {"Math": 3}, 3),
+        ("revertInput", {"revert": 3}, 3),
     ],
 )
 def test_a_name_that_is_not_in_scope_where_the_emitted_solidity_uses_it_is_taken(build, function, values, result):

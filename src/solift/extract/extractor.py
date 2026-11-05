@@ -31,6 +31,7 @@ from solift.ir import (
     Unpack,
     Var,
     declared_locals,
+    parts,
     reserved,
     walk,
 )
@@ -306,6 +307,8 @@ def _check_shadowing(functions) -> None:
         # In scope in all of a function: the inputs struct `i`, a callee's parameters and the returns. The modeled
         # function reads its inputs as `i.<name>`, which are not names there.
         scope = {"i", *(p.name for p in function.params if not p.input), *(v.name for v in function.named)}
+        for type_ in (*(p.type for p in function.params if not p.input), *parts(function.returns)):
+            _check_type(type_, function.src, scope, emitted, function.name)
         _check_block(function.body, scope, emitted, function.name)
     for function in functions:
         for e in walk(function):
@@ -321,33 +324,49 @@ def _check_shadowing(functions) -> None:
 def _check_block(stmts, scope: set[str], emitted: set[str], owner: str) -> None:
     """Checks the names that the statements use by name alone against the names in scope there: a local is in scope
     after its declaration, to the end of its block, as a parameter that the modeled function assigns, whose local heads
-    its body. A declaration's own value comes before its local."""
+    its body. A declaration's type and value come before its local."""
     scope = set(scope)
     for stmt in stmts:
         if isinstance(stmt, If):
             _check_used(stmt.cond, scope, emitted, owner)
             _check_block(stmt.then, scope, emitted, owner)
             _check_block(stmt.orelse, scope, emitted, owner)
-        elif not isinstance(stmt, Revert):
+        elif isinstance(stmt, Revert):
+            # The emitted Solidity reverts as `revert();`.
+            if "revert" in scope:
+                raise ExtractionError(f"{stmt.src}: {_SHADOWED.format(name='revert', owner=owner)}")
+        else:
             _check_used(stmt.expr, scope, emitted, owner)
-        if isinstance(stmt, Let):
-            scope.add(stmt.var.name)
-        elif isinstance(stmt, Unpack) and stmt.declare:
-            scope.update(v.name for v in stmt.vars if v is not None)
+        declared = [stmt.var] if isinstance(stmt, Let) else []
+        if isinstance(stmt, Unpack) and stmt.declare:
+            declared = [v for v in stmt.vars if v is not None]
+        for var in declared:
+            _check_type(var.type, stmt.src, scope, emitted, owner)
+        scope.update(var.name for var in declared)
 
 
 # The name that an emitted text starts with, before a member: `Math` of `Math.min(...)`, `Side` of `Side.Buy`.
 _QUALIFIER = re.compile(r"([A-Za-z_$][\w$]*)\.")
+_SHADOWED = (
+    "{name}, which the emitted Solidity names by itself, as a function of the model, the library of an operator, an "
+    "enum or revert, and which a parameter, local or return of {owner}, or a function of the model, of that name "
+    "would shadow there"
+)
+
+
+def _check_type(type_, src, scope: set[str], emitted: set[str], owner: str) -> None:
+    """An enum type of a declaration or a signature, as `Mode` or `Kinds` of `Kinds.Kind`."""
+    if type_.kind == "enum":
+        name = type_.name.partition(".")[0]
+        if name in scope or name in emitted:
+            raise ExtractionError(f"{src}: {_SHADOWED.format(name=name, owner=owner)}")
 
 
 def _check_used(expr, scope: set[str], emitted: set[str], owner: str) -> None:
     for e in walk(expr):
         if isinstance(e, Call):
             if e.function in scope:
-                raise ExtractionError(
-                    f"{e.src}: the call of {e.function}, a function of the emitted Solidity, which a parameter, local "
-                    f"or return of {owner} of that name would shadow there"
-                )
+                raise ExtractionError(f"{e.src}: {_SHADOWED.format(name=e.function, owner=owner)}")
             continue
         if isinstance(e, Op) and TABLE[e.op].kind == "library":
             qualifier = _QUALIFIER.match(TABLE[e.op].solidity)
@@ -356,8 +375,4 @@ def _check_used(expr, scope: set[str], emitted: set[str], owner: str) -> None:
         else:
             continue
         if qualifier and (qualifier[1] in scope or qualifier[1] in emitted):
-            raise ExtractionError(
-                f"{e.src}: {qualifier[1]} of the emitted Solidity, the library of an operator or the enum of a member, "
-                f"which a parameter, local or return of {owner}, or a function of the model, of that name would "
-                "shadow there"
-            )
+            raise ExtractionError(f"{e.src}: {_SHADOWED.format(name=qualifier[1], owner=owner)}")
