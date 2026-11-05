@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.27;
 
+import {Math as M} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Mode as Flag} from "./Modes.sol";
+
+library Named {
+  function i(uint256 _x) internal pure returns (uint256) {
+    return _x + 1;
+  }
+}
+
 library Doubling {
   function twice(uint256 _x) internal pure returns (uint256) {
     return _x * 2;
@@ -83,5 +92,46 @@ contract Parameters {
   function localShadowsCallee(uint256 _a) public pure returns (uint256) {
     uint256 twice = _a + 1;
     return Doubling.twice(twice);
+  }
+
+  // A local of the name of a called function where it is not in scope at the call: in the declaration's own value, and
+  // in another branch.
+  function initializedFromCallee(uint256 _a) public pure returns (uint256) {
+    uint256 twice = Doubling.twice(_a);
+    return twice;
+  }
+
+  function calleeBesideBranchLocal(uint256 _a, bool _small) public pure returns (uint256) {
+    if (_small) {
+      uint256 twice = _a;
+      return twice;
+    }
+    return Doubling.twice(_a);
+  }
+
+  // A called function that the inputs struct i of the emitted Solidity would shadow.
+  function callsI(uint256 _a) public pure returns (uint256) {
+    return Named.i(_a);
+  }
+
+  // The library of an operator and the enum of a member, which the emitted Solidity names as Math and Mode, and a
+  // parameter of that name: an input, which the model reads as i.Math, or a local where the body assigns it.
+  function mathInput(uint256 Math) public pure returns (uint256) {
+    return M.min(Math, 10);
+  }
+
+  function mathShadowed(uint256 Math) public pure returns (uint256) {
+    Math += 1;
+    return M.min(Math, 10);
+  }
+
+  // A function of the model of the name of an operator's library, which it would shadow in the emitted library.
+  function Math(uint256 _a) public pure returns (uint256) {
+    return M.min(_a, 10);
+  }
+
+  function flagged(Flag _f, uint256 Mode) public pure returns (uint256) {
+    Mode += 1;
+    return _f == Flag.On ? Mode : 0;
   }
 }

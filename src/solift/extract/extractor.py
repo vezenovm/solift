@@ -21,16 +21,22 @@ from solift.ir import (
     Const,
     Effect,
     Function,
+    If,
+    Let,
     Model,
+    Op,
     Output,
     Read,
+    Revert,
     Src,
     Type,
+    Unpack,
     Var,
     declared_locals,
     reserved,
     walk,
 )
+from solift.ops import TABLE
 
 ENVIRONMENT = {
     **{
@@ -339,26 +345,21 @@ def _parameter_type(param) -> str:
 
 
 def _check_shadowing(functions) -> None:
-    """The emitted Solidity names a constant and a called function by its name alone. A constant must not have the
-    name of the inputs struct, or of a parameter, a local or a return, which would shadow it there. A function of the
-    model must not have the name of a parameter, a local or a return of a function that calls it, as a parameter of the
-    modeled function that its body assigns, which is a local there."""
+    """The emitted Solidity names a constant, a function of the model that a function calls, the library of an operator
+    (`Math.min`) and the enum of a member (`Side.Buy`) by its name alone. A constant must not have the name of the
+    inputs struct, or of a parameter, a local or a return. The others must not have a name in scope where they are used
+    (_check_block), and a library or an enum not the name of a function of the model either."""
     names = {"i"}
     for function in functions:
         names.update(p.name for p in function.params)
         names.update(v.name for v in declared_locals(function.body))
         names.update(v.name for v in function.named)
+    emitted = {f.name for f in functions}
     for function in functions:
-        # The modeled function reads its inputs as `i.<name>`: only its locals and returns are Solidity names there.
-        own = {p.name for p in function.params if not p.input}
-        own.update(v.name for v in declared_locals(function.body))
-        own.update(v.name for v in function.named)
-        for e in walk(function):
-            if isinstance(e, Call) and e.function in own:
-                raise ExtractionError(
-                    f"{e.src}: the call of {e.function} names a function of the emitted Solidity that a parameter, "
-                    f"local or return of {function.name} of the same name would shadow there"
-                )
+        # In scope in all of a function: the inputs struct `i`, a callee's parameters and the returns. The modeled
+        # function reads its inputs as `i.<name>`, which are not names there.
+        scope = {"i", *(p.name for p in function.params if not p.input), *(v.name for v in function.named)}
+        _check_block(function.body, scope, emitted, function.name)
     for function in functions:
         for e in walk(function):
             if isinstance(e, Const) and e.name in names:
@@ -368,3 +369,48 @@ def _check_shadowing(functions) -> None:
                     f"{e.src}: the constant {e.name} has the name of a parameter, local or return of the emitted "
                     "Solidity, which would shadow it there"
                 )
+
+
+def _check_block(stmts, scope: set[str], emitted: set[str], owner: str) -> None:
+    """Checks the names that the statements use by name alone against the names in scope there: a local is in scope
+    after its declaration, to the end of its block, as a parameter that the modeled function assigns, whose local heads
+    its body. A declaration's own value comes before its local."""
+    scope = set(scope)
+    for stmt in stmts:
+        if isinstance(stmt, If):
+            _check_used(stmt.cond, scope, emitted, owner)
+            _check_block(stmt.then, scope, emitted, owner)
+            _check_block(stmt.orelse, scope, emitted, owner)
+        elif not isinstance(stmt, Revert):
+            _check_used(stmt.expr, scope, emitted, owner)
+        if isinstance(stmt, Let):
+            scope.add(stmt.var.name)
+        elif isinstance(stmt, Unpack) and stmt.declare:
+            scope.update(v.name for v in stmt.vars if v is not None)
+
+
+# The name that an emitted text starts with, before a member: `Math` of `Math.min(...)`, `Side` of `Side.Buy`.
+_QUALIFIER = re.compile(r"([A-Za-z_$][\w$]*)\.")
+
+
+def _check_used(expr, scope: set[str], emitted: set[str], owner: str) -> None:
+    for e in walk(expr):
+        if isinstance(e, Call):
+            if e.function in scope:
+                raise ExtractionError(
+                    f"{e.src}: the call of {e.function}, a function of the emitted Solidity, which a parameter, local "
+                    f"or return of {owner} of that name would shadow there"
+                )
+            continue
+        if isinstance(e, Op) and TABLE[e.op].kind == "library":
+            qualifier = _QUALIFIER.match(TABLE[e.op].solidity)
+        elif isinstance(e, Const) and e.name is None and e.text is not None:
+            qualifier = _QUALIFIER.match(e.text)
+        else:
+            continue
+        if qualifier and (qualifier[1] in scope or qualifier[1] in emitted):
+            raise ExtractionError(
+                f"{e.src}: {qualifier[1]} of the emitted Solidity, the library of an operator or the enum of a member, "
+                f"which a parameter, local or return of {owner}, or a function of the model, of that name would "
+                "shadow there"
+            )
