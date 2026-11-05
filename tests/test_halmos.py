@@ -157,6 +157,8 @@ RECORDED = (
     ),
 )
 NESTED = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.nested(_a)"))
+FROM_CALLEE = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.initializedFromCallee(_a)"))
+BESIDE_BRANCH = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.calleeBesideBranchLocal(_a, _small)"))
 EFFECTS = "tests/fixtures/contracts/Effects.sol"
 EFFECTS_SETUP = "tests/fixtures/test/EffectsSetup.sol:EffectsSetup"
 BUY = (
@@ -196,7 +198,15 @@ CHANGES = {
 
 @pytest.mark.parametrize(
     "function, spec",
-    [("capped", CAPPED), ("spread", SPREAD), ("earlyReturn", EARLY_RETURN), ("recorded", RECORDED), ("nested", NESTED)],
+    [
+        ("capped", CAPPED),
+        ("spread", SPREAD),
+        ("earlyReturn", EARLY_RETURN),
+        ("recorded", RECORDED),
+        ("nested", NESTED),
+        ("initializedFromCallee", FROM_CALLEE),
+        ("calleeBesideBranchLocal", BESIDE_BRANCH),
+    ],
 )
 def test_functions_that_assign_their_parameters_link_to_their_models(workspace, function, spec):
     reads, outputs, link = spec

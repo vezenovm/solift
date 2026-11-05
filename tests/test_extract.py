@@ -558,12 +558,37 @@ def test_a_theorem_names_an_assigned_parameter_at_the_call_and_its_local_at_the_
     assert result.ok, (result.verdict, result.detail)
 
 
-@pytest.mark.parametrize("function", ["shadowsCallee", "localShadowsCallee"])
-def test_a_local_of_the_name_of_a_called_function_of_the_model_is_refused(build, function):
-    """The emitted Solidity calls a function of the model by its name, which a local of that name shadows: solc would
-    not compile the model, as `twice(i, twice)`."""
-    with pytest.raises(ExtractionError, match=r"the call of twice names a function of the emitted Solidity"):
+@pytest.mark.parametrize(
+    "function, message",
+    [
+        ("shadowsCallee", r"the call of twice, a function of the emitted Solidity, which a parameter, local or return"),
+        ("localShadowsCallee", r"the call of twice, a function of the emitted Solidity"),
+        ("callsI", r"the call of i, a function of the emitted Solidity"),
+        ("mathShadowed", r"Math of the emitted Solidity, the library of an operator or the enum of a member"),
+        ("flagged", r"Mode of the emitted Solidity, the library of an operator or the enum of a member"),
+        ("Math", r"Math of the emitted Solidity, the library of an operator or the enum of a member"),
+    ],
+)
+def test_a_name_in_scope_that_would_shadow_a_name_of_the_emitted_solidity_is_refused(build, function, message):
+    """The emitted Solidity calls a function of the model, an operator's library and an enum's member by their names,
+    which a parameter, local or return in scope there shadows: solc would not compile `twice(i, twice)`."""
+    with pytest.raises(ExtractionError, match=message):
         extract(build, f"{PARAMETERS}.{function}", {})
+
+
+@pytest.mark.parametrize(
+    "function, values, result",
+    [
+        ("initializedFromCallee", {"_a": 3}, 6),
+        ("calleeBesideBranchLocal", {"_a": 3, "_small": True}, 3),
+        ("calleeBesideBranchLocal", {"_a": 3, "_small": False}, 6),
+        ("mathInput", {"Math": 3}, 3),
+    ],
+)
+def test_a_name_that_is_not_in_scope_where_the_emitted_solidity_uses_it_is_taken(build, function, values, result):
+    """A local is in scope after its declaration, in its block, and the modeled function reads an input as `i.Math`."""
+    model = extract(build, f"{PARAMETERS}.{function}", {}).model
+    assert evaluate_vector(model, values) == (False, result)
 
 
 def test_a_read_map_key_on_a_parameter_that_the_body_assigns_is_refused(build):
