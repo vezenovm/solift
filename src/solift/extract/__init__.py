@@ -34,9 +34,11 @@ the function that the linearization of the target's contract gives it: the most 
 the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
 its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n bits. Locals can be reassigned, also in
-branches, and a named return starts at zero. Several returns, tuple declarations and assignments, `type(uint<n>).max`
-and `.min`, `require`, `assert` and `revert` are supported. A parameter of a user-defined value type or a signed type
-that only read map keys or effects use is not an input.
+branches, and a named return starts at zero. A parameter of the modeled function that the body assigns is an input, its
+value at the call, and a local of its name that starts at it: a read map key that names it has one place, as for any
+local that an assignment changes. Several returns, tuple declarations and assignments, `type(uint<n>).max` and `.min`,
+`require`, `assert` and `revert` are supported. A parameter of a user-defined value type or a signed type that only read
+map keys or effects use is not an input.
 Anything else stops the extraction with an error that names the construct and its place.
 
 The model is the function's value, whether it reverts, and its outputs: the writes and external call arguments that

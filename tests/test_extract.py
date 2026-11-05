@@ -8,6 +8,7 @@ from solift.extract import ExtractionError, extract
 from solift.ir import Op, declared_locals, enum, uint, walk
 from solift.smt import symbols, terms
 from solift.solidity import source
+from solift.theorem import Terms, prove, theorem
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
 from tests.test_smt import evaluate
 
@@ -201,8 +202,7 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("narrowArithmetic", {}, r"OutOfScope.sol:67:12: add at uint128: arithmetic narrower than uint256"),
         ("mathAverage", {}, r"Math.average with 2 arguments has no lemma"),
         ("recursion", {}, r"recursion calls itself"),
-        ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
-        ("requireCall", {}, r"OutOfScope.sol:88:21: the message of require is not a string literal or an error"),
+        ("requireCall", {}, r"OutOfScope.sol:82:21: the message of require is not a string literal or an error"),
         ("moduloAssignment", {}, r"mod is not in the operator table"),
         ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
         ("enumOrder", {}, r"lt takes unsigned operands, not enum, enum"),
@@ -491,6 +491,92 @@ def test_a_function_of_several_returns_returns_its_named_values_and_zero_for_one
     assert "      return (first, true);\n" in source(early)
     with pytest.raises(ExtractionError, match=r"Tuples.sol:\d+:9: a tuple assignment to x twice"):
         extract(build, f"{TUPLES}.assignedTwice", {})
+
+
+PARAMETERS = "tests/fixtures/contracts/Parameters.sol:Parameters"
+
+
+def test_a_parameter_that_the_body_assigns_is_an_input_and_a_local_that_starts_at_it(build):
+    capped = extract(build, f"{PARAMETERS}.capped", {"$bonus": "bonus"}).model
+    assert [(v.name, v.input) for v in capped.function.params] == [("_ceiling", True), ("_gas", True), ("_fresh", True)]
+    assert evaluate_vector(capped, {"_ceiling": 5, "_gas": 9, "_fresh": True, "bonus": 3}) == (False, 8)
+    assert evaluate_vector(capped, {"_ceiling": 5, "_gas": 9, "_fresh": False, "bonus": 3}) == (False, 5)
+    assert evaluate_vector(capped, {"_ceiling": 2**256 - 1, "_gas": 9, "_fresh": True, "bonus": 1}) == (True, 0)
+    text = source(capped)
+    assert "    uint256 _ceiling = i._ceiling;\n    if (i._fresh) {\n      _ceiling = _ceiling + i.bonus;\n" in text
+    assert "    return (i._gas < _ceiling) ? i._gas : _ceiling;\n" in text
+    spread = extract(build, f"{PARAMETERS}.spread", {}).model
+    assert evaluate_vector(spread, {"_a": 2, "_b": 7}) == (False, 5)
+    assert evaluate_vector(spread, {"_a": 7, "_b": 2}) == (False, 5)
+    assert "    uint256 _a = i._a;\n    uint256 _b = i._b;\n" in source(spread)
+    early = extract(build, f"{PARAMETERS}.earlyReturn", {}).model
+    assert evaluate_vector(early, {"_a": 3, "_small": True}) == (False, 4)
+    assert evaluate_vector(early, {"_a": 3, "_small": False}) == (False, 6)
+    # An output written from the local. A callee's parameter of the same name is the callee's own.
+    recorded = extract(build, f"{PARAMETERS}.recorded", {"$bonus": "bonus"}, {"$last": "last"}).model
+    assert evaluate_vector(recorded, {"_amount": 3, "bonus": 4}) == (False, 7)
+    written = "    uint256 _amount = i._amount;\n    _amount = _amount + i.bonus;\n    last = _amount;\n"
+    assert written in source(recorded)
+    nested = extract(build, f"{PARAMETERS}.nested", {}).model
+    assert evaluate_vector(nested, {"_a": 3}) == (False, 12)
+    assert "  function _twice(Inputs memory i, uint256 _a) internal pure returns (uint256) {\n    _a = _a * 2;\n" in (
+        source(nested)
+    )
+
+
+def test_a_theorem_names_an_assigned_parameter_at_the_call_and_its_local_at_the_return(build):
+    q = Terms(extract(build, f"{PARAMETERS}.capped", {"$bonus": "bonus"}).model)
+
+    @theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+    def within_the_raised_ceiling(q):
+        """the result is at most the ceiling at the call plus the bonus"""
+        return q.result <= q._ceiling + q.bonus
+
+    @theorem(assume=("no-revert",), expect="counterexample", reason="the bonus raises the ceiling", show=("_ceiling",))
+    def within_the_ceiling_at_the_call(q):
+        """the result is at most the ceiling at the call"""
+        return q.result <= q._ceiling
+
+    @theorem(assume=("no-revert",), witness=lambda q: z3.And(q._fresh, q.bonus > 0, q.result > q._ceiling))
+    def within_the_ceiling_at_the_return(q):
+        """the result is at most the ceiling at the return"""
+        return q.result <= q.locals["_ceiling"]
+
+    for t in (within_the_raised_ceiling, within_the_ceiling_at_the_call, within_the_ceiling_at_the_return):
+        result = prove(t, q)
+        assert result.ok, (t.id, result.verdict, result.detail)
+
+    recorded = Terms(extract(build, f"{PARAMETERS}.recorded", {"$bonus": "bonus"}, {"$last": "last"}).model)
+
+    @theorem(assume=("no-revert",), witness=lambda q: q.bonus > 0)
+    def records_the_raised_amount(q):
+        """the recorded amount is the amount at the call plus the bonus"""
+        return q.post.last == q._amount + q.bonus
+
+    result = prove(records_the_raised_amount, recorded)
+    assert result.ok, (result.verdict, result.detail)
+
+
+@pytest.mark.parametrize("function", ["shadowsCallee", "localShadowsCallee"])
+def test_a_local_of_the_name_of_a_called_function_of_the_model_is_refused(build, function):
+    """The emitted Solidity calls a function of the model by its name, which a local of that name shadows: solc would
+    not compile the model, as `twice(i, twice)`."""
+    with pytest.raises(ExtractionError, match=r"the call of twice names a function of the emitted Solidity"):
+        extract(build, f"{PARAMETERS}.{function}", {})
+
+
+def test_a_read_map_key_on_a_parameter_that_the_body_assigns_has_one_place(build):
+    """As for a local that an assignment changes, the key names the parameter's value at its one place: here the
+    value after the assignment, not the input."""
+    model = extract(build, f"{PARAMETERS}.limitOf", {"$limits[_id]": "limit"}).model
+    assert [r.source for r in model.reads] == ["$limits[_id]"]
+    assert evaluate_vector(model, {"_id": 4, "limit": 9}) == (False, 9)
+    assert evaluate_vector(model, {"_id": 2**256 - 1, "limit": 9}) == (True, 0)
+    message = (
+        r"Parameters.sol:\d+:\d+: the read \$limits\[_id\] names _id, which an assignment changes, at a second place"
+    )
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{PARAMETERS}.limitsAround", {"$limits[_id]": "limit"})
 
 
 def evaluate_vector(model, values):

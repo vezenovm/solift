@@ -129,7 +129,8 @@ The docstring is the statement. A theorem returns a z3 condition on `q`, which h
 
 - `result` and `reverts`; for a function of several returns, `result` is a tuple (`q.result[1]`);
 - `post`, each output by name (`q.post.remaining`): the value written, or passed to the external call;
-- each input, parameter and local, by name;
+- each input, parameter and local, by name. A parameter that the function assigns is its value at the call, and
+  `locals[name]` is its value at the return;
 - `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
   `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
 - `call(function, *args)`, with `.value` and `.reverts`;
@@ -188,7 +189,7 @@ The README says what a run proves and what it trusts.
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries; `x >> k` by a constant and `x & m` with a constant mask of low bits, as `x / 2**k` and `x % 2**k`, with a Halmos row for each constant; `T.wrap` and `T.unwrap` of a user-defined value type over an unsigned type | `unchecked`, signed integers, `**`, `%`, `<<`, a shift by a value that is not a constant, other masks, user-defined operators, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
 | `if`, early returns, `require`, `assert`, `revert`; a custom error whose arguments cannot revert, or are expressions that the condition makes too, on every path of it | loops; an error argument that can revert where the condition does not run it |
-| locals, also assigned in branches; compound assignments; named returns; the modifiers of the target, whose statements before a single `_;` that ends them run before its body (OpenZeppelin's `onlyOwner`) | a modifier with code after `_;`, invoked twice, or on a callee |
+| locals, also assigned in branches; compound assignments; named returns; a parameter that the body assigns, which is an input with its value at the call and a local of its name from there on; the modifiers of the target, whose statements before a single `_;` that ends them run before its body (OpenZeppelin's `onlyOwner`) | a modifier with code after `_;`, invoked twice, or on a callee |
 | several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`), also of an external view call, each value a read | a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
 | inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's; an internal call as a statement to a function that returns nothing and only reads and reverts, as a check (`_checkOwner();`), inlined | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`); a call as a statement to a function that returns a value, returns early, writes storage, emits or calls out |
@@ -197,7 +198,7 @@ The README says what a run proves and what it trusts.
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
 | a memory struct that the function builds (`Window memory w = Window(a, b);`, or zero), and its aliases (`Window memory v = w;`), as a local for each field (`w_start`, `w_end`); a memory struct parameter of a callee, as a parameter for each field, to which a call passes such a struct, a copy of storage, a storage struct, a struct parameter of the target or a constructor; a memory struct that an internal call returns, as its fields, also inside an expression (`window().end`), and a target that returns one (`q.result[k]`) | a write to its fields, also in a callee, a field of a struct, array or string type, a cut whose assembly is not marked memory-safe once such a struct exists; a callee that returns its struct parameter, a struct-valued call under `&&`, `\|\|` or `?:`, a struct among several returns or a named one |
-| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
+| one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another, a local or parameter of the name of a function that its function calls |
 
 ### Read map keys
 

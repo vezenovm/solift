@@ -78,12 +78,6 @@ contract OutOfScope {
     return recursion(_a - 1);
   }
 
-  function assignment(uint256 _a) internal pure returns (uint256) {
-    uint256 x = _a;
-    _a = x + 1;
-    return x;
-  }
-
   function requireCall(uint256 _a) internal pure returns (uint256) {
     require(_a > 0, string(abi.encodePacked(_a)));
     return _a;

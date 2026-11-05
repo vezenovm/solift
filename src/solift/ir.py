@@ -129,8 +129,10 @@ class Expr:
 @dataclass(frozen=True, eq=False)
 class Var(Expr):
     """A parameter, a local, or a read. `input` marks an input of the model: a parameter of the modeled function or a
-    read. A parameter of a called function is not an input. `declared` is the source's type where the model's type
-    loses a part of it that a test of the contract needs, as `address payable` for an address."""
+    read. A parameter of a called function is not an input. A parameter of the modeled function that its body assigns
+    is an input, and a local of the same name, which the body declares from it first and then reads and assigns.
+    `declared` is the source's type where the model's type loses a part of it that a test of the contract needs, as
+    `address payable` for an address."""
 
     name: str
     type: Type = UINT256
