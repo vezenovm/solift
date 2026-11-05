@@ -63,6 +63,17 @@ contract Parameters {
     return first + $limits[_id];
   }
 
+  modifier atMost(uint256 _x) {
+    require(_x <= 100);
+    _;
+  }
+
+  // A modifier whose argument is a parameter that the body assigns: the argument is its value at the call.
+  function raisedWithin(uint256 _a) public pure atMost(_a) returns (uint256) {
+    _a += 1;
+    return _a;
+  }
+
   // A parameter local, and a local, of the name of a function of the model, which they would shadow there.
   function shadowsCallee(uint256 twice) public pure returns (uint256) {
     twice += 1;

@@ -157,6 +157,7 @@ RECORDED = (
     ),
 )
 NESTED = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.nested(_a)"))
+RAISED_WITHIN = ({}, None, Link(setup=PARAMETERS_SETUP, call="parameters.raisedWithin(_a)"))
 EFFECTS = "tests/fixtures/contracts/Effects.sol"
 EFFECTS_SETUP = "tests/fixtures/test/EffectsSetup.sol:EffectsSetup"
 BUY = (
@@ -226,7 +227,14 @@ CHANGES = {
 
 @pytest.mark.parametrize(
     "function, spec",
-    [("capped", CAPPED), ("spread", SPREAD), ("earlyReturn", EARLY_RETURN), ("recorded", RECORDED), ("nested", NESTED)],
+    [
+        ("capped", CAPPED),
+        ("spread", SPREAD),
+        ("earlyReturn", EARLY_RETURN),
+        ("recorded", RECORDED),
+        ("nested", NESTED),
+        ("raisedWithin", RAISED_WITHIN),
+    ],
 )
 def test_functions_that_assign_their_parameters_link_to_their_models(workspace, function, spec):
     reads, outputs, link = spec

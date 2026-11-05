@@ -565,6 +565,16 @@ def test_a_local_of_the_name_of_a_called_function_of_the_model_is_refused(build,
         extract(build, f"{PARAMETERS}.{function}", {})
 
 
+def test_a_modifier_reads_a_parameter_that_the_body_assigns_at_the_call(build):
+    """The parameter's local starts at the input before the modifier's statements, which run before the body."""
+    model = extract(build, f"{PARAMETERS}.raisedWithin", {}).model
+    assert evaluate_vector(model, {"_a": 100}) == (False, 101)
+    assert evaluate_vector(model, {"_a": 101}) == (True, 0)
+    text = source(model)
+    copy, check, raise_ = text.index("uint256 _a = i._a;"), text.index("<= 100"), text.index("_a = _a + 1;")
+    assert copy < check < raise_
+
+
 def test_a_read_map_key_on_a_parameter_that_the_body_assigns_has_one_place(build):
     """As for a local that an assignment changes, the key names the parameter's value at its one place: here the
     value after the assignment, not the input."""
