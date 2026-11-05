@@ -983,6 +983,24 @@ def test_a_returned_struct_that_the_model_could_get_wrong_is_refused(build, func
         extract(build, f"{STRUCTS}.{function}", reads)
 
 
+PAYABLE = "tests/fixtures/contracts/Payable.sol:Payable"
+
+
+@pytest.mark.parametrize(
+    "function, reads",
+    [
+        ("paidToPayee", {"payee.to": "to", "payee.cap": "cap"}),
+        ("paidToExternal", {"payees.payee().to": "to"}),
+    ],
+)
+def test_an_address_payable_field_of_a_struct_is_declared_payable(build, function, reads):
+    """A field that a callee reads of a storage struct it takes, or of a struct from an external call, is an input
+    that the link test declares `address payable`, as for a read of the field in an expression."""
+    model = extract(build, f"{PAYABLE}.{function}", reads).model
+    assert model.reads[0].var.declared == "address payable"
+    assert [r.var.declared for r in model.reads[1:]] == [""] * (len(reads) - 1)
+
+
 EXTERNAL_WINDOW = {"params.window().start": "start", "params.window().end": "end"}
 
 
