@@ -1,18 +1,16 @@
-import pathlib
 import random
 
 import pytest
 import z3
 
-from solift import forge, ops
+from solift import ops
 from solift.extract import ExtractionError, extract
-from solift.ir import Op, uint, walk
+from solift.ir import Op, declared_locals, uint, walk
 from solift.smt import symbols, terms
 from solift.solidity import source
 from tests.models import QUOTE_SOURCE, WAD, quote_reference
 from tests.test_smt import evaluate
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTER = "tests/fixtures/contracts/Quoter.sol:Quoter"
 OUT_OF_SCOPE = "tests/fixtures/contracts/OutOfScope.sol:OutOfScope"
 READS = {
@@ -23,12 +21,6 @@ READS = {
     "tx.gasprice": "txGasPrice",
     "block.basefee": "baseFee",
 }
-
-
-@pytest.fixture(scope="session")
-def build(tmp_path_factory):
-    work = tmp_path_factory.mktemp("forge")
-    return forge.build(ROOT, work / "out", work / "cache")
 
 
 def test_the_quoter_model_is_the_function_with_its_reads_as_inputs(build):
@@ -211,7 +203,6 @@ def test_a_public_function_calls_its_callee_inline(build):
         ("recursion", {}, r"recursion calls itself"),
         ("assignment", {}, r"OutOfScope.sol:83:5: an assignment to the input _a"),
         ("requireCall", {}, r"OutOfScope.sol:88:21: the message of require is not a string literal or an error"),
-        ("structParameterOfACallee", {}, r"the struct parameter _pair of a called function"),
         ("moduloAssignment", {}, r"mod is not in the operator table"),
         ("enumCast", {}, r"a type conversion: uint8\(_side\)"),
         ("enumOrder", {}, r"lt takes unsigned operands, not enum, enum"),
@@ -565,8 +556,11 @@ def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointer
     # pointer or in a callee too, nor at other declarations of the same names, nor in a callee that runs twice, also
     # through another callee, though it can be at the parameter of a callee that runs once.
     for function, key, message in [
-        ("owedTwice", "$book.owed[who]", r"Pointers.sol:\d+:31: the read \$book.owed\[who\] names who, which an"),
-        ("owedReset", "$book.owed[_who]", r"the read \$book.owed\[_who\] names _who, which an assignment changes"),
+        (
+            "owedTwice",
+            "$book.owed[who]",
+            r"Pointers.sol:\d+:30: the read \$book.owed\[who\] names who, .* second place",
+        ),
         ("slotsIncremented", "$book.slots[n++]", r"Pointers.sol:\d+:33: the read \$book.slots\[n\+\+\] changes n\+\+"),
         ("slotsAssigned", "$book.slots[_n = _m]", r"the read \$book.slots\[_n = _m\] changes _n = _m: a read map"),
         ("owedInBranches", "$book.owed[who]", r"the read \$book.owed\[who\] names other things than at its"),
@@ -587,6 +581,9 @@ def test_a_pointer_or_a_read_at_a_key_that_can_change_or_a_callee_on_two_pointer
     assert [r.source for r in extract(build, f"{POINTERS}.owedOnce", {"$book.owed[_who]": "owed"}).model.reads] == [
         "$book.owed[_who]"
     ]
+    # A callee that runs once reads its parameter after an assignment, at one place: the input is the read there.
+    reset = extract(build, f"{POINTERS}.owedReset", {"$book.owed[_who]": "owed"}).model
+    assert [r.source for r in reset.reads] == ["$book.owed[_who]"]
     # A parameter with the name of a storage variable in the read map is the parameter.
     shadowed = extract(build, f"{POINTERS}.valueIs", {"level": "owed"}).model
     assert [v.name for v in shadowed.inputs] == ["level", "owed"]
@@ -666,9 +663,9 @@ def test_an_output_with_its_value_before_the_call_is_written_on_some_paths_and_r
         ("nothing", {}, {}, r"Effects.nothing returns no value: name a write or an external call in the output map"),
         (
             "boundCallStatement",
+            {"SWAPPER": "swapper"},
             {},
-            {},
-            r"Effects.sol:\d+:5: a call to buyAll as a statement: an internal call is taken",
+            r"Effects.sol:\d+:5: buyAll, which a statement calls, writes storage, emits or calls out",
         ),
         ("add", {}, {"$total": "total"}, r"\+= to the output \$total needs its value before the call"),
         ("buy", {"SWAPPER.fee()": "fee"}, {"SWAPPER.buy(msg.sender,amount)": "x"}, r"names 1 values of SWAPPER.buy"),
@@ -738,7 +735,10 @@ def test_the_balance_of_an_address_is_a_read_and_the_bounds_of_a_type_are_consta
 def test_a_balance_after_an_external_call_or_of_a_local_that_changes_is_refused_and_an_interface_cannot_revert(build):
     with pytest.raises(ExtractionError, match=r"reads address\(this\).balance after an external call"):
         extract(build, f"{BALANCES}.balanceAfterACall", {"address(this).balance": "held"})
-    with pytest.raises(ExtractionError, match=r"Balances.sol:\d+:21: the read who.balance names who, which an"):
+    with pytest.raises(
+        ExtractionError,
+        match=r"Balances.sol:\d+:20: the read who.balance names who, which an assignment changes, at a second place",
+    ):
         extract(build, f"{BALANCES}.balancesOfTwo", {"who.balance": "held"})
     with pytest.raises(ExtractionError, match=r"calls pot, which reads a balance, after an external call"):
         extract(build, f"{BALANCES}.potAfterACall", {"address(this).balance": "held"})
@@ -806,3 +806,468 @@ def test_ceil_div_is_the_quotient_rounded_up_and_reverts_as_its_copy_does(build,
         assert z3.is_true(z3.simplify(reverts))
     else:
         assert evaluate(model, values) == outcome
+
+
+STRUCTS = "tests/fixtures/contracts/Structs.sol:Structs"
+
+
+@pytest.mark.parametrize(
+    "function, reads",
+    [
+        ("smashedThroughCallee", {"_smash()": "smash"}),
+        ("smashedBefore", {"_smash()": "smash"}),
+        ("smashedCommented", {"_commented()": "smash"}),
+        ("externalSmashed", {"params.window().end": "end", "_smash()": "smash"}),
+    ],
+)
+def test_a_cut_with_assembly_that_is_not_memory_safe_is_refused_wherever_it_runs(build, function, reads):
+    with pytest.raises(ExtractionError, match=r"runs inline assembly that is not marked memory-safe"):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+def test_the_fields_of_a_zero_struct_are_zeros_that_solidity_takes(build):
+    model = extract(build, f"{STRUCTS}.zeroOwner", {}).model
+    assert evaluate(model, {"_x": 3}) == (False, 3, False)
+    assert "address o_who = address(0);" in source(model)
+
+
+def test_a_generated_local_with_the_name_of_a_function_is_refused(build):
+    with pytest.raises(ExtractionError, match=r"the local q_start for a field of a memory struct has the name of a"):
+        extract(build, f"{STRUCTS}.shadowsAFunction", {})
+
+
+def test_an_alias_of_a_struct_parameter_reads_the_parameter_s_fields(build):
+    model = extract(build, f"{STRUCTS}.aliasedParameter", {"_w.start": "start"}).model
+    assert evaluate(model, {"start": 2, "_x": 1}) == (False, 5, False)
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("built", {}, {"_t": 5}, 1),
+        ("aliased", {}, {"_a": 2, "_b": 3}, 5),
+        ("zero", {}, {"_x": 4}, 4),
+        ("copyAliased", {"config.start": "start", "config.end": "end"}, {"start": 1, "end": 7}, 6),
+    ],
+)
+def test_a_memory_struct_that_the_function_builds_is_a_local_for_each_field(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_the_fields_of_a_built_struct_are_locals_that_theorems_can_name(build):
+    model = extract(build, f"{STRUCTS}.aliased", {}).model
+    assert [v.name for v in declared_locals(model.function.body)] == ["w_start", "w_end"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        (
+            "copyAliasedAfterWrite",
+            {"config.end": "end"},
+            r"reads config.end after a write to its memory copy",
+        ),
+        ("fieldWritten", {}, r"a write to the memory struct w: memory structs alias"),
+        ("nested", {}, r"the memory struct Nested has the field window of type struct Window"),
+        ("clash", {}, r"two locals are named w_end"),
+        ("quotedTwice", {"feed.quote(w.end)": "quote"}, r"_quoted runs 2 times in the call"),
+        ("smashed", {"_smash()": "smash"}, r"runs inline assembly that is not marked memory-safe"),
+    ],
+)
+def test_a_memory_struct_that_an_alias_or_assembly_could_change_unseen_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+def test_a_cut_whose_assembly_is_memory_safe_is_taken_beside_a_memory_struct(build):
+    model = extract(build, f"{STRUCTS}.safe", {"_safe()": "cut"}).model
+    assert [r.source for r in model.reads] == ["_safe()"]
+
+
+CONFIG = {"config.start": "start", "config.end": "end"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("openedBuilt", {}, {"_s": 3, "_t": 10}, 7),
+        ("openedParameter", {"_w.start": "start", "_w.end": "end"}, {"start": 3, "end": 9, "_t": 2}, 0),
+        ("openedConfig", CONFIG, {"start": 3, "end": 9, "_t": 5}, 2),
+        ("openedCopy", CONFIG, {"start": 3, "end": 9, "_t": 5}, 11),
+        ("openedConstructed", {}, {"_s": 4, "_t": 9}, 5),
+    ],
+)
+def test_a_struct_passed_to_a_callee_is_a_value_for_each_field(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+    (opened,) = model.callees
+    assert [p.name for p in opened.params] == ["_w_start", "_w_end", "_t"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("openedParameter", {"_w.start": "start"}, r"reads a field of the struct parameter _w.end, which the read map"),
+        ("writesParameter", {}, r"a write to the memory struct _w: memory structs alias"),
+        ("quotedParameterTwice", {"feed.quote(_w.end)": "quote"}, r"_quotedParameter runs 2 times in the call"),
+    ],
+)
+def test_a_struct_parameter_of_a_callee_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+START = {"config.start": "start"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("fromInternal", START, {"start": 3, "_t": 12}, 0),
+        ("fromInternal", START, {"start": 3, "_t": 13}, 1),
+        ("windowEnd", START, {"start": 3, "_x": 1}, 14),
+        ("owed", CONFIG, {"start": 3, "end": 10, "_t": 5}, 8),
+        ("nestedReturn", START, {"start": 3, "_t": 1}, 14),
+        ("copyReturned", CONFIG, {"start": 3, "end": 9, "_t": 1}, 4),
+    ],
+)
+def test_a_struct_that_an_internal_call_returns_is_its_fields(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_a_field_of_a_constructed_struct_keeps_the_reverts_of_its_other_fields(build):
+    model = extract(build, f"{STRUCTS}.projected", {}).model
+    assert evaluate(model, {"_x": 3, "_y": 1}) == (False, 3, False)
+    assert evaluate(model, {"_x": 3, "_y": 0})[0] is True
+
+
+@pytest.mark.parametrize("x, result", [(0, 0), (4, 5)])
+def test_a_named_struct_return_starts_at_zero(build, x, result):
+    model = extract(build, f"{STRUCTS}.namedWindowEnd", {}).model
+    assert evaluate(model, {"_x": x}) == (False, result, False)
+
+
+def test_a_one_field_struct_is_one_value_and_a_target_returns_a_struct_as_its_fields(build):
+    one = extract(build, f"{STRUCTS}.oneField", {}).model
+    assert evaluate(one, {"_x": 4}) == (False, 5, False)
+    window = extract(build, f"{STRUCTS}.window", {"config.start": "start"}).model
+    assert window.function.returns.solidity == "uint256, uint256"
+
+
+def test_a_struct_valued_call_in_an_expression_is_unpacked_just_before_its_statement(build):
+    model = extract(build, f"{STRUCTS}.windowEnd", {"config.start": "start"}).model
+    first, second = model.function.body
+    assert type(first).__name__ == "Unpack" and [v.name for v in first.vars] == ["window_start", "window_end"]
+    assert type(second).__name__ == "Return"
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("returnsParameter", {}, r"returns its struct parameter _w, or an alias of it"),
+        ("guardedCall", START, r"the struct of window\(\), under &&, \|\| or \?:"),
+    ],
+)
+def test_a_returned_struct_that_the_model_could_get_wrong_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+EXTERNAL_WINDOW = {"params.window().start": "start", "params.window().end": "end"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("fromExternal", {"params.window().end": "end"}, {"end": 5, "_t": 4}, 0),
+        ("externalPassed", EXTERNAL_WINDOW, {"start": 2, "end": 5, "_t": 4}, 2),
+        ("externalPart", {"params.triple()[1]": "second"}, {"second": 7, "_x": 1}, 8),
+    ],
+)
+def test_a_struct_field_or_a_tuple_value_of_an_external_call_is_a_read(build, function, reads, values, result):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert [r.source for r in model.reads] == list(reads)
+    assert evaluate(model, values) == (False, result, False)
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        (
+            "fromExternal",
+            {},
+            r"reads a value of an external call params.window\(\).end, which the read map does not name",
+        ),
+        ("externalPart", {}, r"reads a value of an external call params.triple\(\)\[1\]"),
+        ("externalWritten", {"params.window().end": "end"}, r"a write to w, which is not a field of a memory copy"),
+    ],
+)
+def test_a_value_of_an_external_call_needs_its_key_and_stays_as_read(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+@pytest.mark.parametrize(
+    "function, reads",
+    [
+        ("openedConstructed", {"Windows.opened(Window(_s,_s),_t)": "opened"}),
+        ("owed", {"config.end": "end", "window().opened(_t)": "opened"}),
+        ("cutNewArray", {"_length(new uint256[](_n))": "opened"}),
+        ("cutFactoryOfAFunction", {"Windows.opened(_made(_startOf),_x)": "opened"}),
+    ],
+)
+def test_a_cut_may_take_new_memory_that_nothing_reaches_after_the_call(build, function, reads):
+    model = extract(build, f"{STRUCTS}.{function}", reads).model
+    assert "opened" in [r.var.name for r in model.reads]
+    assert not model.callees
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("openedBuilt", {"w.opened(_t)": "opened"}, r"passes memory to opened, which can change it"),
+        ("cutNested", {"_nestedStart(Nested(held))": "start"}, r"passes memory to _nestedStart, which can change it"),
+        ("cutFake", {"Windows.opened(_fakeWindow(),_t)": "opened"}, r"passes memory to opened, which can change it"),
+        (
+            "cutSmashed",
+            {"_smashWindow(Window(_x,_x))": "smashed"},
+            r"passes memory to _smashWindow, and runs inline assembly",
+        ),
+        ("cutSmashedNext", {"_smashNext(Window(0,0))": "smashed"}, r"passes memory to _smashNext, and runs inline"),
+    ],
+)
+def test_a_cut_whose_memory_argument_could_be_reached_or_written_unseen_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{STRUCTS}.{function}", reads)
+
+
+KEYS = "tests/fixtures/contracts/Keys.sol:Keys"
+
+
+@pytest.mark.parametrize(
+    "function, values, result",
+    [
+        ("quoted", {"_who": 1, "_byShares": 0, "_byAmount": 3, "quote": 7}, 7),
+        ("quotedThenAssigned", {"_who": 1, "_a": 3, "quote": 7}, 11),
+    ],
+)
+def test_a_key_on_an_assigned_local_with_one_place_is_the_value_there(build, function, values, result):
+    model = extract(build, f"{KEYS}.{function}", {"gate.quote(_who,amount)": "quote"}).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+def test_two_fields_of_one_external_call_text_at_two_places_are_each_the_value_there(build):
+    model = extract(build, f"{KEYS}.twoFields", {"pairs.get(n).x": "x", "pairs.get(n).y": "y"}).model
+    assert evaluate(model, {"x": 3, "y": 4}) == (False, 7, False)
+
+
+@pytest.mark.parametrize(
+    "function, message",
+    [
+        ("quotedTwice", r"names amount, which an assignment changes, at a second place"),
+        ("quotedInACalleeTwice", r"_quoteOf runs 2 times in the call"),
+        ("fieldThenDirect", r"the read pairs.get\(n\).x names n, which an assignment changes, at a second place"),
+    ],
+)
+def test_a_key_on_an_assigned_local_at_two_places_or_runs_is_refused(build, function, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{KEYS}.{function}", {"gate.quote(_who,amount)": "quote", "pairs.get(n).x": "x"})
+
+
+ALLOWED = "gate.allowed(_who,_amount)"
+
+
+def test_a_call_that_is_not_a_view_may_be_assigned_and_leaves_immutables_as_they_are(build):
+    assigned = extract(build, f"{KEYS}.assigned", {ALLOWED: "answer"}).model
+    assert evaluate(assigned, {"_who": 1, "_amount": 2, "answer": 5}) == (False, 5, False)
+    around = extract(build, f"{KEYS}.immutableAround", {ALLOWED: "answer", "START": "start"}).model
+    assert evaluate(around, {"_who": 1, "_amount": 2, "answer": 5, "start": 7}) == (False, 19, False)
+
+
+@pytest.mark.parametrize(
+    "function, values, result",
+    [
+        ("take", {"_who": 1, "_amount": 5, "answer": 0}, (False, 5, False)),
+        ("takeByShares", {"_who": 1, "_byShares": 2, "_byAmount": 9, "answer": 0}, (False, 4, False)),
+    ],
+)
+def test_the_result_of_a_call_that_is_not_a_view_is_an_input(build, function, values, result):
+    reads = {"gate.allowed(_who,_amount)" if function == "take" else "gate.allowed(_who,amount)": "answer"}
+    model = extract(build, f"{KEYS}.{function}", reads).model
+    assert evaluate(model, values) == result
+    assert evaluate(model, {**values, "answer": 1})[0] is True
+    assert [e.kind for e in model.effects] == ["read"]
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("takeThenRead", {"gate.allowed(_who,_amount)": "ok", "total": "total"}, r"reads total after an external call"),
+        ("takeInAnExpression", {"gate.allowed(_who,_amount)": "answer"}, r"must be the whole value of its statement"),
+        (
+            "takeTwice",
+            {"gate.allowed(_who,_amount)": "answer"},
+            r"can change state: a call that can change state, at a",
+        ),
+        (
+            "takeAfterAWrite",
+            {"gate.allowed(_who,_amount)": "answer"},
+            r"follows a write, and its call could read the change",
+        ),
+        ("bumped", {"_bump()": "b"}, r"calls _bump, which can change state: an internal call that can change state"),
+        ("selfCall", {"this.bumpItself()": "answer"}, r"a call to the contract itself, which can change its storage"),
+        ("libraryCall", {"Counter.bump(box)": "answer"}, r"a library call, which runs in the contract's own storage"),
+        ("selfCallStatement", {}, r"a call to the contract itself, this.bumpItself\(\), which can change its storage"),
+        (
+            "balanceAfter",
+            {ALLOWED: "answer", "address(gate).balance+0": "cash"},
+            r"reads address\(gate\).balance after an external call",
+        ),
+    ],
+)
+def test_a_call_that_is_not_a_view_whose_result_could_be_two_values_or_hide_a_change_is_refused(
+    build, function, reads, message
+):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{KEYS}.{function}", reads)
+
+
+CHECKS = "tests/fixtures/contracts/Checks.sol:Checks"
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("checked", {}, {"_to": 0, "_a": 3}, True),
+        ("checked", {}, {"_to": 1, "_a": 3}, False),
+        ("checkedTwice", {}, {"_to": 1, "_from": 0, "_a": 3}, True),
+        ("ranged", {}, {"_a": 3, "_b": 2}, True),
+        ("ranged", {}, {"_a": 2, "_b": 3}, False),
+        ("rangedConstructed", {}, {"_a": 3, "_b": 2}, True),
+        (
+            "rangedFromOutside",
+            {"quotes.range().low": "low", "quotes.range().high": "high"},
+            {"low": 3, "high": 2},
+            True,
+        ),
+        (
+            "owned",
+            {"owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 1, "caller": 2, "total": 0, "_a": 1},
+            True,
+        ),
+        (
+            "owned",
+            {"owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 2, "caller": 2, "total": 0, "_a": 1},
+            False,
+        ),
+    ],
+)
+def test_a_check_called_as_a_statement_is_inlined_as_its_requires(build, function, reads, values, reverts):
+    model = extract(build, f"{CHECKS}.{function}", reads).model
+    assert not model.callees
+    assert evaluate(model, values)[0] is reverts
+
+
+def test_a_check_whose_argument_emits_is_inlined_and_the_event_is_the_caller_s(build):
+    model = extract(build, f"{CHECKS}.loggedCheck", {}).model
+    assert [e.kind for e in model.effects] == ["event"]
+    assert evaluate(model, {"_x": 0})[0] is True
+    assert evaluate(model, {"_x": 3}) == (False, 3, False)
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("early", {}, r"_early, which a statement calls, returns early"),
+        ("writes", {}, r"_write, which a statement calls, writes storage, emits or calls out"),
+        ("emits", {}, r"_emitted, which a statement calls, writes storage, emits or calls out"),
+        ("keyedTwice", {"quotes.quote(_n)": "quote"}, r"_keyed runs 2 times in the call"),
+        ("guardedInACheck", {}, r"the struct of _range\(_x\), under &&, \|\| or \?:"),
+    ],
+)
+def test_a_statement_call_that_returns_early_writes_or_runs_a_key_twice_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{CHECKS}.{function}", reads)
+
+
+def test_a_statement_call_of_a_public_library_function_is_refused_as_it_runs_by_delegatecall(build):
+    with pytest.raises(ExtractionError, match=r"a call to requirePositive as a statement"):
+        extract(build, "tests/fixtures/contracts/Checks.sol:DelegatedChecks.delegated", {})
+
+
+GATED = "tests/fixtures/contracts/Gated.sol:Gated"
+KEEPER = {"keeper": "keeper", "msg.sender": "caller", "total": "total"}
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("keeperAdd", KEEPER, {"keeper": 1, "caller": 2, "total": 0, "_a": 1}, True),
+        ("keeperAdd", KEEPER, {"keeper": 2, "caller": 2, "total": 0, "_a": 1}, False),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 1, "caller": 2, "total": 0, "_a": 1},
+            True,
+        ),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {"owner": 2, "caller": 2, "total": 0, "_a": 1},
+            False,
+        ),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 9}, True),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 11}, False),
+        ("boundedByCall", {}, {"_a": 4}, True),
+        ("boundedByCall", {}, {"_a": 5}, False),
+    ],
+)
+def test_the_modifiers_of_the_target_run_before_its_body(build, function, reads, values, reverts):
+    model = extract(build, f"{GATED}.{function}", reads).model
+    assert evaluate(model, values)[0] is reverts
+
+
+@pytest.mark.parametrize(
+    "function, reads, message",
+    [
+        ("resetting", {}, r"the modifier resetAfter runs code after `_;`"),
+        ("runTwice", {}, r"the modifier twice runs code after `_;`, or has no single `_;`"),
+        ("quoted", {"quotes.quote(n)": "quote"}, r"names n, which an assignment changes, at a second place"),
+        ("gated", {"quotes.quote(_n)": "quote"}, r"_get runs 2 times in the call"),
+        ("keeperTwice", {"keeper": "keeper", "msg.sender": "caller"}, r"the modifier onlyKeeper is invoked twice"),
+        ("boundedIf", {}, r"the struct of _bound\(5\), under &&, \|\| or \?:"),
+    ],
+)
+def test_a_modifier_that_runs_code_after_its_body_or_reads_a_key_twice_is_refused(build, function, reads, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{GATED}.{function}", reads)
+
+
+KEPT = "tests/fixtures/contracts/Kept.sol:Kept"
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, reverts",
+    [
+        ("kept", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 1, "caller": 2, "_a": 3}, True),
+        ("kept", {"keeper": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 3}, False),
+        ("kept", {"currentKeeper()": "keeper", "msg.sender": "caller"}, {"keeper": 2, "caller": 2, "_a": 3}, False),
+        ("sameArgument", {}, {"_n": 1}, False),
+    ],
+)
+def test_a_call_in_an_error_argument_that_the_condition_makes_too_is_left_out(build, function, reads, values, reverts):
+    model = extract(build, f"{KEPT}.{function}", reads).model
+    assert evaluate(model, values)[0] is reverts
+
+
+@pytest.mark.parametrize(
+    "function",
+    ["skipped", "otherArgument"],
+)
+def test_a_call_in_an_error_argument_that_the_condition_may_not_make_is_refused(build, function):
+    with pytest.raises(ExtractionError, match=r"which solc evaluates whether or not the condition holds"):
+        extract(build, f"{KEPT}.{function}", {})

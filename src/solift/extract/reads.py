@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped
+from solift.extract.common import EXTERNAL, _normal, _root, _subtree, _this, _through_contract, _unwrapped, memory_safe
 from solift.extract.errors import Missing
 from solift.ir import Read, Var
 
@@ -45,11 +45,19 @@ class _Scan:
         self.seen: set = set()
         self.selected: list = []
         self.sends = False
+        self.unsafe = False
+        self.assembly = False
 
 
 # The marks in a callee's reads that are not storage variables: a read map call that could read any storage, a storage
 # parameter, and a balance.
 MARKERS = {"call", "any", "balance"}
+
+
+def _memory(node) -> bool:
+    """Whether an expression is a reference to memory, as a struct or an array, and not a function that takes one."""
+    type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+    return not type_string.startswith("function") and (type_string.endswith(" memory") or " memory " in type_string)
 
 
 def _address(node) -> bool:
@@ -63,7 +71,7 @@ def _mapping(node) -> bool:
 
 _LOCALS = (
     "a read map key names one value for the whole call, so it must change nothing, and each local in it must be one "
-    "that only its declaration assigns, in a function that runs once"
+    "that only its declaration assigns, or the key must be read at one place only, in a function that runs once"
 )
 
 
@@ -78,6 +86,12 @@ def _assigned(node) -> set[int]:
         elif target is not None and target["nodeType"] == "Identifier":
             assigned.add(target["referencedDeclaration"])
     return assigned
+
+
+UNSAFE_ASSEMBLY = (
+    "runs inline assembly that is not marked memory-safe, which could write a memory struct of the function that the "
+    "model has as values"
+)
 
 
 class Reads:
@@ -139,6 +153,15 @@ class Reads:
         balance = False
         root = _root(node) if kind in ("MemberAccess", "IndexAccess") else None
         through = scope.get(root.get("referencedDeclaration")) if root is not None else None
+        if isinstance(through, tuple) and through[0] == "struct":
+            # A field of a struct that the function builds is a local of the model, not a read.
+            return self._struct_field(node, through)
+        if isinstance(through, tuple) and through[0] == "returned":
+            # A field of a struct from an external call is a read of the call's field (structs.py).
+            if node["nodeType"] != "MemberAccess" or node["expression"] is not root:
+                self.fail(node, f"{self.text(node)} is not a field of the struct that an external call returns")
+            member = self.nodes[node["referencedDeclaration"]]
+            return self._returned_field(through, member, node)
         below = isinstance(through, tuple) and through[0] in ("copy", "param", "pointer")
         if below:
             if node["typeDescriptions"]["typeString"].startswith(("struct ", "mapping(")):
@@ -147,7 +170,7 @@ class Reads:
             what = "a field of the struct parameter" if through[0] == "param" else "a storage field"
             if through[0] == "pointer" and through[2] is None:
                 what = "a field of the storage parameter"
-            copy = root["referencedDeclaration"] if through[0] == "copy" else None
+            copy = through[4] if through[0] == "copy" else None
             pointer = through if through[0] == "pointer" else None
         elif kind == "MemberAccess" and node["memberName"] == "balance" and _address(node["expression"]):
             key, what, balance = _normal(self.text(node)), "the balance of an address", True
@@ -193,23 +216,42 @@ class Reads:
         if fallback or below:
             # The indexes below a copy, a parameter or a pointer are any expressions, as in other read map keys.
             self._fallback_read(node, scope)
-        if _normal(key) not in self.reads:
-            var = Var(entry[1], self._type(node), input=True, src=self.src(node), declared=self._declared(node))
-            self.reads[_normal(key)] = Read(var, entry[0])
-        return self.reads[_normal(key)].var
+        return self._input(key, node, node)
+
+    def _input(self, key: str, typed, node) -> Var:
+        """The input of the read map key `key`, made at its first read `node`, of the type of `typed`: the read, or the
+        declaration of the value that it reads, as a struct's member."""
+        key = _normal(key)
+        if key not in self.reads:
+            written, name = self.read_map[key]
+            self.reads[key] = Read(
+                Var(name, self._type(typed), input=True, src=self.src(node), declared=self._declared(typed)), written
+            )
+        return self.reads[key].var
 
     def _stable(self, key: str, node, scope: dict) -> None:
-        """A read map key names one value for the whole call. So it changes nothing, a local that it names, or a
-        parameter of a callee, is one that only its declaration assigns, in a callee that runs once (_run_once), and
-        each read of the key names the same things (_identity)."""
+        """A read map key names one value for the whole call. So it changes nothing, it runs in a callee that runs once
+        if it names the callee's locals or parameters (_run_once), each read of it names the same things (_identity),
+        and a local that it names is one that only its declaration assigns, or else the key is read at one place only,
+        where it names the local's value there."""
         for n in _subtree(node):
             kind = n.get("nodeType")
             if kind == "Assignment" or (kind == "UnaryOperation" and n["operator"] in ("++", "--", "delete")):
                 self.fail(n, f"the read {key} changes {self.text(n)}: {_LOCALS}")
             var = scope.get(n.get("referencedDeclaration")) if kind == "Identifier" else None
+            if isinstance(var, tuple) and var[0] in ("struct", "returned") and self.stack:
+                # The fields of a struct that a callee builds or takes can differ at each run of the callee.
+                self.keyed.add(self.stack[-1])
             if isinstance(var, Var) and not var.input:
                 if n["referencedDeclaration"] in self.assigned:
-                    self.fail(n, f"the read {key} names {n['name']}, which an assignment changes: {_LOCALS}")
+                    # The key's one place runs at most once in the call, so the input is the value that it has there.
+                    place = self.key_places.setdefault(_normal(key), node["id"])
+                    if place != node["id"]:
+                        self.fail(
+                            n,
+                            f"the read {key} names {n['name']}, which an assignment changes, at a second place: "
+                            f"{_LOCALS}",
+                        )
                 if self.stack:
                     self.keyed.add(self.stack[-1])
         identity = self._identity(node, scope)
@@ -230,6 +272,9 @@ class Reads:
                 entry = scope.get(n.get("referencedDeclaration"))
                 if isinstance(entry, tuple) and entry[0] in ("copy", "pointer"):
                     names.extend(entry[3])
+                elif isinstance(entry, tuple) and entry[0] == "param":
+                    # A memory struct parameter of the target, also through an alias of it.
+                    names.extend(entry[2])
                 else:
                     names.append(self._declaration_of(n, self._within()))
         return tuple(names)
@@ -285,15 +330,25 @@ class Reads:
 
     def _fallback_read(self, node, scope: dict) -> None:
         """Records the reads of a read map key that is any other expression: each storage variable in it. Each call in
-        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. No
-        call may take a memory value of the function, which an internal call could change, nor reach `gasleft`, `gas()`
-        in assembly, or a modifier that the target's contract overrides (_varies)."""
+        it must be to a view or pure function, and after a write to an internal pure one, which reads no storage. An
+        internal call may take memory only where nothing can reach it after the call (_fresh), and with no assembly in
+        its code that is not memory-safe, as it could change it unseen. No call may reach `gasleft`, `gas()` in
+        assembly, or a modifier that the target's contract overrides (_varies)."""
         scan = _Scan()
         why = self._varies(node, scan, self._within(), self.contract)
         while why is None and scan.sends and scan.selected:
             why = self._follow(*scan.selected.pop(), scan)
+        if why is None and scan.unsafe:
+            # Such assembly could write a memory struct that the model has as values: one that exists, one that a later
+            # allocation puts where the assembly moved the free memory pointer, or one of a caller of a callee whose
+            # model the extraction reuses. So it is refused once any flattened struct exists, here or at the end of the
+            # extraction (extractor.py).
+            self.unsafe_cut = self.unsafe_cut or node
+            if self.flattened:
+                why = UNSAFE_ASSEMBLY
         if why is not None:
             self.fail(node, f"the read {self.text(node)} {why}")
+        changes = []
         for n in _subtree(node):
             ref = n.get("referencedDeclaration")
             if n.get("nodeType") == "Identifier":
@@ -303,10 +358,21 @@ class Reads:
                 declared = self.nodes.get(ref)
                 if declared is not None and declared.get("stateVariable") and declared.get("mutability") != "constant":
                     self._state_read(declared, n)
-                if ref in self.written_copies:
+                if isinstance(entry, tuple) and entry[0] == "copy" and entry[4] in self.written_copies:
                     self.fail(n, f"reads {n['name']} after a write to it: the model does not see the write")
+            elif (
+                n is not node
+                and n.get("nodeType") == "MemberAccess"
+                and n["memberName"] == "balance"
+                and _address(n["expression"])
+            ):
+                # A balance inside a larger key: an external call that can change state may precede no read of it.
+                self._balance_read(n, scope)
             elif n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
                 callee = n["expression"]
+                if callee["nodeType"] == "NewExpression":
+                    # A new memory array: an allocation, which runs no code (_fresh).
+                    continue
                 decl = self.nodes.get(callee.get("referencedDeclaration"))
                 if decl is None and callee.get("referencedDeclaration", 0) < 0:
                     continue
@@ -315,21 +381,94 @@ class Reads:
                 decl = self._runs(callee, decl, self._within())
                 # A getter, which a public state variable that overrides the function gives, is a view.
                 mutability = decl.get("stateMutability", "view")
-                if mutability not in ("view", "pure"):
-                    self.fail(n, f"the read {self.text(node)} calls {decl['name']}, which can change state")
                 internal = (
                     decl["visibility"] in ("internal", "private")
                     or callee["nodeType"] == "Identifier"
                     or _through_contract(callee)
                 )
+                if mutability not in ("view", "pure"):
+                    changes.append(self._state_changing(node, n, decl, internal))
                 given = [*n["arguments"], *([callee["expression"]] if callee["nodeType"] == "MemberAccess" else [])]
-                if internal and any(" memory" in a["typeDescriptions"].get("typeString", "") for a in given):
-                    self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
+                memory = [a for a in given if _memory(a)]
+                if internal and memory:
+                    # The callee can change memory that it takes, which the model would not see. That memory is safe to
+                    # pass when nothing can reach it after the call (_fresh), and the callee's assembly keeps to it.
+                    if not all(self._fresh(a) for a in memory):
+                        self.fail(n, f"the read {self.text(node)} passes memory to {decl['name']}, which can change it")
+                    # Assembly that is marked memory-safe may still write next to the memory that it takes, where the
+                    # function's own structs can be, so a cut that takes memory has no assembly at all.
+                    if scan.assembly:
+                        self.fail(
+                            n, f"the read {self.text(node)} passes memory to {decl['name']}, and runs inline assembly"
+                        )
                 if mutability != "pure" or decl["visibility"] not in ("internal", "private"):
                     if self.written:
                         self.fail(n, f"the read {self.text(node)} follows a write, and its call could read the change")
                     for reads in self.reading:
                         reads.add("call")
+        for call in changes:
+            # The call can change state as an external call statement can: no storage read may follow it.
+            self.written.add(EXTERNAL)
+            for writes in self.writing:
+                writes.add(EXTERNAL)
+            arguments = tuple(_normal(self.text(a)) for a in call["arguments"])
+            self._effect(call, "read", _normal(self.text(call)), arguments)
+
+    def _state_changing(self, node, call, decl, internal: bool):
+        """A call in a read map key that can change state: taken when it is an external call that is the whole key and
+        the whole value of its statement, at one place, under the assumption for external calls that it does not revert
+        and does not call back into the contract. Its result is the input. It is an effect of the model, and no storage
+        read may follow it (_fallback_read)."""
+        key = _normal(self.text(node))
+        why = None
+        library = self.nodes.get(self.owners.get(decl["id"]), {}).get("contractKind") == "library"
+        if internal:
+            why = "an internal call that can change state"
+        elif library:
+            # A library's external function runs by delegatecall, in the contract's own storage.
+            why = "a library call, which runs in the contract's own storage"
+        elif _this(call["expression"]):
+            # A call to the contract itself enters it, which the assumption for external calls excludes.
+            why = "a call to the contract itself, which can change its storage"
+        elif call is not node:
+            why = "a call that can change state inside a larger key"
+        elif node["id"] != self.statement_value:
+            why = "a call that can change state, which must be the whole value of its statement"
+        elif self.key_places.setdefault(key, node["id"]) != node["id"]:
+            why = "a call that can change state, at a second place"
+        if why is not None:
+            self.fail(call, f"the read {self.text(node)} calls {decl['name']}, which can change state: {why}")
+        if self.stack:
+            # Each run of a callee would make the call again, with its own result.
+            self.keyed.add(self.stack[-1])
+        return call
+
+    def _fresh(self, node) -> bool:
+        """Whether nothing but the call that takes `node` can reach the memory that it is: a struct constructor whose
+        arguments are values or such constructors, a new array of a value type, or an internal call that takes no
+        memory and has no assembly in its code. Such a call can only return memory that it allocates or decodes, as it
+        reaches the caller's memory only through its arguments, while assembly can return any pointer."""
+        node = _unwrapped(node)
+        if node["nodeType"] != "FunctionCall":
+            return False
+        if node["kind"] == "structConstructorCall":
+            return all(not _memory(a) or self._fresh(a) for a in node["arguments"])
+        if node["kind"] != "functionCall":
+            return False
+        callee = node["expression"]
+        if callee["nodeType"] == "NewExpression":
+            return (
+                re.fullmatch(r"(uint\d*|bool|address)\[\] memory", node["typeDescriptions"]["typeString"]) is not None
+            )
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "FunctionDefinition":
+            return False
+        bound = [callee["expression"]] if callee["nodeType"] == "MemberAccess" else []
+        if any(_memory(a) for a in (*node["arguments"], *bound)):
+            return False
+        scan = _Scan()
+        why = self._varies(node, scan, self._within(), self.contract)
+        return why is None and not scan.assembly and not scan.sends
 
     def _varies(self, node, scan: _Scan, within: int | None, contract: dict | None) -> str | None:
         """Why an expression, a function or a modifier can give two values in one call, or None, also through each
@@ -364,6 +503,9 @@ class Reads:
         }
         for n in nodes:
             kind = n.get("nodeType")
+            if kind == "InlineAssembly":
+                scan.assembly = True
+                scan.unsafe = scan.unsafe or not memory_safe(n)
             if kind == "Identifier" and n["name"] == "gasleft" and (n.get("referencedDeclaration") or 0) < 0:
                 return "calls gasleft, whose value changes during the call"
             if kind == "YulFunctionCall":

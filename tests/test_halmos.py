@@ -155,6 +155,27 @@ PULL = (
         post={"remaining": "effects.leftOf(address(this))", "last": "effects.lastOf(address(this))"},
     ),
 )
+STRUCTS = "tests/fixtures/contracts/Structs.sol"
+ALIASED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.aliased(_a, _b)"))
+OPENED = ({}, None, Link(setup="tests/fixtures/test/StructsSetup.sol:StructsSetup", call="structs.openedBuilt(_s, _t)"))
+FROM_EXTERNAL = (
+    {"params.window().end": "end"},
+    None,
+    Link(
+        setup="tests/fixtures/test/StructsSetup.sol:StructsSetup",
+        call="structs.fromExternal(_t)",
+        adapters={"end": "params.set(0, end);"},
+    ),
+)
+WINDOW_END = (
+    {"config.start": "start"},
+    None,
+    Link(
+        setup="tests/fixtures/test/StructsSetup.sol:StructsSetup",
+        call="structs.windowEnd(_x)",
+        adapters={"start": "structs.setConfig(start, 0);"},
+    ),
+)
 # Changes to a contract after the extraction of its model, which the link must find, each to a value and not to where
 # the contract reverts: a result, each value of several returns, the key of a storage pointer, and outputs: an
 # argument of a call, a written value, and a write at another key.
@@ -166,6 +187,15 @@ CHANGES = {
     "call-argument": (f"{EFFECTS}:Effects.buy", BUY, "(msg.sender, amount);", "(msg.sender, amount / 2);"),
     "written-value": (f"{EFFECTS}:Effects.pull", PULL, "uint192(left - _amount);", "uint192(left - _amount / 2);"),
     "written-key": (f"{EFFECTS}:Effects.pull", PULL, "allowance.last =", "$allowances[address(0)].last ="),
+    "struct-field": (f"{STRUCTS}:Structs.aliased", ALIASED, "return v.start + w.end;", "return v.end + w.end;"),
+    "struct-argument": (f"{STRUCTS}:Structs.openedBuilt", OPENED, "Window(_s, _s + 10);", "Window(_s + 10, _s);"),
+    "returned-struct": (f"{STRUCTS}:Structs.windowEnd", WINDOW_END, "end: config.start + 10", "end: config.start + 11"),
+    "external-field": (
+        f"{STRUCTS}:Structs.fromExternal",
+        FROM_EXTERNAL,
+        "_t < w.end ? 0 : 2;",
+        "_t < w.start ? 0 : 2;",
+    ),
 }
 
 

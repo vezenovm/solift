@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from solift.extract.common import ASSIGNMENTS, EXTERNAL, IDENTIFIER, _normal
+from solift.extract.common import ASSIGNMENTS, EXTERNAL, IDENTIFIER, _normal, _this
 from solift.extract.errors import ExtractionError, Missing, Wanted
 from solift.ir import (
     Assign,
@@ -165,6 +165,9 @@ class Effects:
         if decl is None or decl["nodeType"] != "FunctionDefinition":
             self.fail(call, f"a call that the extractor cannot resolve: {self.text(call)}")
         key = _normal(self.text(call))
+        if _this(callee) and decl["stateMutability"] not in ("view", "pure"):
+            # A call to the contract itself enters it, which the assumption for external calls excludes.
+            self.fail(call, f"a call to the contract itself, {key}, which can change its storage")
         arguments = self._arguments(call, decl)
         self._cannot_revert(callee["expression"], scope)
         names = self.output_map[key][1] if key in self.output_map else (None,) * len(arguments)

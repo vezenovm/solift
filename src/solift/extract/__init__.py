@@ -13,14 +13,25 @@ key is one of:
 - a balance (`address(this).balance`), read before any external call that can change state;
 - any other expression by its source text without whitespace (`TOKEN.balanceOf(address(this))`). An internal call in
   the read map is a cut point: its result is an input.
+- a field of a struct or a value of a tuple that an external view call returns, by the call's text and the field or
+  the value's index (`PARAMS.window().end`, `FEED.latestRoundData()[3]`), also through a local that holds it.
 
 An entry that the function does not read is an error, except a field of `tx`, `block` or `msg`, which is always an
-input. A key names one value for the whole call, so each local in it is assigned only by its declaration, is the same
+input. A key names one value for the whole call, so each local in it is assigned only by its declaration (or the key has
+one place, where it names the local's value there), is the same
 local at each read, and belongs to the modeled function or to a callee that runs once. A call in the read map must not
 reach `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards.
 
-Internal and library calls are inlined. A call of a contract's function runs the function that the linearization of
-the target's contract gives it: the most derived override, or for `super.f()` the next one after the calling contract.
+A memory struct that the function builds, by a constructor or zero, is a local of the model for each field (`w_start`
+for `w.start`), shared by its aliases. A callee takes a parameter for each field of a struct parameter, and returns
+the fields of a struct that it returns, which a call inside an expression unpacks into temporaries just before its
+statement (structs.py). The fields are never written after the struct is built.
+
+Internal and library calls are inlined. An internal call as a statement to a function that returns nothing and only
+reads and reverts, as a check, is its statements, with its parameters as locals. The target's modifiers run their
+statements before a single `_;` that ends them, before its body. A call of a contract's function runs
+the function that the linearization of the target's contract gives it: the most derived override, or for `super.f()`
+the next one after the calling contract.
 `Math.min`, `Math.max` and `Math.mulDiv` rounded down are operators of ops.py. A constant is its value, an enum member
 its index, and a contract its address. `uint<n>(x)` widens x or keeps its low n bits. Locals can be reassigned, also in
 branches, and a named return starts at zero. Several returns, tuple declarations and assignments, `type(uint<n>).max`
@@ -41,14 +52,16 @@ read of its place after the write reads the output. The model leaves out the oth
 - a write to an output's storage variable at another place is refused, and so is an output in a callee. Two outputs
   of one storage variable must differ at a field.
 - a call that writes storage must be the whole value of its statement, as solc does not fix the order of evaluation.
-- a call in the read map must be to a view or pure function.
+- a call in the read map must be to a view or pure function, or else an external call that is the whole key and the
+  whole value of its statement, read at one place: its result is an input, and it is an effect, after which no storage
+  read may follow.
 
 The model assumes that each read succeeds, and that each external call succeeds and does not call back into the
 contract.
 
 Each part of the IR has its own mixin of `_Extractor`: statements.py, expressions.py (with inlined callees), reads.py
-(inputs and key rules), effects.py (effects and outputs) and values.py (constants and types). extractor.py holds the
-shared state and checks the finished model.
+(inputs and key rules), effects.py (effects and outputs), structs.py (memory structs as locals) and values.py
+(constants and types). extractor.py holds the shared state and checks the finished model.
 """
 
 from solift.extract.errors import ExtractionError, Missing, Wanted

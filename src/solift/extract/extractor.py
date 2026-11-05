@@ -10,8 +10,9 @@ from solift.extract.common import IDENTIFIER, _normal, _subtree
 from solift.extract.effects import Effects
 from solift.extract.errors import ExtractionError, Missing, Wanted
 from solift.extract.expressions import Expressions
-from solift.extract.reads import Reads, _assigned
+from solift.extract.reads import UNSAFE_ASSEMBLY, Reads, _assigned
 from solift.extract.statements import Statements
+from solift.extract.structs import Structs
 from solift.extract.values import Values
 from solift.ir import (
     ADDRESS,
@@ -82,7 +83,7 @@ def _job(build_infos: list[dict], target: str) -> dict:
     return infos[0]
 
 
-class _Extractor(Statements, Effects, Reads, Expressions, Values):
+class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
     def __init__(self, info: dict, reads: dict[str, str], outputs: dict | None = None):
         self.sources = info["output"]["sources"]
         self.solc = info.get("solcVersion") or ""
@@ -116,6 +117,20 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         # callees being extracted; and the expression that is the whole value of the statement being extracted.
         self.written: set[int] = set()
         self.written_copies: set[int] = set()
+        # The memory structs whose fields the model has as values so far (locals, or the inputs of a struct that an
+        # external call returns), the struct parameters of callees by their
+        # declaration, the statements that unpack struct-valued calls into temporaries before the statement being
+        # extracted, the names of those temporaries, and the nodes that run only on some paths of their expression
+        # (structs.py).
+        self.flattened = 0
+        self.parameter_objects: set[int] = set()
+        self.hoisted: list = []
+        self.temporaries: set[str] = set()
+        self.guarded: set[int] = set()
+        # The first read map call whose code has assembly that is not marked memory-safe (reads.py), and the names of
+        # the functions in the build, which no generated local may take (structs.py).
+        self.unsafe_cut = None
+        self.function_names: set[str] | None = None
         self.effects: list[Effect] = []
         self.callee_reads: dict[int, set] = {}
         self.callee_writes: dict[int, set] = {}
@@ -127,6 +142,12 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         # the modeled function), which counts how many times a callee runs.
         self.assigned: set[int] = set()
         self.key_identities: dict[str, tuple] = {}
+        # The one place of each read map key that names a local that an assignment changes (_stable).
+        self.key_places: dict[str, int] = {}
+        # How many times each checking call's function has been inlined, and the suffix of the locals of the one being
+        # inlined (Statements._checking_call).
+        self.inlined: dict[int, int] = {}
+        self.suffixes: list[str] = []
         self.keyed: set[int] = set()
         self.calls: list[tuple[int | None, int]] = []
         self.reading: list[set] = []
@@ -181,6 +202,8 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
         self.assigned = _assigned(node)
         function = self._with_outputs(self._function(node, top=True), qualified)
         self._run_once()
+        if self.flattened and self.unsafe_cut is not None:
+            self.fail(self.unsafe_cut, f"the read {self.text(self.unsafe_cut)} {UNSAFE_ASSEMBLY}")
         for key, (written, name) in self.read_map.items():
             if key in self.reads:
                 continue
@@ -259,6 +282,12 @@ class _Extractor(Statements, Effects, Reads, Expressions, Values):
                 self.fail(node, f"the local {name} has the name of an input")
             if locals_.count(name) > 1:
                 self.fail(node, f"two locals are named {name}")
+        for callee in self.callees.values():
+            names = [p.name for p in callee.params] + [v.name for v in declared_locals(callee.body)]
+            names += [v.name for v in callee.named]
+            for name in names:
+                if names.count(name) > 1:
+                    raise ExtractionError(f"{callee.src}: two parameters or locals of {callee.name} are named {name}")
 
     def _import_of(self, unit, path: str) -> str:
         """How the emitted Solidity imports `path`: as the target's file or another source imports it, if one does

@@ -712,3 +712,307 @@ def test_ceil_div_links_with_the_row_of_its_copy_of_math(tmp_path):
     checks |= {r["check"]: r["verdict"] for result in record["specs"] for r in result["link"]}
     assert set(checks.values()) == {"PASS"}
     assert {"check_row_ceilDivRevertsExactlyOnZero", "check_row_ceilDivRevertsExactlyOnZeroAboveZero"} <= set(checks)
+
+
+def test_memory_structs_that_the_function_builds_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in [
+            ("built", "_t", {}, {}),
+            ("aliased", "_a, _b", {}, {}),
+            ("zero", "_x", {}, {}),
+            (
+                "copyAliased",
+                "",
+                {"config.start": "start", "config.end": "end"},
+                {("start", "end"): "structs.setConfig(start, end);"},
+            ),
+            ("zeroOwner", "_x", {}, {}),
+        ]
+    ]
+
+    @specs[1].theorem(witness=lambda q: q.w_end > 0)
+    def the_alias_reads_the_same_fields(q):
+        """v.start is w's start: the result is the sum of the two fields"""
+        return z3.Implies(z3.Not(q.reverts), q.result == q.w_start + q.w_end)
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_structs_passed_to_callees_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    config = {"config.start": "start", "config.end": "end"}
+    set_config = {("start", "end"): "structs.setConfig(start, end);"}
+    window = ('import {Window} from "tests/fixtures/contracts/Structs.sol";',)
+    cases = [
+        ("openedBuilt", "_s, _t", {}, {}, ()),
+        (
+            "openedParameter",
+            "_w, _t",
+            {"_w.start": "start", "_w.end": "end"},
+            {("start", "end"): "Window memory _w = Window(start, end);"},
+            window,
+        ),
+        ("openedConfig", "_t", config, set_config, ()),
+        ("openedCopy", "_t", config, set_config, ()),
+        ("openedConstructed", "_s, _t", {}, {}, ()),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters, imports=imports),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters, imports in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_structs_that_internal_calls_return_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    start = {"config.start": "start"}
+    config = {"config.start": "start", "config.end": "end"}
+    set_start = {"start": "structs.setConfig(start, 0);"}
+    set_config = {("start", "end"): "structs.setConfig(start, end);"}
+    cases = [
+        ("fromInternal", "_t", start, set_start),
+        ("windowEnd", "_x", start, set_start),
+        ("owed", "_t", config, set_config),
+        ("nestedReturn", "_t", start, set_start),
+        ("copyReturned", "_t", config, set_config),
+        ("oneField", "_x", {}, {}),
+        ("namedWindowEnd", "_x", {}, {}),
+        ("projected", "_x, _y", {}, {}),
+        ("namedWindow", "_x", {}, {}),
+        ("window", "", start, set_start),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+
+    @specs[-1].theorem(witness=lambda q: q.result[0] > 0)
+    def the_window_is_ten_long(q):
+        """the window that window() returns ends ten after its start, where it does not revert"""
+        return z3.Implies(z3.Not(q.reverts), q.result[1] == q.result[0] + 10)
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_values_of_an_external_call_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    window = {"params.window().start": "start", "params.window().end": "end"}
+    set_window = {("start", "end"): "params.set(start, end);"}
+    cases = [
+        ("fromExternal", "_t", {"params.window().end": "end"}, {"end": "params.set(0, end);"}),
+        ("externalPassed", "_t", window, set_window),
+        ("externalPart", "_x", {"params.triple()[1]": "second"}, {"second": "params.setTriple(0, second, 0);"}),
+    ]
+    specs = [
+        Spec(
+            name=f"structs-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_cuts_that_take_new_memory_link_with_the_cut_value_observed(tmp_path):
+    setup = "tests/fixtures/test/StructsSetup.sol:StructsSetup"
+    target = "tests/fixtures/contracts/Structs.sol:Structs"
+    imports = ('import {Window, Windows} from "tests/fixtures/contracts/Structs.sol";',)
+    specs = [
+        Spec(
+            name="structs-cut-constructed",
+            target=f"{target}.openedConstructed",
+            reads={"Windows.opened(Window(_s,_s),_t)": "opened"},
+            link=Link(
+                setup=setup,
+                call="structs.openedConstructed(_s, _t)",
+                observed={"opened": "Windows.opened(Window(_s, _s), _t)"},
+                imports=imports,
+            ),
+            project=SPEC.project,
+        ),
+        Spec(
+            name="structs-cut-owed",
+            target=f"{target}.owed",
+            reads={"config.end": "end", "window().opened(_t)": "opened"},
+            link=Link(
+                setup=setup,
+                call="structs.owed(_t)",
+                adapters={("start", "end"): "structs.setConfig(start, end);"},
+                observed={"opened": "Windows.opened(structs.window(), _t)"},
+                parameters={"start": "uint256"},
+                imports=imports,
+            ),
+            project=SPEC.project,
+        ),
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_a_key_on_an_assigned_local_links_to_its_model(tmp_path):
+    specs = [
+        Spec(
+            name=f"keys-{function}",
+            target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
+            reads={"gate.quote(_who,amount)": "quote"},
+            link=Link(
+                setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
+                call=f"keys.{function}({args})",
+                adapters={"quote": "gate.set(quote);"},
+            ),
+            project=SPEC.project,
+        )
+        for function, args in [("quoted", "_who, _byShares, _byAmount"), ("quotedThenAssigned", "_who, _a")]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_result_of_a_call_that_is_not_a_view_links_to_its_model(tmp_path):
+    specs = [
+        Spec(
+            name=f"keys-{function}",
+            target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
+            reads={key: "answer"},
+            link=Link(
+                setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
+                call=f"keys.{function}({args})",
+                adapters={"answer": "gate.setAnswer(answer);"},
+            ),
+            project=SPEC.project,
+        )
+        for function, args, key in [
+            ("take", "_who, _amount", "gate.allowed(_who,_amount)"),
+            ("takeByShares", "_who, _byShares, _byAmount", "gate.allowed(_who,amount)"),
+        ]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_checks_called_as_statements_link_to_their_models(tmp_path):
+    setup = "tests/fixtures/test/ChecksSetup.sol:ChecksSetup"
+    owner = {"owner": "owner", "msg.sender": "caller", "total": "total"}
+    cases = [
+        ("checked", "_to, _a", {}, {}),
+        ("checkedTwice", "_to, _from, _a", {}, {}),
+        ("owned", "_a", owner, {"owner": "checks.setOwner(owner);", "total": "checks.setTotal(total);"}),
+    ]
+    specs = [
+        Spec(
+            name=f"checks-{function}",
+            target=f"tests/fixtures/contracts/Checks.sol:Checks.{function}",
+            reads=reads,
+            link=Link(
+                setup=setup,
+                call=f"checks.{function}({args})",
+                adapters=adapters,
+                observed={"caller": "address(this)"} if reads else {},
+            ),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_the_modifiers_of_a_target_link_to_its_model(tmp_path):
+    setup = "tests/fixtures/test/GatedSetup.sol:GatedSetup"
+    keeper = {"keeper": "gated.setKeeper(keeper);"}
+    owner = {"owner": "vm.store(address(gated), bytes32(uint256(0)), bytes32(uint256(uint160(owner))));"}
+    cases = [
+        (
+            "keeperAdd",
+            {"keeper": "keeper", "msg.sender": "caller", "total": "total"},
+            {**keeper, "total": "gated.setTotal(total);"},
+        ),
+        (
+            "ownerAdd",
+            {"_owner": "owner", "msg.sender": "caller", "total": "total"},
+            {**owner, "total": "gated.setTotal(total);"},
+        ),
+        ("bounded", {"keeper": "keeper", "msg.sender": "caller"}, keeper),
+    ]
+    specs = [
+        Spec(
+            name=f"gated-{function}",
+            target=f"tests/fixtures/contracts/Gated.sol:Gated.{function}",
+            reads=reads,
+            link=Link(
+                setup=setup, call=f"gated.{function}(_a)", adapters=adapters, observed={"caller": "address(this)"}
+            ),
+            project=SPEC.project,
+        )
+        for function, reads, adapters in cases
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    for result in record["specs"]:
+        assert {r["verdict"] for r in result["link"]} == {"PASS"}, result["name"]
+
+
+def test_a_call_in_an_error_argument_links_to_its_model(tmp_path):
+    spec = Spec(
+        name="kept",
+        target="tests/fixtures/contracts/Kept.sol:Kept.kept",
+        reads={"keeper": "keeper", "msg.sender": "caller"},
+        link=Link(
+            setup="tests/fixtures/test/KeptSetup.sol:KeptSetup",
+            call="kept.kept(_a)",
+            adapters={"keeper": "kept.setKeeper(keeper);"},
+            observed={"caller": "address(this)"},
+        ),
+        project=SPEC.project,
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}

@@ -272,8 +272,9 @@ class Read:
 @dataclass(frozen=True)
 class Effect:
     """A write, a call or an event that the model leaves out. `kind` is "write" (to storage), "call" (an external call,
-    with the source text of each argument in `arguments`), "copy" (to a field of a memory
-    copy of storage) or "event". `place` names what it writes as a read map names a read, such as `$info.rate` or
+    with the source text of each argument in `arguments`), "read" (an external call in the read map that can change
+    state, whose result is an input and whose arguments are never outputs), "copy" (to a field of a memory copy of
+    storage) or "event". `place` names what it writes as a read map names a read, such as `$info.rate` or
     `$balances[_who]`, or the event by its signature, such as `Updated(uint256)`. `source` is its text."""
 
     kind: str

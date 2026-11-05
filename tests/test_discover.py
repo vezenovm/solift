@@ -1,20 +1,10 @@
-import pathlib
-
 import pytest
 
 from examples.quoter.spec import READS as QUOTER_READS
-from solift import forge
 from solift.discover import _propose, as_json, discover, report, skeleton
 from solift.extract import ExtractionError, extract
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUOTE = "tests/fixtures/contracts/Quoter.sol:Quoter._quote"
-
-
-@pytest.fixture(scope="module")
-def build(tmp_path_factory):
-    work = tmp_path_factory.mktemp("forge")
-    return forge.build(ROOT, work / "out", work / "cache")
 
 
 def test_the_reads_of_the_quote_are_the_read_map_of_its_example(build):
@@ -110,6 +100,13 @@ def test_a_function_without_a_value_gets_its_call_arguments_as_outputs(build):
     assert "outputs={\n    'SWAPPER.buy(msg.sender,amount)': (None, 'amount2'),  # an output\n}," in text
     assert "        'amount2': '/* read amount2 after the call */'," in text
     assert as_json(found)["outputs"] == [{"key": "SWAPPER.buy(msg.sender,amount)", "names": (None, "amount2")}]
+
+
+def test_a_call_in_the_read_map_that_can_change_state_is_no_call_whose_arguments_are_outputs(build):
+    found = discover(build, "tests/fixtures/contracts/Keys.sol:Keys.takeAndStore")
+    assert found.complete, found.diagnostic
+    assert list(found.outputs) == ["total"]
+    assert [e.kind for e in found.effects] == ["read"]
 
 
 def test_a_write_that_can_revert_is_an_output_and_one_on_some_paths_gets_its_value_before_the_call(build):

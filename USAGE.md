@@ -187,15 +187,16 @@ The README says what a run proves and what it trusts.
 |---|---|
 | checked `uint` arithmetic, comparisons, boolean logic, ternaries; `x >> k` by a constant and `x & m` with a constant mask of low bits, as `x / 2**k` and `x % 2**k`, with a Halmos row for each constant; `T.wrap` and `T.unwrap` of a user-defined value type over an unsigned type | `unchecked`, signed integers, `**`, `%`, `<<`, a shift by a value that is not a constant, other masks, user-defined operators, assembly |
 | a parameter of a signed type or a user-defined value type that only read map keys or arguments of effects take | such a parameter used as a value |
-| `if`, early returns, `require`, `assert`, `revert` | loops |
-| locals, also assigned in branches; compound assignments; named returns | modifiers |
-| several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`) | a tuple from an external call, a tuple assignment to storage |
+| `if`, early returns, `require`, `assert`, `revert`; a custom error whose arguments cannot revert, or are expressions that the condition makes too, on every path of it | loops; an error argument that can revert where the condition does not run it |
+| locals, also assigned in branches; compound assignments; named returns; the modifiers of the target, whose statements before a single `_;` that ends them run before its body (OpenZeppelin's `onlyOwner`) | a modifier with code after `_;`, invoked twice, or on a callee |
+| several returns, tuple declarations and assignments to locals (`(, uint256 y) = f(a);`), also of an external view call, each value a read | a tuple assignment to storage |
 | addresses, enums, constants, immutables, `type(uint<n>).max` and `.min`, `uint<n>(x)`, which widens or keeps the low `n` bits | arithmetic below `uint256` |
-| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`) |
+| inlined internal calls, library calls (`x.mulDivDown(y, d)`), named arguments; a call of a virtual function runs the override in the target contract's linearization, also through `super.f()`, and `Base.f()` runs Base's; an internal call as a statement to a function that returns nothing and only reads and reverts, as a check (`_checkOwner();`), inlined | a call that writes storage inside a larger expression, two callees of one name (as an override that calls its base through `super`); a call as a statement to a function that returns a value, returns early, writes storage, emits or calls out |
 | `Math.min`, `Math.max`, `Math.mulDiv`, also with `Math.Rounding.Floor`, and `Math.ceilDiv`, backed by lemmas and rows proved on the build's copy of Math | other `Math` functions, `Math.mulDiv` rounded up (Halmos cannot prove its `mulmod` at a symbolic denominator) |
 | storage writes with `=`, also through a storage pointer, and events, when no part of them can revert (listed, not modeled) | a write that a later read sees, `+=` on storage, a write through a storage parameter of the target |
 | writes and external call arguments as outputs, also `+=`, in a function with or without a value | an output in a callee, another write to an output's storage variable, two outputs of one variable at keys that can be equal, a read of storage after an external call |
 | storage pointers to a struct, passed to callees | a pointer at a key that can change during the call, one callee on two pointers |
+| a memory struct that the function builds (`Window memory w = Window(a, b);`, or zero), and its aliases (`Window memory v = w;`), as a local for each field (`w_start`, `w_end`); a memory struct parameter of a callee, as a parameter for each field, to which a call passes such a struct, a copy of storage, a storage struct, a struct parameter of the target or a constructor; a memory struct that an internal call returns, as its fields, also inside an expression (`window().end`), and a target that returns one (`q.result[k]`) | a write to its fields, also in a callee, a field of a struct, array or string type, a cut whose assembly is not marked memory-safe once such a struct exists; a callee that returns its struct parameter, a struct-valued call under `&&`, `\|\|` or `?:`, a struct among several returns or a named one |
 | one of several overloads, by its parameter types | a variable or constant named `i`, a local that shadows another |
 
 ### Read map keys
@@ -211,11 +212,13 @@ A key names a value that the function reads from outside itself, and maps it to 
 | `_meter.used`, `_spender.left` | a field of a memory or storage struct parameter of the target |
 | `tx.gasprice`, `block.timestamp`, `msg.sender` | a field of `tx`, `block` or `msg` |
 | `address(this).balance`, `_who.balance` | the balance of an address, which no external call that can change state may precede |
-| `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace |
-| `_price()` | an internal call: a cut point, whose result becomes an input |
+| `TOKEN.balanceOf(address(this))` | an external view call, by its source text without whitespace; an external call that can change state, as a policy hook's `allowed(who, amount)`, when it is the whole value of its statement and read at one place, under the assumption that it does not revert and does not call back; not a call through `this` or to a library's external function, which run in the contract's storage |
+| `PARAMS.window().end`, `FEED.latestRoundData()[3]` | a field of a struct, or a value of a tuple, that an external view call returns: also through a local that holds it (`Window memory w = PARAMS.window();`, `(,,, uint256 at,) = FEED.latestRoundData();`) |
+| `_price()` | an internal call: a cut point, whose result becomes an input. Its memory arguments must be new memory that nothing else reaches: a struct constructor of values, a new array of a value type, or an internal call that takes no memory and has no assembly (`window().opened(t)`) |
 
 A key that the function does not read is an error, except a field of `tx`, `block` or `msg`, which every transaction
-has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, the same
+has. A key names one value for the whole call, so a local in it must be one that only its declaration assigns, or else
+the key is read at one place only, where the input is the local's value there; it is the same
 one at each read of the key, in the target or in a callee that runs once. A call in the read map must not reach code
 whose value changes during the call: `gasleft()`, or `gas()` in assembly other than as the gas that a call forwards. The
 check reads the code in the build: a low-level call runs what its calldata names in Solidity, and an external call the

@@ -82,3 +82,34 @@ def _unwrapped(callee):
             callee = callee["components"][0]
         else:
             return callee
+
+
+def memory_struct(node) -> bool:
+    """Whether a declaration or an expression is a memory struct, as `Window memory w` or `window()`."""
+    type_string = node.get("typeDescriptions", {}).get("typeString") or ""
+    # A declaration has its location apart (`struct Window`, `memory`), an expression in its type
+    # (`struct Window memory`).
+    return type_string.startswith("struct ") and (
+        node.get("storageLocation") == "memory" or type_string.endswith(" memory")
+    )
+
+
+def guarded(node) -> set[int]:
+    """The nodes in `node` that run only on some paths of their expression: the right operand of `&&` and `||`, and the
+    branches of `?:`."""
+    found = set()
+    for n in _subtree(node):
+        if n.get("nodeType") == "BinaryOperation" and n["operator"] in ("&&", "||"):
+            found |= {m["id"] for m in _subtree(n["rightExpression"])}
+        elif n.get("nodeType") == "Conditional":
+            found |= {m["id"] for m in _subtree(n["trueExpression"])} | {
+                m["id"] for m in _subtree(n["falseExpression"])
+            }
+    return found
+
+
+def memory_safe(assembly) -> bool:
+    """Whether an inline assembly block is marked memory-safe, by its flag or by the older comment."""
+    flags = assembly.get("flags") or ()
+    documentation = assembly.get("documentation") or ""
+    return "memory-safe" in flags or re.search(r"@solidity\s+memory-safe-assembly\b", documentation) is not None

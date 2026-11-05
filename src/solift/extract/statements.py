@@ -6,7 +6,18 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, ASSIGNMENTS, _normal, _root, _storage_struct
+from solift.extract.common import (
+    _STORAGE,
+    ASSIGNMENTS,
+    _normal,
+    _root,
+    _storage_struct,
+    _subtree,
+    guarded,
+    memory_struct,
+)
+from solift.extract.errors import ExtractionError
+from solift.extract.reads import _assigned, _Scan
 from solift.ir import (
     BOOL,
     Assign,
@@ -37,6 +48,15 @@ _STATEMENT_ERRORS = {
 }
 
 
+def _flat(stmts):
+    """Each statement, also in branches."""
+    for stmt in stmts:
+        yield stmt
+        if isinstance(stmt, If):
+            yield from _flat(stmt.then)
+            yield from _flat(stmt.orelse)
+
+
 def _statements(node) -> list:
     return node["statements"] if node["nodeType"] == "Block" else [node]
 
@@ -54,18 +74,26 @@ class Statements:
         name = node["name"]
         if node["kind"] != "function" or not node["implemented"]:
             self.fail(node, f"{name} is not an implemented function")
-        if node["modifiers"]:
+        if node["modifiers"] and not top:
             self.fail(node["modifiers"][0], f"{name} has a modifier")
         returns = node["returnParameters"]["parameters"]
         if not returns and not top:
             self.fail(node["returnParameters"], f"{name} returns no value")
-        # A modeled function without a value has its outputs only, which come after its own values (_with_outputs).
-        return_type = tuple_of(tuple(self._type(r) for r in returns)) if returns else Type("tuple")
+        # A modeled function without a value has its outputs only, which come after its own values (_with_outputs). A
+        # memory struct is the tuple of its fields (structs.py).
+        if any(memory_struct(r) for r in returns):
+            return_type = self._struct_return(node, returns)
+        else:
+            return_type = tuple_of(tuple(self._type(r) for r in returns)) if returns else Type("tuple")
+        self.guarded |= guarded(node["body"])
         for p in (*node["parameters"]["parameters"], *returns):
             self._not_inputs_name(p)
         scope = {}
         results = ()
-        if any(r["name"] for r in returns):
+        if returns and memory_struct(returns[0]) and returns[0]["name"]:
+            results = self._named_struct_return(returns[0], scope)
+            scope["return"] = results
+        elif any(r["name"] for r in returns):
             results = tuple(Var(r["name"], self._type(r), src=self.src(r)) if r["name"] else None for r in returns)
             scope.update({r["id"]: v for r, v in zip(returns, results, strict=True) if v is not None})
             scope["return"] = results
@@ -74,10 +102,12 @@ class Statements:
             if _storage_struct(p):
                 scope[p["id"]] = ("pointer", p["name"], None, (p["id"],)) if top else ("pointer", *bindings[p["id"]])
                 continue
-            if p["typeDescriptions"]["typeString"].startswith("struct ") and p.get("storageLocation") == "memory":
+            if memory_struct(p):
                 if not top:
-                    self.fail(p, f"the struct parameter {p['name']} of a called function")
-                scope[p["id"]] = ("param", p["name"])
+                    # A callee takes a field for each parameter: its caller passes the struct's values (structs.py).
+                    params += self._struct_parameter(p, scope)
+                    continue
+                scope[p["id"]] = ("param", p["name"], (p["id"],))
                 continue
             if top and (self._user_value_type(p) or _SIGNED.fullmatch(p["typeDescriptions"]["typeString"])):
                 # A parameter of a type that the model has no value of: only a read map key or an argument of an
@@ -87,7 +117,8 @@ class Statements:
             var = Var(p["name"], self._type(p), input=top, src=self.src(p), declared=self._declared(p))
             scope[p["id"]] = var
             params.append(var)
-        body = self._block(node["body"]["statements"], scope, return_type)
+        prefix = self._modifiers(node, scope) if top else ()
+        body = prefix + self._block(node["body"]["statements"], scope, return_type)
         return Function(name, tuple(params), return_type, body, self.src(node), results)
 
     def _user_value_type(self, param) -> bool:
@@ -101,48 +132,62 @@ class Statements:
         scope = dict(scope)
         out = []
         for node in statements:
-            kind = node["nodeType"]
-            if kind == "VariableDeclarationStatement":
-                stmt = self._declaration(node, scope)
-                if stmt is not None:
-                    out.append(stmt)
-            elif kind == "IfStatement":
-                cond = self._expr(node["condition"], scope)
-                if cond.type != BOOL:
-                    self.fail(node["condition"], "the condition is not a bool")
-                then = self._block(_statements(node["trueBody"]), scope, return_type)
-                orelse = ()
-                if node.get("falseBody") is not None:
-                    orelse = self._block(_statements(node["falseBody"]), scope, return_type)
-                out.append(If(cond, then, orelse, self.src(node)))
-            elif kind == "Return":
-                if node.get("expression") is None and not parts(return_type):
-                    out.append(Return(Tuple((), return_type), self.src(node)))
-                    continue
-                if node.get("expression") is None:
-                    if "return" not in scope:
-                        self.fail(node, "a return without a value")
-                    out.append(Return(self._named_results(scope["return"], return_type), self.src(node)))
-                    continue
-                self.statement_value = node["expression"]["id"]
-                value = self._expr(node["expression"], scope)
-                self._assignable(node["expression"], value.type, return_type)
-                out.append(Return(value, self.src(node)))
-            elif kind == "ExpressionStatement":
-                stmt = self._expression_statement(node["expression"], scope)
-                if isinstance(stmt, tuple):
-                    out += stmt
-                elif stmt is not None:
-                    out.append(stmt)
-            elif kind == "RevertStatement":
-                out.append(Revert(self.src(node)))
-            elif kind == "EmitStatement":
-                for arg in node["eventCall"]["arguments"]:
-                    self._cannot_revert(arg, scope)
-                self._effect(node, "event", self._event(node["eventCall"]))
-            else:
-                self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
+            # A struct-valued call inside the statement is unpacked into temporaries just before it (structs.py).
+            saved, self.hoisted = self.hoisted, []
+            mark = len(out)
+            self._statement(node, scope, return_type, out)
+            out[mark:mark] = self.hoisted
+            self.hoisted = saved
         return tuple(out)
+
+    def _statement(self, node, scope: dict, return_type: Type, out: list) -> None:
+        """Appends the IR of one statement to `out`."""
+        kind = node["nodeType"]
+        if kind == "VariableDeclarationStatement":
+            stmt = self._declaration(node, scope)
+            if isinstance(stmt, tuple):
+                out += stmt
+            elif stmt is not None:
+                out.append(stmt)
+        elif kind == "IfStatement":
+            cond = self._expr(node["condition"], scope)
+            if cond.type != BOOL:
+                self.fail(node["condition"], "the condition is not a bool")
+            then = self._block(_statements(node["trueBody"]), scope, return_type)
+            orelse = ()
+            if node.get("falseBody") is not None:
+                orelse = self._block(_statements(node["falseBody"]), scope, return_type)
+            out.append(If(cond, then, orelse, self.src(node)))
+        elif kind == "Return":
+            if node.get("expression") is None and not parts(return_type):
+                out.append(Return(Tuple((), return_type), self.src(node)))
+                return
+            if node.get("expression") is None:
+                if "return" not in scope:
+                    self.fail(node, "a return without a value")
+                out.append(Return(self._named_results(scope["return"], return_type), self.src(node)))
+                return
+            self.statement_value = node["expression"]["id"]
+            if memory_struct(node["expression"]):
+                value = self._returned_struct(node["expression"], scope, return_type)
+            else:
+                value = self._expr(node["expression"], scope)
+            self._assignable(node["expression"], value.type, return_type)
+            out.append(Return(value, self.src(node)))
+        elif kind == "ExpressionStatement":
+            stmt = self._expression_statement(node["expression"], scope)
+            if isinstance(stmt, tuple):
+                out += stmt
+            elif stmt is not None:
+                out.append(stmt)
+        elif kind == "RevertStatement":
+            out.append(Revert(self.src(node)))
+        elif kind == "EmitStatement":
+            for arg in node["eventCall"]["arguments"]:
+                self._cannot_revert(arg, scope)
+            self._effect(node, "event", self._event(node["eventCall"]))
+        else:
+            self.fail(node, _STATEMENT_ERRORS.get(kind, f"a {kind} statement is not supported"))
 
     def _named_results(self, results: tuple, return_type: Type) -> Expr:
         """The value of a bare `return;`: the named return variables, and zero for a value without a name."""
@@ -152,7 +197,7 @@ class Statements:
         )
         return values[0] if len(values) == 1 else Tuple(values, return_type)
 
-    def _declaration(self, node, scope: dict) -> Let | Unpack | None:
+    def _declaration(self, node, scope: dict) -> Let | Unpack | tuple[Stmt, ...] | None:
         declarations = node["declarations"]
         if len(declarations) != 1:
             return self._unpack(node, scope)
@@ -162,9 +207,12 @@ class Statements:
         if type_string.startswith("struct ") and decl.get("storageLocation") == "memory":
             path = self._storage_path(init, scope) if init is not None else None
             if path is None:
-                self.fail(init or node, "a memory struct that is not a copy of a storage struct")
+                self._not_inputs_name(decl)
+                self.statement_value = init["id"] if init is not None else None
+                return self._struct_declaration(decl, init, scope)
             self._storage_read(path[1], init)
-            scope[decl["id"]] = ("copy", *path, self._identity(init, scope))
+            # The copy is new memory: its object is this declaration, which its aliases share.
+            scope[decl["id"]] = ("copy", *path, self._identity(init, scope), decl["id"])
             return None
         if _storage_struct(decl):
             path = self._storage_path(init, scope) if init is not None else None
@@ -186,17 +234,22 @@ class Statements:
 
     def _local(self, decl, scope: dict) -> Var:
         self._not_inputs_name(decl)
-        var = Var(decl["name"], self._type(decl), src=self.src(decl))
+        # The second and later inlining of one checking call names its locals apart (_checking_call).
+        suffix = self.suffixes[-1] if self.suffixes else ""
+        var = Var(decl["name"] + suffix, self._type(decl), src=self.src(decl))
         if any(isinstance(v, Var) and v.name == var.name for v in scope.values()):
             self.fail(decl, f"the local {var.name} shadows a parameter, local or return of the same name")
         return var
 
-    def _unpack(self, node, scope: dict) -> Unpack:
-        """A tuple declaration, as `(, uint256 y) = limits(a, b);`."""
+    def _unpack(self, node, scope: dict) -> Unpack | tuple[Stmt, ...]:
+        """A tuple declaration, as `(, uint256 y) = limits(a, b);`. From an external view call, each value is a read
+        (structs.py)."""
         init = node.get("initialValue")
         if init is None:
             self.fail(node, "a tuple declaration without a value")
         self.statement_value = init["id"]
+        if init["nodeType"] == "FunctionCall" and init["kind"] == "functionCall" and self._external(init):
+            return self._external_unpack(node, scope)
         value = self._expr(init, scope)
         declarations = node["declarations"]
         self._parts(init, value, len(declarations))
@@ -233,13 +286,132 @@ class Statements:
         if kind == "FunctionCall" and expression["kind"] == "functionCall":
             if self._external(expression):
                 return self._external_call(expression, scope)
-            name = callee.get("name") or callee.get("memberName")
-            self.fail(expression, f"a call to {name} as a statement: an internal call is taken only as a value")
+            return self._checking_call(expression, scope)
         self.fail(expression, "an expression statement")
+
+    def _modifiers(self, node, scope: dict) -> tuple[Stmt, ...]:
+        """The modifiers of the target, inlined before its body: each runs its statements before a single `_;` that
+        ends it, with its parameters bound to the invocation's arguments. The modifier that runs is the one that the
+        linearization of the target's contract gives (_runs). Each is a run of the modifier for the rules of keys, and
+        its assignments count as the function's. A modifier with code after `_;`, a return, or invoked twice is
+        refused."""
+        stmts = []
+        seen = set()
+        for invocation in node["modifiers"]:
+            name_node = invocation["modifierName"]
+            decl = self.nodes.get(name_node.get("referencedDeclaration"))
+            if decl is None or decl["nodeType"] != "ModifierDefinition":
+                self.fail(invocation, f"the modifier {self.text(name_node)}, which the extractor cannot resolve")
+            decl = self._runs(name_node, decl, self._within())
+            name = decl["name"]
+            if decl["id"] in seen:
+                self.fail(invocation, f"the modifier {name} is invoked twice")
+            seen.add(decl["id"])
+            if not decl.get("body"):
+                self.fail(invocation, f"the modifier {name} has no body")
+            statements = decl["body"]["statements"]
+            places = [n for n in _subtree(decl["body"]) if n.get("nodeType") == "PlaceholderStatement"]
+            if len(places) != 1 or not statements or statements[-1] is not places[0]:
+                self.fail(decl, f"the modifier {name} runs code after `_;`, or has no single `_;` that ends it")
+            # The modifier runs once, from the target.
+            bindings, body, _ = self._inlined(decl, invocation.get("arguments") or [], scope, statements[:-1])
+            if any(isinstance(s, Return) for s in _flat(body)):
+                self.fail(decl, f"the modifier {name} returns, which would end the function")
+            stmts += [*bindings, *body]
+        return tuple(stmts)
+
+    def _inlined(self, decl, arguments, scope: dict, statements, suffix: str = "") -> tuple[list[Stmt], tuple, bool]:
+        """A check or a modifier `decl` inlined where it runs: a local for each parameter, bound to its argument in
+        `scope`, and then `statements`. The arguments run first, so the temporaries of a struct-valued call in one come
+        before the bindings (structs.py), and such a call under `&&`, `||` or `?:` is refused. The locals take
+        `suffix`. It runs as a callee does for the rules of keys (_run_once), and its assignments count as the
+        function's. Returns the bindings, the statements, which the caller checks for what it refuses, and whether the
+        statements, not the arguments, wrote storage, emitted, called out or set an output."""
+        inner = {}
+        saved, self.hoisted = self.hoisted, []
+        for arg in arguments:
+            self.guarded |= guarded(arg)
+        self.suffixes.append(suffix)
+        bindings = []
+        for param, arg in zip(decl["parameters"]["parameters"], arguments, strict=True):
+            if _storage_struct(param) or memory_struct(param):
+                # The inlined code reads the caller's struct: nothing writes it there (structs.py).
+                inner[param["id"]], lets = self._struct_argument(param, arg, scope)
+                bindings += lets
+                continue
+            value = self._expr(arg, scope)
+            var = self._local(param, inner)
+            self._assignable(arg, value.type, var.type)
+            inner[param["id"]] = var
+            bindings.append(Let(var, value, self.src(arg)))
+        bindings[:0] = self.hoisted
+        self.hoisted = saved
+        effects, written, outputs = len(self.effects), set(self.written), len(self.outputs)
+        self.calls.append((self.stack[-1] if self.stack else None, decl["id"]))
+        self.assigned |= _assigned(decl)
+        self.guarded |= guarded(decl["body"])
+        self.used.add(self._place(decl)[0])
+        self.stack.append(decl["id"])
+        body = self._block(statements, inner, Type("tuple"))
+        self.stack.pop()
+        self.suffixes.pop()
+        made = len(self.effects) != effects or self.written != written or len(self.outputs) != outputs
+        return bindings, body, made
+
+    def _struct_argument(self, param, arg, scope: dict) -> tuple[tuple, list[Stmt]]:
+        """The scope entry of a struct parameter of an inlined check, and the statements that it needs: a storage
+        pointer to the argument's storage; the caller's own entry for a struct that it holds, which nothing in the
+        check writes; or else a local for each field of the struct's values."""
+        if _storage_struct(param):
+            path = self._storage_path(arg, scope)
+            if path is None:
+                self.fail(arg, f"the storage argument {self.text(arg)}: {_STORAGE}")
+            return ("pointer", *path, self._identity(arg, scope)), []
+        entry = scope.get(arg.get("referencedDeclaration")) if arg["nodeType"] == "Identifier" else None
+        if isinstance(entry, tuple) and entry[0] in ("struct", "copy", "param", "returned"):
+            return entry, []
+        values = self._struct_values(arg, scope)
+        # The locals are the caller's, so their names must differ from those in its scope, which gets the entry too.
+        locals_ = self._field_locals(param, scope, self.suffixes[-1] if self.suffixes else "")
+        lets = [Let(var, value, self.src(arg)) for var, value in zip(locals_.values(), values, strict=True)]
+        return scope[param["id"]], lets
+
+    def _checking_call(self, call, scope: dict) -> tuple[Stmt, ...]:
+        """An internal call as a statement to a function that returns nothing and only reads and reverts, as a check
+        (`_checkOwner();`): its statements, inlined, with its parameters as locals. It runs as a callee does, for the
+        rules of keys (_run_once), and may not write storage, emit, call out or return early. A call to any other
+        function as a statement is refused."""
+        callee = call["expression"]
+        name = callee.get("name") or callee.get("memberName")
+        refused = f"a call to {name} as a statement: an internal call is taken only as a value, or as a statement to a"
+        refused += " function that returns nothing and only reads and reverts"
+        decl = self.nodes.get(callee.get("referencedDeclaration"))
+        if decl is None or decl["nodeType"] != "FunctionDefinition":
+            self.fail(call, refused)
+        decl, arguments = self._runs_with(call, decl)
+        if not self._internal(callee, decl) or not decl.get("implemented") or decl["returnParameters"]["parameters"]:
+            self.fail(call, refused)
+        if decl["modifiers"]:
+            self.fail(decl["modifiers"][0], f"{name} has a modifier")
+        if decl["id"] in self.stack:
+            self.fail(call, f"{name} calls itself")
+        runs = self.inlined[decl["id"]] = self.inlined.get(decl["id"], 0) + 1
+        # The inlined parameters are locals of the caller's model: a later inlining, or a name that the caller has,
+        # takes a suffix.
+        names = {v.name for v in scope.values() if isinstance(v, Var)}
+        clash = any(p["name"] in names for p in decl["parameters"]["parameters"])
+        suffix = f"_{runs}" if runs > 1 or clash else ""
+        bindings, body, made = self._inlined(decl, arguments, scope, decl["body"]["statements"], suffix)
+        if any(isinstance(s, Return) for s in _flat(body)):
+            self.fail(call, f"{name}, which a statement calls, returns early, which would return from the caller")
+        if made:
+            self.fail(call, f"{name}, which a statement calls, writes storage, emits or calls out")
+        return (*bindings, *body)
 
     def _require(self, call, scope: dict) -> Stmt:
         """`revert(...)` reverts, and `require(c, ...)` and `assert(c)` revert where c is false. A message of require
-        must be a string literal or an error whose arguments cannot revert, so that it reverts only where c is false."""
+        must be a string literal or an error whose arguments cannot revert (_error_argument), so that it reverts only
+        where c is false."""
         name = call["expression"]["name"]
         if name == "revert":
             return Revert(self.src(call))
@@ -252,11 +424,45 @@ class Statements:
             error = self.nodes.get((message.get("expression") or {}).get("referencedDeclaration"))
             if message["nodeType"] == "FunctionCall" and error is not None and error["nodeType"] == "ErrorDefinition":
                 for arg in message["arguments"]:
-                    self._cannot_revert(arg, scope)
+                    self._error_argument(arg, args[0], scope)
             elif message["nodeType"] != "Literal" or message["kind"] not in ("string", "unicodeString"):
                 self.fail(message, f"the message of {name} is not a string literal or an error")
         negated = dataclasses.replace(ops.make("not", cond), src=self.src(call))
         return If(negated, (Revert(self.src(call)),), (), self.src(call))
+
+    def _error_argument(self, arg, condition, scope: dict) -> None:
+        """Refuses an argument of a require's custom error that could revert where the condition does not. solc
+        evaluates the arguments whether or not the condition holds, so an argument that can revert must be an
+        expression that the condition evaluates too, on every path of it (not under `&&`, `||` or `?:`), with the same
+        text and the same declarations (_identity), whose calls are views that give one value in the call (_varies):
+        it then reverts only where the condition does, at the same state."""
+        try:
+            self._cannot_revert(arg, scope)
+            return
+        except ExtractionError:
+            pass
+        text, identity = _normal(self.text(arg)), self._identity(arg, scope)
+        same = [
+            n
+            for n in _subtree(condition)
+            if n["id"] not in self.guarded and _normal(self.text(n)) == text and self._identity(n, scope) == identity
+        ]
+        if not same:
+            self.fail(
+                arg,
+                f"the argument {self.text(arg)} of the error can revert, which solc evaluates whether or not the "
+                "condition holds, and the condition does not make it on every path",
+            )
+        for n in _subtree(arg):
+            if n.get("nodeType") == "FunctionCall" and n["kind"] == "functionCall":
+                decl = self.nodes.get(n["expression"].get("referencedDeclaration"))
+                if decl is not None and decl.get("stateMutability", "view") not in ("view", "pure"):
+                    self.fail(
+                        n, f"the argument {self.text(arg)} of the error calls {decl['name']}, which can change state"
+                    )
+        why = self._varies(arg, _Scan(), self._within(), self.contract)
+        if why is not None:
+            self.fail(arg, f"the argument {self.text(arg)} of the error {why}")
 
     def _assignment(self, expression, scope: dict) -> Assign | Unpack | None:
         lhs = expression["leftHandSide"]
@@ -271,11 +477,17 @@ class Statements:
             if local[2] is None:
                 self.fail(expression, f"a write through the storage parameter {root['name']}: it could be any storage")
             return self._storage_write(expression, scope, self._through(local, root, lhs), local[2])
+        if isinstance(local, tuple) and local[0] == "struct":
+            self.fail(
+                expression,
+                f"a write to the memory struct {root['name']}: memory structs alias, and the model has its fields as "
+                "values, so it refuses a write to one",
+            )
         if isinstance(local, tuple):
             if local[0] != "copy" or root is lhs:
                 self.fail(expression, f"a write to {root['name']}, which is not a field of a memory copy or storage")
             self._write(expression, scope, "copy")
-            self.written_copies.add(root["referencedDeclaration"])
+            self.written_copies.add(local[4])
             return None
         var = scope.get(lhs.get("referencedDeclaration")) if lhs["nodeType"] == "Identifier" else None
         if not isinstance(var, Var):
@@ -286,6 +498,7 @@ class Statements:
         if operator not in ASSIGNMENTS:
             self.fail(expression, f"the assignment operator {operator}")
         rhs = expression["rightHandSide"]
+        self.statement_value = rhs["id"] if operator == "=" else None
         value = self._expr(rhs, scope)
         if ASSIGNMENTS[operator] is not None:
             value = self._op(expression, ASSIGNMENTS[operator], var, value)

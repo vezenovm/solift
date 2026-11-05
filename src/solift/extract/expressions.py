@@ -6,7 +6,16 @@ import dataclasses
 import re
 
 from solift import ops
-from solift.extract.common import _STORAGE, EXTERNAL, _normal, _storage_struct, _super, _this, _through_contract
+from solift.extract.common import (
+    _STORAGE,
+    EXTERNAL,
+    _normal,
+    _storage_struct,
+    _super,
+    _this,
+    _through_contract,
+    memory_struct,
+)
 from solift.extract.errors import Missing
 from solift.extract.reads import MARKERS, _assigned
 from solift.ir import ADDRESS, BOOL, LITERAL, Call, Const, Expr, Function, Tuple, Type, Var, uint
@@ -87,6 +96,16 @@ class Expressions:
             if isinstance(target, tuple):
                 self.fail(node, f"the struct {node['name']} is used other than by field")
             return self._named(node)
+        if (
+            kind == "MemberAccess"
+            and node["expression"]["nodeType"] == "FunctionCall"
+            and memory_struct(node["expression"])
+        ):
+            # A field of the struct that an internal call returns or a constructor builds, as `window().end`: every
+            # field is computed, as each can revert, into temporaries before the statement (structs.py).
+            fields = self._struct_fields(self._struct_definition(node["expression"]), node)
+            values = self._hoisted(node["expression"], fields, scope)
+            return values[[f for f, _ in fields].index(node["memberName"])]
         if kind in ("MemberAccess", "IndexAccess"):
             self._unmapped_storage(node)
         if kind == "MemberAccess":
@@ -200,19 +219,7 @@ class Expressions:
             self.fail(node, f"the builtin {name}" if callee.get("referencedDeclaration", 0) < 0 else "a call")
         if decl["nodeType"] != "FunctionDefinition":
             self.fail(node, f"a call to {self.text(callee)}")
-        owner = self.nodes[decl["scope"]]
-        # A library call on a value, as `x.mulDivDown(y, d)` under `using MathLib for uint256`, passes the value first.
-        bound = (
-            callee["nodeType"] == "MemberAccess"
-            and owner.get("contractKind") == "library"
-            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
-        )
-        # Named arguments name the parameters of the declaration that solc resolved. An override can name its own
-        # parameters otherwise, and takes the arguments in their order.
-        arguments = self._arguments(node, decl, bound)
-        if bound:
-            arguments = [callee["expression"], *arguments]
-        decl = self._runs(callee, decl, self._within())
+        decl, arguments = self._runs_with(node, decl)
         owner = self.nodes[decl["scope"]]
         if owner.get("contractKind") == "library" and owner["name"] == "Math":
             path = self._place(owner)[0]
@@ -234,16 +241,7 @@ class Expressions:
                 self.math_path = path
                 self.used.add(path)
                 return self._make(node, op[0], *arguments, scope=scope)
-        internal = (
-            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
-            or (
-                callee["nodeType"] == "MemberAccess"
-                and owner.get("contractKind") == "library"
-                and decl["visibility"] in ("internal", "private")
-            )
-            or _through_contract(callee)
-        )
-        if not internal:
+        if not self._internal(callee, decl):
             text = self.text(node)
             missing = Missing(_normal(text), "an external call", self.src(node))
             self.fail(node, f"an external call that the read map does not name: {text}", missing)
@@ -255,15 +253,27 @@ class Expressions:
                 if path is None:
                     self.fail(arg, f"the storage argument {self.text(arg)}: {_STORAGE}")
                 bindings[param["id"]] = (*path, self._identity(arg, scope))
-        pairs = zip(decl["parameters"]["parameters"], arguments, strict=True)
-        arguments = [arg for param, arg in pairs if param["id"] not in bindings]
+        pairs = list(zip(decl["parameters"]["parameters"], arguments, strict=True))
         written, value = set(self.written), self.statement_value
         function = self._callee(decl, node, bindings)
-        # The arguments run before the call, so they see the writes made before it only.
+        # The arguments run before the call, so they see the writes made before it only. A memory struct argument is
+        # its fields, as the callee takes them (structs.py).
         self.written = set(written)
-        args = tuple(self._expr(arg, scope) for arg in arguments)
+        args, arguments = [], []
+        for param, arg in pairs:
+            if param["id"] in bindings:
+                continue
+            values = self._struct_values(arg, scope) if memory_struct(param) else [self._expr(arg, scope)]
+            args += values
+            arguments += [arg] * len(values)
+        args = tuple(args)
         reads, writes = self.callee_reads[decl["id"]], self.callee_writes[decl["id"]]
-        stale = sorted(self.nodes[r]["name"] for r in reads - MARKERS if r in written or EXTERNAL in written)
+        # An external call can change the contract's mutable storage only, not an immutable.
+        stale = sorted(
+            self.nodes[r]["name"]
+            for r in reads - MARKERS
+            if r in written or (EXTERNAL in written and self.nodes[r].get("mutability") == "mutable")
+        )
         if "balance" in reads and EXTERNAL in written:
             self.fail(node, f"calls {decl['name']}, which reads a balance, after an external call that could change it")
         if stale or (reads & {"call", "any"} and written):
@@ -286,6 +296,38 @@ class Expressions:
             return False
         decl = self.nodes.get(callee["expression"].get("referencedDeclaration"))
         return decl is not None and decl["nodeType"] == "UserDefinedValueTypeDefinition"
+
+    def _runs_with(self, call, decl) -> tuple[dict, list]:
+        """The function that `call` of the FunctionDefinition `decl` runs (_runs), and its arguments in the order of
+        `decl`'s parameters. A library call on a value, as `x.mulDivDown(y, d)` under `using MathLib for uint256`,
+        passes the value first. Named arguments name the parameters of the declaration that solc resolved: an override
+        can name its own parameters otherwise, and takes the arguments in their order."""
+        callee = call["expression"]
+        owner = self.nodes[decl["scope"]]
+        bound = (
+            callee["nodeType"] == "MemberAccess"
+            and owner.get("contractKind") == "library"
+            and not callee["expression"]["typeDescriptions"]["typeString"].startswith("type(library ")
+        )
+        arguments = self._arguments(call, decl, bound)
+        if bound:
+            arguments = [callee["expression"], *arguments]
+        return self._runs(callee, decl, self._within()), arguments
+
+    def _internal(self, callee, decl) -> bool:
+        """Whether a call of the function `decl` that runs through the expression `callee` is internal: a function of
+        the contract, by its name or `super`, or a library function that is internal or private. A public or external
+        library function runs by delegatecall."""
+        owner = self.nodes[decl["scope"]]
+        return (
+            (callee["nodeType"] == "Identifier" and decl["visibility"] != "external")
+            or (
+                callee["nodeType"] == "MemberAccess"
+                and owner.get("contractKind") == "library"
+                and decl["visibility"] in ("internal", "private")
+            )
+            or _through_contract(callee)
+        )
 
     def _runs(self, callee, decl, within: int, contract: dict | None = None) -> dict:
         """The function that a call of `decl` through the expression `callee` runs, in a function of the contract
@@ -340,8 +382,10 @@ class Expressions:
         return found
 
     def _within(self) -> int:
-        """The contract of the function being extracted."""
-        return self.nodes[self.stack[-1]]["scope"] if self.stack else self.top["scope"]
+        """The contract of the function or modifier being extracted. solc gives a modifier no scope, so its contract
+        comes from `owners`."""
+        node = self.nodes[self.stack[-1]] if self.stack else self.top
+        return node["scope"] if "scope" in node else self.owners[node["id"]]
 
     def _rounding(self, node) -> str:
         """The operator of Math.mulDiv with a rounding, which must be Math.Rounding.Floor, as written."""
@@ -382,7 +426,9 @@ class Expressions:
             self.used.add(self._place(decl)[0])
             self.reading.append(set())
             self.writing.append(set())
+            self.suffixes.append("")
             function = self._function(decl, top=False, bindings=bindings)
+            self.suffixes.pop()
             self.callee_reads[decl["id"]] = self.reading.pop()
             self.callee_writes[decl["id"]] = self.writing.pop()
             self.stack.pop()
