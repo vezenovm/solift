@@ -111,12 +111,26 @@ class Values:
             self.fail(node, "a signed integer")
         if type_string in ("address", "address payable") or re.fullmatch(r"contract \w+", type_string):
             return ADDRESS
+        # A user-defined value type over an unsigned type is a value of that type, as wrap and unwrap convert it.
+        match = re.fullmatch(
+            r"t_userDefinedValueType\$_\w+_\$(\d+)", node["typeDescriptions"].get("typeIdentifier") or ""
+        )
+        definition = self.nodes.get(int(match.group(1))) if match else None
+        if definition is not None and definition["nodeType"] == "UserDefinedValueTypeDefinition":
+            underlying = re.fullmatch(r"uint(\d+)", definition["underlyingType"]["typeDescriptions"]["typeString"])
+            if underlying:
+                return uint(int(underlying.group(1)))
         # The type string names an enum by its canonical name, which two files can share, and the identifier by the id
         # of its definition.
         match = re.fullmatch(r"t_enum\$_\w+_\$(\d+)", node["typeDescriptions"].get("typeIdentifier") or "")
         if match and self.nodes.get(int(match.group(1)), {}).get("nodeType") == "EnumDefinition":
             return self._enum(self.nodes[int(match.group(1))])
         self.fail(node, f"the type {type_string} is not supported")
+
+    def _declared(self, node) -> str:
+        """The source's type of a value where its model type loses a part that the link test needs: `address payable`,
+        which an `address` does not convert to implicitly."""
+        return "address payable" if node["typeDescriptions"]["typeString"] == "address payable" else ""
 
     def _enum(self, definition) -> Type:
         """The enum type, and the import of the contract or file-level enum that declares it, for the emitted

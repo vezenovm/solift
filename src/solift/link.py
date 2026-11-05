@@ -26,11 +26,11 @@ import re
 from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
-from solift.ops import PROOFS, TABLE
-from solift.solidity import imports, names
+from solift.ops import PROOFS, TABLE, constant_proof
+from solift.solidity import encoded_call, encoded_calls, imports, names, oldest, version
 from solift.solidity import source as model_source
 
-RESERVED = {"i", "host", "codeOk", "codeOut", "modelOk", "modelOut"}
+RESERVED = {"i", "host", "codeOk", "codeOut", "modelOk", "modelOut", "codeResults", "modelResults"}
 
 
 class LinkError(Exception):
@@ -148,7 +148,7 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
         if name not in covered:
             raise LinkError(f"no call argument, adapter or observed value sets the input {name}")
     for name in [*inputs, *link.parameters]:
-        if name in RESERVED or re.fullmatch(r"(code|model)Result\d+", name):
+        if name in RESERVED:
             raise LinkError(f"{name} has a name that the generated test uses")
     for param in model.function.params:
         if covered[param.name] != "call":
@@ -166,7 +166,7 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
 def _link_test(model, link, stem, target, function, arguments, covered) -> str:
     library, host = names(model)
     setup_path, _, setup = link.setup.rpartition(":")
-    params = [f"    {v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
+    params = [f"    {v.declared or v.type.solidity} {v.name}" for v in model.inputs if covered[v.name] != "observed"]
     params += [f"    {type_} {name}" for name, type_ in link.parameters.items()]
     fields = [f"      {v.name}: {link.observed.get(v.name, v.name)}" for v in model.inputs]
     adapters = [f"    {code.strip()}" for code in link.adapters.values()]
@@ -181,27 +181,50 @@ def _link_test(model, link, stem, target, function, arguments, covered) -> str:
         f'import {{{library}, {host}}} from "./{stem}.sol";',
         "",
         f"contract {stem}Link is {setup} {{",
+        *_results(model),
         "  function check_link(",
         ",\n".join(params),
         "  ) public {",
         *adapters,
-        f"    {library}.Inputs memory i = {library}.Inputs({{",
-        ",\n".join(fields),
-        "    });",
-        f"    (bool codeOk, bytes memory codeOut) = address({target}).call(",
-        f"      abi.encodeCall({target}.{function}, ({arguments.strip()}))",
-        "    );",
-        f"    {host} host = new {host}();",
-        "    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));",
-        "    assert(codeOk == modelOk);",
-        "    if (codeOk) {",
-        *_compare(model, link),
+        # The inputs struct, the calls and their flags are in a block of their own, and several values decode into a
+        # memory struct, so that the comparisons, which can read any parameter, fit the legacy code generator's stack.
+        "    bytes memory codeOut;",
+        "    bytes memory modelOut;",
+        "    {",
+        f"      {library}.Inputs memory i = {library}.Inputs({{",
+        ",\n".join(f"  {field}" for field in fields),
+        "      });",
+        "      bool codeOk;",
+        f"      (codeOk, codeOut) = address({target}).call(",
+        f"        {encoded_call(f'{target}.{function}', arguments, model.solc)}",
+        "      );",
+        f"      {host} host = new {host}();",
+        "      bool modelOk;",
+        f"      (modelOk, modelOut) = address(host).call({encoded_call('host.run', 'i', model.solc)});",
+        "      assert(codeOk == modelOk);",
+        "      if (!codeOk) {",
+        "        return;",
+        "      }",
         "    }",
+        *_compare(model, link),
         "  }",
         "}",
         "",
     ]
     return "\n".join(lines)
+
+
+def _results(model: Model) -> list[str]:
+    """The structs that the link decodes several values into: the contract's own values, and the model's, which are
+    those and then the outputs."""
+    returns = model.function.returns
+    if returns.kind != "tuple" and not model.outputs:
+        return []
+    lines = []
+    for name, types in (("CodeResults", model.results), ("ModelResults", parts(returns))):
+        if types:
+            lines += [f"  struct {name} {{", *(f"    {t.solidity} r{n};" for n, t in enumerate(types)), "  }", ""]
+    return lines
 
 
 def _compare(model: Model, link: Link) -> list[str]:
@@ -210,17 +233,14 @@ def _compare(model: Model, link: Link) -> list[str]:
     returns = model.function.returns
     if returns.kind != "tuple" and not model.outputs:
         type_ = returns.solidity
-        return [f"      assert(abi.decode(codeOut, ({type_})) == abi.decode(modelOut, ({type_})));"]
+        return [f"    assert(abi.decode(codeOut, ({type_})) == abi.decode(modelOut, ({type_})));"]
     lines = []
-    for side, types in (("code", model.results), ("model", parts(returns))):
-        if types:
-            declared = ", ".join(f"{t.solidity} {side}Result{n}" for n, t in enumerate(types))
-            listed = ", ".join(t.solidity for t in types)
-            target = declared if len(types) == 1 else f"({declared})"
-            lines.append(f"      {target} = abi.decode({side}Out, ({listed}));")
-    lines += [f"      assert(codeResult{n} == modelResult{n});" for n in range(len(model.results))]
+    if model.results:
+        lines.append("    CodeResults memory codeResults = abi.decode(codeOut, (CodeResults));")
+    lines.append("    ModelResults memory modelResults = abi.decode(modelOut, (ModelResults));")
+    lines += [f"    assert(codeResults.r{n} == modelResults.r{n});" for n in range(len(model.results))]
     for n, output in enumerate(model.outputs, start=len(model.results)):
-        lines.append(f"      assert(({link.post[output.var.name].strip()}) == modelResult{n});")
+        lines.append(f"    assert(({link.post[output.var.name].strip()}) == modelResults.r{n});")
     return lines
 
 
@@ -232,6 +252,8 @@ def _proofs(model: Model):
                 operator = TABLE[e.op]
                 for name in operator.proofs:
                     yield PROOFS[name], operator.kind == "library"
+                if operator.kind == "bits":
+                    yield constant_proof(e), False
 
 
 def operators_test(models, stem: str, test_import: str = "forge-std/Test.sol") -> Generated:
@@ -283,7 +305,7 @@ def _operators_test(models, stem: str, test_import: str, math: str, proofs: list
         f"    ops = new {stem}CheckedOperators();",
         "  }",
         "",
-        "\n".join(p.check for p in proofs).rstrip("\n"),
+        encoded_calls("\n".join(p.text(version(oldest(models))) for p in proofs).rstrip("\n"), oldest(models)),
         "}",
         "",
     ]

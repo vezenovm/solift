@@ -1,5 +1,6 @@
 import dataclasses
 
+import pytest
 import z3
 
 from examples.pricer.spec import SPECS as PRICER_SPECS
@@ -8,7 +9,7 @@ from solift import forge
 from solift.extract import extract
 from solift.link import Harness, Link, generate
 from solift.run import Spec, run, summary, vector_failures
-from solift.workspace import Workspace
+from solift.workspace import Project, Workspace
 
 
 def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_path):
@@ -507,3 +508,207 @@ def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
+
+
+OLD_SOLC = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.10;
+
+contract Old {
+    uint256 internal total;
+
+    function set(uint256 _total) external {
+        total = _total;
+    }
+
+    function share(uint256 _a, uint256 _b) external view returns (uint256) {
+        return (total + _a - _b) * 3 / 4;
+    }
+}
+"""
+
+OLD_SOLC_SETUP = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.10;
+
+import {Test} from "forge-std/Test.sol";
+import {Old} from "src/Old.sol";
+
+contract OldSetup is Test {
+    Old internal old;
+
+    function setUp() public {
+        old = new Old();
+    }
+}
+"""
+
+
+# The part of forge-std's Test that the generated tests use, for solc below 0.8.13, which forge-std no longer takes.
+OLD_TEST = """\
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity >=0.8.0;
+
+interface Vm {
+    function assume(bool) external;
+}
+
+abstract contract Test {
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    function assertEq(bool _a, bool _b, string memory _message) internal pure {
+        require(_a == _b, _message);
+    }
+
+    function assertEq(bytes memory _a, bytes memory _b, string memory _message) internal pure {
+        require(keccak256(_a) == keccak256(_b), _message);
+    }
+}
+"""
+
+
+def old_solc_project(tmp_path, solc: str, contract: str = OLD_SOLC):
+    """A project that pins `solc`, with a Test of its own in place of forge-std."""
+    root = tmp_path / f"solc-{solc}"
+    (root / "src").mkdir(parents=True)
+    (root / "lib" / "forge-std" / "src").mkdir(parents=True)
+    (root / "lib" / "forge-std" / "src" / "Test.sol").write_text(OLD_TEST)
+    (root / "foundry.toml").write_text(
+        f'[profile.default]\nsrc = "src"\nlibs = ["lib"]\nsolc = "{solc}"\n'
+        'remappings = ["forge-std/=lib/forge-std/src/"]\n'
+    )
+    (root / "src" / "Old.sol").write_text(contract)
+    (tmp_path / "OldSetup.sol").write_text(OLD_SOLC_SETUP)
+    return root
+
+
+@pytest.mark.parametrize("solc", ["0.8.10", "0.8.16"])
+def test_a_project_on_an_older_solc_links_with_its_operator_rows_and_vectors(tmp_path, solc):
+    """solc 0.8.10 has no abi.encodeCall, which the link, the operator rows and the vectors call the code with from
+    0.8.11 on. Up to 0.8.16, solc checks a multiplication's overflow in another way, and Halmos proves the `*` row on
+    it only in the form that compares with type(uint256).max / a."""
+    root = old_solc_project(tmp_path, solc)
+    spec = Spec(
+        name="old-solc",
+        target="src/Old.sol:Old.share",
+        reads={"total": "total"},
+        link=Link(
+            setup=Harness(tmp_path / "OldSetup.sol", "OldSetup"),
+            call="old.share(_a, _b)",
+            adapters={"total": "old.set(total);"},
+        ),
+        project=Project.foundry(root),
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert result["versions"]["solc"].startswith(solc)
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert len(result["link"]) == 5
+    assert result["vectors"]["agree"] == result["vectors"]["count"] > 0
+
+
+def test_a_payable_address_parameter_and_read_link_as_payable(tmp_path):
+    """An `address payable` parameter and read are addresses in the model, and `address payable` in the link test, as
+    the call and the adapter need."""
+    spec = Spec(
+        name="payable",
+        target="tests/fixtures/contracts/Payable.sol:Payable.paid",
+        reads={"recipient": "recipient"},
+        link=Link(
+            setup="tests/fixtures/test/PayableSetup.sol:PayableSetup",
+            call="payer.paid(_to, _a)",
+            adapters={"recipient": "payer.setRecipient(recipient);"},
+        ),
+        project=SPEC.project,
+    )
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+    assert [i["type"] for i in result["model"]["inputs"]] == ["address", "uint256", "address"]
+
+
+def test_the_link_check_of_a_model_with_many_inputs_and_two_outputs_fits_the_stack(tmp_path):
+    """Nine symbolic parameters, a value and two outputs: the link check decodes the values into memory structs and
+    keeps the calls in a block of their own, so the legacy code generator does not run out of stack slots."""
+    spec = Spec(
+        name="wide",
+        target="tests/fixtures/contracts/Wide.sol:Wide.take",
+        reads={"a": "a", "b": "b", "c": "c", "d": "d", "e": "e", "held[_who]": "held"},
+        outputs={"a": "aAfter", "held[_who]": "heldAfter"},
+        link=Link(
+            setup="tests/fixtures/test/WideSetup.sol:WideSetup",
+            call="wide.take(_who, _x, _y)",
+            adapters={("a", "b", "c", "d", "e"): "wide.set(a, b, c, d, e);", "held": "wide.setHeld(_who, held);"},
+            post={"aAfter": "wide.total()", "heldAfter": "wide.heldOf(_who)"},
+        ),
+        project=SPEC.project,
+    )
+
+    @spec.theorem(assume=("no-revert",), witness=lambda q: q.post.aAfter < q.a)
+    def take_lowers_both_by_the_amount(q):
+        """take lowers a and the holder's balance by the amount that it returns"""
+        return z3.And(q.a - q.post.aAfter == q.result, q.held - q.post.heldAfter == q.result)
+
+    record = run(spec, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    (result,) = record["specs"]
+    assert {r["verdict"] for r in result["link"]} == {"PASS"}
+
+
+def test_shifts_and_masks_by_constants_link_with_a_row_for_each_constant(tmp_path):
+    setup = "tests/fixtures/test/BitsSetup.sol:BitsSetup"
+    target = "tests/fixtures/contracts/Bits.sol:Bits"
+    packed = {"packed": "packed"}
+    set_packed = {"packed": "bits.set(packed);"}
+    cases = [
+        ("both", "", packed, set_packed),
+        ("maskFirst", "_x", {}, {}),
+        ("narrow", "_x", {}, {}),
+        ("fullMask", "_x", {}, {}),
+        ("addressWideMask", "_x", {}, {}),
+        ("wrappedNarrow", "_x", {}, {}),
+    ]
+    specs = [
+        Spec(
+            name=f"bits-{function}",
+            target=f"{target}.{function}",
+            reads=reads,
+            link=Link(setup=setup, call=f"bits.{function}({args})", adapters=adapters),
+            project=SPEC.project,
+        )
+        for function, args, reads, adapters in cases
+    ]
+
+    @specs[0].theorem(witness=lambda q: q.result[0] > 0)
+    def the_two_halves_make_the_slot(q):
+        """the high half times 2**128 plus the low half is the packed slot"""
+        return q.result[0] * 2**128 + q.result[1] == q.packed
+
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    links = [r for result in record["specs"] for r in result["link"]] + record["link"]["shared"]
+    checks = {r["check"]: r["verdict"] for r in links}
+    assert set(checks.values()) == {"PASS"}
+    assert {"check_row_shr128Of256IsTheQuotient", "check_row_mask128Of256IsTheRemainder"} <= set(checks)
+    assert {"check_row_mask8Of256IsTheRemainder", "check_row_shr64Of128IsTheQuotient"} <= set(checks)
+
+
+def test_ceil_div_links_with_the_row_of_its_copy_of_math(tmp_path):
+    specs = [
+        Spec(
+            name=f"ceil-{function}",
+            target=f"tests/fixtures/contracts/Ceil.sol:Ceil.{function}",
+            reads={},
+            link=Link(setup="tests/fixtures/test/CeilSetup.sol:CeilSetup", call=f"ceil.{function}({args})"),
+            project=SPEC.project,
+        )
+        for function, args in [("half", "_x"), ("ceil", "_a, _b"), ("olderCeil", "_a, _b")]
+    ]
+    record = run(specs, Workspace(tmp_path / "work"))
+    assert record["ok"], summary(record)
+    checks = {r["check"]: r["verdict"] for r in record["link"]["shared"]}
+    checks |= {r["check"]: r["verdict"] for result in record["specs"] for r in result["link"]}
+    assert set(checks.values()) == {"PASS"}
+    assert {"check_row_ceilDivRevertsExactlyOnZero", "check_row_ceilDivRevertsExactlyOnZeroAboveZero"} <= set(checks)

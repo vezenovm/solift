@@ -744,3 +744,65 @@ def test_a_balance_after_an_external_call_or_of_a_local_that_changes_is_refused_
         extract(build, f"{BALANCES}.potAfterACall", {"address(this).balance": "held"})
     model = extract(build, f"{BALANCES}.approveAll", {}).model
     assert [(e.kind, e.place) for e in model.effects] == [("call", "_payer.approve(IERC20(_token),type(uint256).max)")]
+
+
+BITS = "tests/fixtures/contracts/Bits.sol:Bits"
+
+
+@pytest.mark.parametrize(
+    "function, reads, values, result",
+    [
+        ("high", {"packed": "packed"}, {"packed": 5 * 2**128 + 7}, 5),
+        ("low", {"packed": "packed"}, {"packed": 5 * 2**128 + 7}, 7),
+        ("maskFirst", {}, {"_x": 0x1234}, 0x34),
+        ("narrow", {}, {"_x": 3 * 2**64 + 1}, 3),
+        ("fullMask", {}, {"_x": 2**256 - 5}, 2**256 - 5),
+        ("addressWideMask", {}, {"_x": 2**200 + 9}, 9),
+        ("wrappedNarrow", {}, {"_x": 7}, 3),
+        ("wrappedLiteral", {}, {"_x": 255}, 256),
+        ("constantMaskFirst", {}, {"_x": 1}, 0x1235),
+    ],
+)
+def test_a_shift_and_a_mask_by_constants_are_a_division_and_a_remainder(build, function, reads, values, result):
+    model = extract(build, f"{BITS}.{function}", reads).model
+    assert evaluate(model, values) == (False, result, False)
+
+
+@pytest.mark.parametrize(
+    "function, message",
+    [
+        ("byParameter", r"shr by a value that is not a constant"),
+        ("shiftedLeft", r"the operator <<"),
+        ("notLowBits", r"mask with 0xf0, which is not a mask of low bits"),
+        ("everyBitOut", r"shr by 256, which shifts every bit out"),
+        ("userOperator", r"the user-defined operator \+"),
+        ("valueTypeOverload", r"Math.min with 2 arguments has no lemma"),
+        ("valueTypeRounded", r"Math.mulDiv with 4 arguments has no lemma"),
+    ],
+)
+def test_a_shift_or_mask_that_is_not_by_a_constant_of_low_bits_is_refused(build, function, message):
+    with pytest.raises(ExtractionError, match=message):
+        extract(build, f"{BITS}.{function}", {"packed": "packed"} if function == "userOperator" else {})
+
+
+CEIL = "tests/fixtures/contracts/Ceil.sol:Ceil"
+
+
+@pytest.mark.parametrize(
+    "function, values, outcome",
+    [
+        ("half", {"_x": 5}, (False, 3, False)),
+        ("ceil", {"_a": 0, "_b": 3}, (False, 0, False)),
+        ("ceil", {"_a": 7, "_b": 3}, (False, 3, False)),
+        ("ceil", {"_a": 0, "_b": 0}, True),
+        ("olderCeil", {"_a": 0, "_b": 0}, (False, 0, False)),
+        ("olderCeil", {"_a": 1, "_b": 0}, True),
+    ],
+)
+def test_ceil_div_is_the_quotient_rounded_up_and_reverts_as_its_copy_does(build, function, values, outcome):
+    model = extract(build, f"{CEIL}.{function}", {}).model
+    if outcome is True:
+        reverts = terms(model, {v.name: z3.IntVal(values[v.name]) for v in model.inputs}).reverts
+        assert z3.is_true(z3.simplify(reverts))
+    else:
+        assert evaluate(model, values) == outcome

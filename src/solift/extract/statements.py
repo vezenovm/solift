@@ -84,7 +84,7 @@ class Statements:
                 # effect may name it.
                 scope[p["id"]] = ("opaque", p["name"])
                 continue
-            var = Var(p["name"], self._type(p), input=top, src=self.src(p))
+            var = Var(p["name"], self._type(p), input=top, src=self.src(p), declared=self._declared(p))
             scope[p["id"]] = var
             params.append(var)
         body = self._block(node["body"]["statements"], scope, return_type)

@@ -19,7 +19,7 @@ import z3
 
 from solift.ir import BOOL, Model, Type, parts
 from solift.smt import domain, symbols, terms
-from solift.solidity import names
+from solift.solidity import encoded_call, names
 
 CANDIDATES = 3000
 PER_OUTCOME = 60
@@ -238,7 +238,7 @@ def vectors_source(model: Model, vectors: list[Vector], test_import: str = "forg
         "",
         "  function _check(bytes memory _inputs, bool _reverts, bytes memory _result) internal {",
         f"    {library}.Inputs memory i = abi.decode(_inputs, ({library}.Inputs));",
-        "    (bool ok, bytes memory out) = address(host).call(abi.encodeCall(host.run, (i)));",
+        f"    (bool ok, bytes memory out) = address(host).call({encoded_call('host.run', 'i', model.solc)});",
         '    assertEq(!ok, _reverts, "reverts");',
         "    if (ok) {",
         '      assertEq(out, _result, "result");',

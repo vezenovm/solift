@@ -6,6 +6,8 @@
     mul      a * b                  a * b               a * b >= 2**256
     div      a / b                  a / b (floor)       b == 0
     mulDiv   Math.mulDiv(x, y, d)   x * y / d (floor)   d == 0 or x * y / d >= 2**256    x >= 2**128 or y >= 2**128
+    ceilDiv  Math.ceilDiv(a, b)     If(a == 0, 0, (a - 1) / b + 1)  b == 0
+    ceilDivFromZero  as ceilDiv     as ceilDiv          a > 0 and b == 0
     min      Math.min(a, b)         If(a < b, a, b)     never
     max      Math.max(a, b)         If(a > b, a, b)     never
     lt ... ne                       a < b ... a != b    never
@@ -14,6 +16,8 @@
     ite      c ? a : b              If(c, a, b)         never
     widen    uint<n>(a)             a                   never
     narrow   uint<n>(a)             a % 2**n            never
+    shr      a >> k                 a / 2**k            never                            for a constant k < 256
+    mask     a & (2**k - 1)         a % 2**k            never                            for a constant mask
 
 An expression also reverts when an operand that runs reverts, and is outside when such an operand is outside. `and`
 and `or` skip their second operand, and `ite` the branch not taken (smt.py).
@@ -25,6 +29,10 @@ explicit conversion does: `uint192(a)` of a uint256 is `a % 2**192`. Each takes 
 and library calls take operands of any unsigned width. `eq` and `ne` also compare two bools, two addresses, or two
 members of one enum, and `ite` selects between two values of one such type. z3 sees an address or an enum member as its
 integer value.
+
+`shr` and `mask` take their constant as the second operand, and the table has a row for each constant that a model
+uses, which Halmos proves too (`constant_proof`): Solidity does not check a shift, so `<<` would wrap, and is not in
+the table.
 
 Halmos proves on the bytecode each row that can revert, and the OpenZeppelin facts that the min, max and mulDiv rows
 rest on (`PROOFS`): `Math.min(a, b)` is `a < b ? a : b`, `Math.max(a, b)` is `a > b ? a : b`, and
@@ -39,7 +47,7 @@ from dataclasses import dataclass
 
 import z3
 
-from solift.ir import BOOL, UINT256, Expr, Op, Src, Type, uint
+from solift.ir import BOOL, UINT256, Const, Expr, Op, Src, Type, uint
 
 U256 = 2**256
 HALF = 2**128
@@ -114,6 +122,24 @@ TABLE = {
             ),
         ),
         Operator(
+            "ceilDiv",
+            2,
+            "Math.ceilDiv({0}, {1})",
+            "library",
+            lambda a, b: z3.If(a == 0, 0, (a - 1) / b + 1),
+            reverts=lambda a, b: b == 0,
+            proofs=("check_row_ceilDivRevertsExactlyOnZero",),
+        ),
+        Operator(
+            "ceilDivFromZero",
+            2,
+            "Math.ceilDiv({0}, {1})",
+            "library",
+            lambda a, b: z3.If(a == 0, 0, (a - 1) / b + 1),
+            reverts=lambda a, b: z3.And(a > 0, b == 0),
+            proofs=("check_row_ceilDivRevertsExactlyOnZeroAboveZero",),
+        ),
+        Operator(
             "min",
             2,
             "Math.min({0}, {1})",
@@ -141,6 +167,8 @@ TABLE = {
         Operator("ite", 3, "{0} ? {1} : {2}", "select", z3.If),
         Operator("widen", 1, "{type}({0})", "convert", lambda a: a),
         Operator("narrow", 1, "{type}({0})", "convert", None),
+        Operator("shr", 2, "{0} >> {1}", "bits", None),
+        Operator("mask", 2, "{0} & {1}", "bits", None),
     ]
 }
 
@@ -195,6 +223,21 @@ def make(op: str, *args: Expr, src: Src | None = None, to: Type = UINT256) -> Op
         if types[0].kind == "uint" and (types[0].bits <= to.bits) != (op == "widen"):
             raise TypeError(f"{op}{where} of a {types[0].solidity} to {to.solidity}")
         result = to
+    elif operator.kind == "bits":
+        _numbers(op, types, where)
+        constant = args[1]
+        if not isinstance(constant, Const) or isinstance(constant.value, bool):
+            raise TypeError(f"{op}{where} by a value that is not a constant")
+        if types[0].kind == "literal":
+            raise TypeError(f"{op}{where} of a literal: solc folds it, and the extractor does not")
+        if op == "shr":
+            if constant.value >= 256:
+                raise TypeError(f"{op}{where} by {constant.value}, which shifts every bit out")
+            result = types[0]
+        else:
+            if constant.value <= 0 or constant.value & (constant.value + 1):
+                raise TypeError(f"{op}{where} with {constant.text or constant.value}, which is not a mask of low bits")
+            result = common_type(*types)
     elif operator.kind == "logic":
         if any(t != BOOL for t in types):
             raise TypeError(f"{op}{where} takes bool operands")
@@ -226,11 +269,19 @@ def _numbers(op: str, types: list[Type], where: str) -> None:
 @dataclass(frozen=True)
 class Proof:
     """A Halmos check of one row or lemma. A row check calls `wrapper`, an external function of the generated
-    CheckedOperators contract, so that it checks the operator as compiled code. A lemma has no wrapper."""
+    CheckedOperators contract, so that it checks the operator as compiled code. A lemma has no wrapper. `older`, where
+    it is set, is the same check in another form, for code that solc builds below the version `before`: Halmos proves
+    each form only on the code of its own compilers."""
 
     name: str
     check: str
     wrapper: str = ""
+    older: str = ""
+    before: tuple[int, ...] = ()
+
+    def text(self, solc: tuple[int, ...]) -> str:
+        """The check for code that solc `solc` builds, as (0, 8, 16), or () where the version is not known."""
+        return self.older if self.older and solc and solc < self.before else self.check
 
 
 _MULMOD = """\
@@ -239,6 +290,36 @@ _MULMOD = """\
       mm := mulmod(_x, _y, not(0))
     }
 """
+
+
+def constant_proof(e: Op) -> Proof:
+    """The row of a shift or a mask by the constant of `e`, at its result type: `x >> k` is `x / 2**k`, and `x & m` for
+    `m = 2**k - 1` is `x % 2**k`."""
+    type_ = e.type.solidity
+    if e.op == "shr":
+        k = e.args[1].value
+        function, name, value = f"shr{k}Of{e.type.bits}", f"check_row_shr{k}Of{e.type.bits}IsTheQuotient", f"/ 2**{k}"
+        body = f"_x >> {k}"
+    else:
+        k = (e.args[1].value + 1).bit_length() - 1
+        function = f"mask{k}Of{e.type.bits}"
+        name = f"check_row_mask{k}Of{e.type.bits}IsTheRemainder"
+        # A full mask keeps every bit, and 2**256 is no uint256. A mask written in hex of 40 digits would be an address
+        # literal, so the wrapper writes it as a power of two.
+        value = "" if k == 256 else f"% 2**{k}"
+        body = "_x & type(uint256).max" if k == 256 else f"_x & (2**{k} - 1)"
+    wrapper = f"""\
+  function {function}({type_} _x) external pure returns ({type_}) {{
+    return {body};
+  }}
+"""
+    check = f"""\
+  function {name}({type_} _x) public view {{
+    assert(uint256(ops.{function}(_x)) == uint256(_x) {value});
+  }}
+"""
+    return Proof(name, check, wrapper)
+
 
 PROOFS = {
     proof.name: proof
@@ -299,6 +380,20 @@ PROOFS = {
     assert(!ok || abi.decode(out, (uint256)) == product);
   }
 """,
+            # solc 0.8.16 and older check a multiplication's overflow by comparing with type(uint256).max / _a, and
+            # Halmos proves the row in that form only (in the other it times out), and the other form only from 0.8.17.
+            older="""\
+  function check_row_mulRevertsExactlyOnOverflow(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.mul, (_a, _b)));
+    uint256 product;
+    unchecked {
+      product = _a * _b;
+    }
+    assert(ok == (_a == 0 || _b <= type(uint256).max / _a));
+    assert(!ok || abi.decode(out, (uint256)) == product);
+  }
+""",
+            before=(0, 8, 17),
         ),
         Proof(
             "check_row_divRevertsExactlyOnZero",
@@ -351,6 +446,40 @@ PROOFS = {
     vm.assume(mm == product);
     assert(Math.mulDiv(_x, _y, _d) == product / _d);
   }}
+""",
+        ),
+        Proof(
+            "check_row_ceilDivRevertsExactlyOnZero",
+            wrapper="""\
+  function ceilDiv(uint256 _a, uint256 _b) external pure returns (uint256) {
+    return Math.ceilDiv(_a, _b);
+  }
+""",
+            check="""\
+  function check_row_ceilDivRevertsExactlyOnZero(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.ceilDiv, (_a, _b)));
+    assert(ok == (_b != 0));
+    if (ok) {
+      assert(abi.decode(out, (uint256)) == (_a == 0 ? 0 : (_a - 1) / _b + 1));
+    }
+  }
+""",
+        ),
+        Proof(
+            "check_row_ceilDivRevertsExactlyOnZeroAboveZero",
+            wrapper="""\
+  function ceilDiv(uint256 _a, uint256 _b) external pure returns (uint256) {
+    return Math.ceilDiv(_a, _b);
+  }
+""",
+            check="""\
+  function check_row_ceilDivRevertsExactlyOnZeroAboveZero(uint256 _a, uint256 _b) public view {
+    (bool ok, bytes memory out) = address(ops).staticcall(abi.encodeCall(ops.ceilDiv, (_a, _b)));
+    assert(ok == (_b != 0 || _a == 0));
+    if (ok) {
+      assert(abi.decode(out, (uint256)) == (_a == 0 ? 0 : (_a - 1) / _b + 1));
+    }
+  }
 """,
         ),
         Proof(

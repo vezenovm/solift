@@ -19,24 +19,31 @@ contract QuoterQuoteLink is QuoterSetup {
     quoter.setConfig(margin, cap, floor);
     token.set(pot);
     vm.fee(baseFee);
-    QuoterQuoteModel.Inputs memory i = QuoterQuoteModel.Inputs({
-      _gas: _gas,
-      _price: _price,
-      margin: margin,
-      cap: cap,
-      floor: floor,
-      pot: pot,
-      txGasPrice: tx.gasprice,
-      baseFee: baseFee
-    });
-    (bool codeOk, bytes memory codeOut) = address(quoter).call(
-      abi.encodeCall(quoter.exposedQuote, (_gas, _price))
-    );
-    QuoterQuoteHost host = new QuoterQuoteHost();
-    (bool modelOk, bytes memory modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
-    assert(codeOk == modelOk);
-    if (codeOk) {
-      assert(abi.decode(codeOut, (uint256)) == abi.decode(modelOut, (uint256)));
+    bytes memory codeOut;
+    bytes memory modelOut;
+    {
+      QuoterQuoteModel.Inputs memory i = QuoterQuoteModel.Inputs({
+        _gas: _gas,
+        _price: _price,
+        margin: margin,
+        cap: cap,
+        floor: floor,
+        pot: pot,
+        txGasPrice: tx.gasprice,
+        baseFee: baseFee
+      });
+      bool codeOk;
+      (codeOk, codeOut) = address(quoter).call(
+        abi.encodeCall(quoter.exposedQuote, (_gas, _price))
+      );
+      QuoterQuoteHost host = new QuoterQuoteHost();
+      bool modelOk;
+      (modelOk, modelOut) = address(host).call(abi.encodeCall(host.run, (i)));
+      assert(codeOk == modelOk);
+      if (!codeOk) {
+        return;
+      }
     }
+    assert(abi.decode(codeOut, (uint256)) == abi.decode(modelOut, (uint256)));
   }
 }

@@ -8,6 +8,8 @@ to prove this code equal to the contract stays small. Named constants keep their
 
 from __future__ import annotations
 
+import re
+
 from solift.ir import (
     Assign,
     Call,
@@ -28,6 +30,42 @@ from solift.ir import (
     walk,
 )
 from solift.ops import TABLE
+
+# The first solc that has abi.encodeCall.
+ENCODE_CALL = (0, 8, 11)
+
+_ENCODE_CALL = re.compile(r"abi\.encodeCall\((\w+(?:\.\w+)*), \(([^()]*)\)\)")
+
+
+def version(solc: str) -> tuple[int, ...]:
+    """A solc version such as `0.8.10` or `0.8.10+commit.fc410830` as numbers, or () for an empty one."""
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", solc)
+    return tuple(int(n) for n in match.groups()) if match else ()
+
+
+def encoded_call(function: str, arguments: str, solc: str) -> str:
+    """The calldata of a call of `function` (`target.f`) with `arguments`, their texts separated by commas:
+    `abi.encodeCall(target.f, (a, b))`, which checks the arguments against the function's parameters, or for solc
+    below 0.8.11, which lacks it, `abi.encodeWithSelector(target.f.selector, a, b)`."""
+    arguments = arguments.strip()
+    if not solc or version(solc) >= ENCODE_CALL:
+        return f"abi.encodeCall({function}, ({arguments}))"
+    return f"abi.encodeWithSelector({function}.selector{', ' + arguments if arguments else ''})"
+
+
+def encoded_calls(text: str, solc: str) -> str:
+    """`text` with each `abi.encodeCall(f, (a, b))` whose arguments hold no parentheses written as encoded_call writes
+    it for `solc`."""
+    text = _ENCODE_CALL.sub(lambda m: encoded_call(m.group(1), m.group(2), solc), text)
+    if "abi.encodeCall(" in text and solc and version(solc) < ENCODE_CALL:
+        raise ValueError(f"an abi.encodeCall that solc {solc} lacks is left in the generated test")
+    return text
+
+
+def oldest(models) -> str:
+    """The oldest solc that built one of the models, or empty if none is known."""
+    known = [model.solc for model in models if model.solc]
+    return min(known, key=version, default="")
 
 
 def names(model: Model) -> tuple[str, str]:
