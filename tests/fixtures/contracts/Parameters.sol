@@ -134,4 +134,23 @@ contract Parameters {
     Mode += 1;
     return _f == Flag.On ? Mode : 0;
   }
+
+  // The enum's name as the type of a local, which a parameter's local of that name shadows.
+  function flagLocal(uint256 Mode, Flag _f) public pure returns (uint256) {
+    Mode += 1;
+    Flag local = _f;
+    return local == Flag.Off ? 0 : Mode;
+  }
+
+  // The emitted Solidity reverts as revert(), which a parameter's local named revert shadows, and an input does not.
+  function revertShadowed(uint256 revert) public pure returns (uint256) {
+    revert += 1;
+    require(revert < 10);
+    return revert;
+  }
+
+  function revertInput(uint256 revert) public pure returns (uint256) {
+    require(revert < 10);
+    return revert;
+  }
 }
