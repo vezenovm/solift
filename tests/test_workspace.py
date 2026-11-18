@@ -128,7 +128,7 @@ def test_the_overlay_keeps_the_remappings_that_forge_detects_in_a_linked_library
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
-    project = Project.foundry(root=root, add=added).resolve()
+    project = Project(root=root, add=added).resolve()
     workspace = Workspace(tmp_path / "work")
     overlay = project.overlay(workspace)
     assert (overlay / "lib").is_symlink()

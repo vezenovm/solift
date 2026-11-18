@@ -43,10 +43,9 @@ project's files by their path from the root (`import {Vault} from "src/Vault.sol
 ```python
 import pathlib
 
-from solift import Harness, Link, Project, Spec
+from solift import Harness, Link, Spec
 
 HERE = pathlib.Path(__file__).parent
-PROJECT = Project.foundry(profile=None)  # the profile the contract deploys with; None is the default
 SPEC = Spec(
     name="vault-redeem",
     target="src/Vault.sol:Vault._redeem",  # add "(uint256,address)" to pick one overload
@@ -66,7 +65,6 @@ SPEC = Spec(
         },
         observed={},  # an input that the test reads instead of setting, such as {"gasPrice": "tx.gasprice"}
     ),
-    project=PROJECT,
 )
 ```
 
@@ -99,12 +97,15 @@ map too, as the value before the call. Another write to the storage variable of 
 change the output. An external call is assumed not to revert and not to call back into the contract, and no read of
 storage may follow one.
 
-`Project.foundry()` reads the project's foundry config (`forge config --json`, under the profile) when the run starts:
-it links `foundry.toml`, `remappings.txt`, the library directories and the top directory of each remapping's target
-(`.deps` for `@lib/=.deps/lib/src/`), copies the source directory, and writes the generated files to `<test>/solift`.
-Pass `link=`, `copy=`, `add=` or `generated=` to set one yourself; `solift reads` takes `--link` and `--copy`. For a
-layout it cannot infer, such as a profile whose source directory only imports the contracts, build the `Project` by
-hand (`acceptance/resupply/project.py`):
+A spec's `project` is `Project()` by default, a conventional Foundry project at the root that `solift run` is given
+(`--root`, else the current directory), built with the default profile (`--profile` takes another). `Project()` reads
+the project's foundry config (`forge config --json`, under the profile) when the run starts: it links `foundry.toml`,
+`remappings.txt`, the library directories and the top directory of each remapping's target (`.deps` for
+`@lib/=.deps/lib/src/`), copies the source directory, and writes the generated files to `<test>/solift`. Pass `link=`,
+`copy=`, `add=` or `generated=` to set one yourself, and `()` for none; `solift reads` takes `--link` and `--copy`.
+`Project(root=..., profile=...)` fixes the root or the profile in the spec. For a layout it cannot infer, such as a
+profile whose source directory only imports the contracts, build the `Project` by hand
+(`acceptance/resupply/project.py`):
 
 ```python
 PROJECT = Project(
@@ -149,14 +150,16 @@ Options:
 ## 5. Run
 
 ```sh
-solift run myproject.spec --root <project> --no-link    # extraction, theorems and vectors, without Halmos
-solift run myproject.spec --root <project>              # also the Halmos link
-solift run myproject.spec:SPECS --root <project>        # a list of specs of one project, in one run
-solift run myproject.spec --root <project> --emit out/  # also writes the model and the link test to out/
+solift run myproject.spec --no-link                          # extraction, theorems and vectors, without Halmos
+solift run myproject.spec                                    # also the Halmos link
+solift run myproject.spec:SPECS                              # a list of specs of one project, in one run
+solift run myproject.spec --emit out/                        # also writes the model and the link test to out/
+solift run myproject.spec --root <project> --profile deploy  # a project elsewhere, built with another profile
 ```
 
 `solift run` imports the module from the current directory, without writing bytecode, and runs its `SPEC` or `SPECS`,
-or the attribute after the colon. A module can also run itself: `sys.exit(solift.main(SPEC))`, then
+or the attribute after the colon. The project root is `--root`, else the root that the spec's `Project` names, else the
+current directory; `--profile` replaces the profile. A module can also run itself: `sys.exit(solift.main(SPEC))`, then
 `python -m myproject.spec` with the same options.
 
 `SOLIFT_FORGE` names the forge binary. Each result prints one line, and the record is `build/<name>/results.json`. The

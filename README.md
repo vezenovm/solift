@@ -54,14 +54,14 @@ Add the packages that your specs import: `uv tool install solift --with <package
 ## Use
 
 ```sh
-solift reads src/Vault.sol:Vault.previewRedeem --root .   # the read map that a function needs, and a link skeleton
-solift run vault_specs.spec --root .                      # the specs of a module: theorems, vectors and the link
+solift reads src/Vault.sol:Vault.previewRedeem   # the read map that a function needs, and a link skeleton
+solift run vault_specs.spec                      # the specs of a module: theorems, vectors and the link
 ```
 
 ```python
 import pathlib
 
-from solift import Harness, Link, Project, Spec
+from solift import Harness, Link, Spec
 
 SPEC = Spec(
     name="vault-redeem",
@@ -72,7 +72,6 @@ SPEC = Spec(
         call="vault.previewRedeem(_shares)",
         adapters={"held": "asset.set(held);", "supply": "vault.setSupply(supply);"},
     ),
-    project=Project.foundry(),
 )
 
 

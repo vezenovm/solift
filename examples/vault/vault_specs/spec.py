@@ -2,17 +2,16 @@
 of it made with `cp -rL`:
 
     solift reads src/Vault.sol:Vault.previewRedeem
-    solift run vault_specs.spec --root .
+    solift run vault_specs.spec
 """
 
 import pathlib
 
 import z3
 
-from solift import Harness, Link, Project, Spec
+from solift import Harness, Link, Spec
 
 SETUP = Harness(pathlib.Path(__file__).parent / "VaultSetup.sol", "VaultSetup")
-PROJECT = Project.foundry()
 READS = {"ASSET.balanceOf(address(this))": "held", "totalSupply": "supply"}
 ADAPTERS = {"held": "asset.set(held);", "supply": "vault.setSupply(supply);"}
 
@@ -21,14 +20,12 @@ REDEEM = Spec(
     target="src/Vault.sol:Vault.previewRedeem",
     reads=READS,
     link=Link(setup=SETUP, call="vault.previewRedeem(_shares)", adapters=ADAPTERS),
-    project=PROJECT,
 )
 DEPOSIT = Spec(
     name="vault-deposit",
     target="src/Vault.sol:Vault.previewDeposit",
     reads=READS,
     link=Link(setup=SETUP, call="vault.previewDeposit(_assets)", adapters=ADAPTERS),
-    project=PROJECT,
 )
 SPECS = [REDEEM, DEPOSIT]
 

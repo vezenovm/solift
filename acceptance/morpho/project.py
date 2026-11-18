@@ -12,5 +12,5 @@ from solift import Harness, Project
 COMMIT = "55d2d99304fb3fb930c688462ae2ccabb1d533ad"
 HARNESS = "test/MorphoSetup.sol"
 
-PROJECT = Project.foundry()
+PROJECT = Project()
 SETUP = Harness(pathlib.Path(__file__).parent / "harness" / "MorphoSetup.sol", "MorphoSetup", at=HARNESS)
