@@ -1,14 +1,18 @@
 import dataclasses
+import os
+import pathlib
 import re
 
 import pytest
 
 from solift import ops
 from solift.ir import UINT256, Const, Function, Model, Read, Return, Var
-from solift.link import Check, LinkError, generate, operators_test
+from solift.link import Check, Harness, LinkError, combine, generate, operators_test
 from solift.solidity import source
 from tests.models import quote
 from tests.projects import QUOTER_LINK
+
+HERE = pathlib.Path(__file__).resolve().parent
 
 LINK_TEST = """\
 // SPDX-License-Identifier: Apache-2.0
@@ -129,6 +133,141 @@ def test_a_link_parameter_is_symbolic_and_sets_a_cut_point_that_the_test_observe
     assert "    feed.set(int256(uint256(answer)), block.timestamp);\n" in test
     assert "      price: quoter.exposedFeedPrice()" in test
     assert 'import {Quoter} from "src/Quoter.sol";' in test
+
+
+# The quoter's harness, with the adapters and observed values of its link.
+SHARED = Harness(
+    "tests/fixtures/test/QuoterSetup.sol:QuoterSetup",
+    adapters=QUOTER_LINK.adapters,
+    observed=QUOTER_LINK.observed,
+    in_project=True,
+)
+
+
+def combined(harness=SHARED, model=None, **spec):
+    spec.setdefault("call", QUOTER_LINK.call)
+    return combine(model or quote(), harness, harness.setup, **spec)
+
+
+def test_a_harness_applies_whole_to_the_model_of_a_spec():
+    link = combined()
+    assert link == QUOTER_LINK
+    assert generate(quote(), link).files["QuoterQuoteLink.t.sol"] == LINK_TEST
+
+
+def test_a_harness_entry_for_a_name_that_the_model_does_not_read_is_refused():
+    """Nothing of a harness is skipped: an adapter or observed value that a model cannot take fails, and says where
+    the entry goes instead."""
+    for adapters, name in (
+        ({"held": "asset.set(held);"}, "held"),
+        ({("supply", "fee"): "vault.set(supply, fee);"}, "supply"),
+        ({("pot", "held"): "quoter.set(pot, held);"}, "held"),
+    ):
+        harness = dataclasses.replace(SHARED, adapters={**SHARED.adapters, **adapters})
+        with pytest.raises(
+            LinkError,
+            match=f"sets {name}, which Quoter._quote does not read: a harness's adapters apply to every spec that "
+            f"uses it, so give this one to the specs that read {name}",
+        ):
+            combined(harness)
+    observing = dataclasses.replace(SHARED, observed={**SHARED.observed, "shares": "vault.totalSupply()"})
+    with pytest.raises(LinkError, match="the harness observes shares, which Quoter._quote does not read"):
+        combined(observing)
+
+
+def test_a_harness_adapter_that_sets_a_parameter_of_the_check_applies():
+    """The cut-point pattern: a parameter, an adapter that sets the feed from it, and the input that the check observes.
+    The adapter has no input of the model in its key, and applies with a parameter of the harness or of the spec."""
+    feed = dataclasses.replace(SHARED, adapters={**SHARED.adapters, "answer": "feed.set(answer);"})
+    on_harness = combined(dataclasses.replace(feed, parameters={"answer": "uint128"}))
+    assert on_harness.adapters["answer"] == "feed.set(answer);"
+    assert on_harness.parameters == {"answer": "uint128"}
+    on_spec = combined(feed, parameters={"answer": "uint128"})
+    assert on_spec.adapters["answer"] == "feed.set(answer);" and on_spec.parameters == {"answer": "uint128"}
+    mixed = dataclasses.replace(SHARED, adapters={"held": "asset.set(held, answer);"}, parameters={"answer": "uint128"})
+    with pytest.raises(LinkError, match="the harness adapter for held sets held, which Quoter._quote does not read"):
+        combined(mixed)
+
+
+def test_an_input_that_the_harness_and_the_spec_both_set_is_refused():
+    with pytest.raises(LinkError, match="the harness and the spec both have an adapter for pot"):
+        combined(adapters={"pot": "token.set(pot);"})
+    with pytest.raises(LinkError, match="the harness and the spec both observe txGasPrice"):
+        combined(observed={"txGasPrice": "tx.gasprice"})
+    with pytest.raises(LinkError, match="sets cap twice"):
+        generate(quote(), combined(adapters={"cap": "quoter.setCap(cap);"}))
+    with pytest.raises(LinkError, match="sets pot twice"):
+        generate(quote(), combined(call="quoter.exposedQuote(_gas, pot)"))
+    with pytest.raises(LinkError, match="the harness and the spec both declare the parameter answer"):
+        combined(dataclasses.replace(SHARED, parameters={"answer": "uint128"}), parameters={"answer": "uint256"})
+    named = dataclasses.replace(SHARED, parameters={"pot": "uint256"})
+    with pytest.raises(LinkError, match="the link parameter pot has the name of an input"):
+        generate(quote(), combined(named))
+
+
+def test_the_adapters_of_the_spec_are_checked_strictly_and_run_after_the_harness():
+    with pytest.raises(LinkError, match="the link names held, which is not an input"):
+        generate(quote(), combined(adapters={"held": "asset.set(held);"}))
+    without_pot = dataclasses.replace(SHARED, adapters={k: v for k, v in SHARED.adapters.items() if k != "pot"})
+    link = combined(without_pot, adapters={"pot": "token.set(pot);"}, imports=('import {X} from "x.sol";',))
+    assert list(link.adapters)[-1] == "pot"
+    assert link.imports == ('import {X} from "x.sol";',)
+
+
+def test_a_harness_adapter_must_use_each_name_of_its_key():
+    with pytest.raises(LinkError, match="the harness adapter for held does not use it"):
+        Harness("Setup.sol:Setup", adapters={"held": "asset.set(0);"})
+
+
+def test_a_public_or_external_target_is_called_on_the_harness_instance_with_its_parameters():
+    model = dataclasses.replace(quote(), signature=("_gas", "_price"), visibility="external")
+    instance = dataclasses.replace(SHARED, instance="quoter")
+    assert combined(instance, model, call=None).call == "quoter._quote(_gas, _price)"
+    assert combined(instance, model).call == QUOTER_LINK.call
+    with pytest.raises(LinkError, match="has no call, and its harness names no instance"):
+        combined(SHARED, model, call=None)
+    with pytest.raises(LinkError, match="Quoter._quote is internal: give its spec a call"):
+        combined(instance, dataclasses.replace(model, visibility="internal"), call=None)
+    # A struct, signed or user-defined value type parameter is not a parameter of the model, also when a read of the
+    # model has its name.
+    for signature in (("_gas", "_price", "_meter"), ("_gas", "pot", "_price"), ("_gas", "")):
+        with pytest.raises(LinkError, match="which no input is: give its spec a call that builds it"):
+            combined(instance, dataclasses.replace(model, signature=signature), call=None)
+
+
+def make_harness(setup: str) -> Harness:
+    """A factory, whose harnesses are next to this module."""
+    return Harness(setup)
+
+
+def test_a_harness_is_next_to_the_module_that_makes_it_or_a_file_of_the_project(tmp_path, monkeypatch):
+    local = Harness("harness/Setup.sol:Setup")
+    assert (local.path, local.contract) == (str(HERE / "harness/Setup.sol"), "Setup")
+    monkeypatch.chdir(tmp_path)
+    assert dataclasses.replace(local, instance="setup").setup == local.setup
+    assert make_harness("Setup.sol:Setup").path == str(HERE / "Setup.sol")
+    assert Harness("/abs/Setup.sol:Setup").path == "/abs/Setup.sol"
+    scope = {"Harness": Harness}
+    exec("made = Harness('Setup.sol:Setup')", scope)
+    assert scope["made"].path == str(pathlib.Path(os.getcwd()).resolve() / "Setup.sol")
+    project = Harness.from_project("test/Setup.sol:Setup")
+    assert (project.path, project.in_project) == ("test/Setup.sol", True)
+    for setup, message in (
+        ("test/Setup.sol", "is not path:Contract"),
+        ("./test/Setup.sol:Setup", "is not a normalized path from the project's root"),
+        ("../Setup.sol:Setup", "is not a normalized path from the project's root"),
+        ("/abs/Setup.sol:Setup", "is not a normalized path from the project's root"),
+    ):
+        with pytest.raises(LinkError, match=re.escape(message)):
+            Harness.from_project(setup)
+    with pytest.raises(LinkError, match="stays at its path, so it takes no at"):
+        Harness.from_project("test/Setup.sol:Setup", at="test/Other.sol")
+
+
+def test_the_tests_import_forge_std_from_the_project_test_import():
+    link = combined(test_import="lib/forge-std/src/Test.sol")
+    operators = generate(quote(), link).files["QuoterQuoteOperators.t.sol"]
+    assert 'import {Test} from "lib/forge-std/src/Test.sol";' in operators
 
 
 def _smaller(contract: str, math: str, imports: tuple[str, ...] = ()) -> Model:

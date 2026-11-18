@@ -14,35 +14,40 @@ d84b3bf631, reverts on a price above 1e22 (fix.py).
 
 import z3
 
-from acceptance.resupply.project import PROJECT
-from solift.link import Link
-from solift.run import Spec
+from acceptance.resupply.project import PROJECT, SETUP
+from solift import Harness, Spec
 
 LTV_PRECISION = 10**5
 EXCHANGE_PRECISION = 10**18
 
+# The harness and the target are in harness/ResupplySetup.sol, which the overlay adds at _/ResupplySetup.sol. The
+# borrower's debt is a cut point: the check sets the pair's totals and shares from the parameters, and observes the
+# debt that results.
+RESUPPLY = Harness(
+    "harness/ResupplySetup.sol:ResupplySetup",
+    at=SETUP,
+    adapters={
+        "price": "stub.setPrice(price);",
+        ("storedRate", "maxLTV", "collateral", "totalAmount", "totalShares", "shares"): (
+            "pair.set(_borrower, maxLTV, storedRate, collateral, totalAmount, totalShares, shares);"
+        ),
+    },
+    observed={"borrowed": "pair.borrowerAmount(_borrower)"},
+    parameters={"totalAmount": "uint128", "totalShares": "uint128", "shares": "uint256"},
+)
+
 SOLVENT = Spec(
-    name="resupply-solvent",
-    target="_/ResupplySetup.sol:ResupplyPairHarness.solventAfterUpdate",
-    reads={
+    "resupply-solvent",
+    f"{SETUP}:ResupplyPairHarness.solventAfterUpdate",
+    {
         "IOracle(_exchangeRateInfo.oracle).getPrices(address(collateral))": "price",
         "exchangeRateInfo.exchangeRate": "storedRate",
         "maxLTV": "maxLTV",
         "_userCollateralBalance[_borrower]": "collateral",
         "totalBorrow.toAmount(_userBorrowShares[_borrower], true)": "borrowed",
     },
-    link=Link(
-        setup="_/ResupplySetup.sol:ResupplySetup",
-        call="pair.solventAfterUpdate(_borrower)",
-        adapters={
-            "price": "stub.setPrice(price);",
-            ("storedRate", "maxLTV", "collateral", "totalAmount", "totalShares", "shares"): (
-                "pair.set(_borrower, maxLTV, storedRate, collateral, totalAmount, totalShares, shares);"
-            ),
-        },
-        observed={"borrowed": "pair.borrowerAmount(_borrower)"},
-        parameters={"totalAmount": "uint128", "totalShares": "uint128", "shares": "uint256"},
-    ),
+    harness=RESUPPLY,
+    call="pair.solventAfterUpdate(_borrower)",
     project=PROJECT,
 )
 

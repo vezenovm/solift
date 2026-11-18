@@ -13,9 +13,11 @@ TEST = (direct.HARNESS / direct.TEST).read_text()
 
 
 def test_each_check_is_a_function_of_the_test_with_the_links_parameters():
-    link = [name for name in SOLVENT.reads.values() if name not in SOLVENT.link.observed]
-    assert [name for name, _ in PARAMETERS] == ["_borrower", *link, *SOLVENT.link.parameters]
-    assert {name: type_ for name, type_ in PARAMETERS if name in SOLVENT.link.parameters} == SOLVENT.link.parameters
+    link = [name for name in SOLVENT.reads.values() if name not in SOLVENT.harness.observed]
+    assert [name for name, _ in PARAMETERS] == ["_borrower", *link, *SOLVENT.harness.parameters]
+    assert {
+        name: type_ for name, type_ in PARAMETERS if name in SOLVENT.harness.parameters
+    } == SOLVENT.harness.parameters
     for check in CHECKS.values():
         match = re.search(rf"function {check.function}\(([^)]*)\)", TEST)
         assert match, check.function

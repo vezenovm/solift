@@ -30,7 +30,7 @@ import sys
 import time
 import traceback
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 
 import z3
 
@@ -38,7 +38,7 @@ from solift import forge, solvers
 from solift.extract import ExtractionError, extract
 from solift.halmos import HalmosEngine
 from solift.ir import Type
-from solift.link import Harness, Link, LinkError, generate, operators_test, placed
+from solift.link import Harness, LinkError, combine, generate, operators_test, placed
 from solift.solidity import names
 from solift.theorem import Terms, TheoremError, prove, theorem
 from solift.vectors import VectorError, sample, vectors_source
@@ -62,24 +62,38 @@ KNOWN_ERRORS = (
 
 @dataclass
 class Spec:
-    """What a run checks: the target function, its read map, its link, and its theorems. `outputs`, the output map,
-    names the writes and the external call arguments that the model has as values, as `{"$total": "total"}` or
-    `{"psm.buyGem(msg.sender,amt)": (None, "amount")}` with a name or None for each argument. `impossible` names the
-    outcomes (pays, zero, reverts) that the spec asserts no input reaches: a vector that reaches one fails the run. An
-    outcome that z3 proves no input reaches needs no entry; the record lists it as unreachable. `stem` names the
-    generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and
-    `quote` (solidity.names). `project` is a conventional Foundry project by default, whose root the command line gives
-    (workspace.Project)."""
+    """What a run checks: the target function, its read map, how the link reaches it, and its theorems.
+
+    `harness` is the setup of the link (link.Harness), which specs share. `call` calls the target from the harness, with
+    the inputs that are the target's parameters, such as `vault.exposedRedeem(shares, owner)`; without it the run calls
+    a public or external target on the harness's `instance`. `post` maps each output to the expression that the test
+    reads it from after the call. `adapters`, `observed`, `parameters` and `imports` are those of this spec alone, as on
+    a Harness. All of the harness applies to the spec, and both are checked strictly (link.combine).
+
+    `outputs`, the output map, names the writes and the external call arguments that the model has as values, as
+    `{"$total": "total"}` or `{"psm.buyGem(msg.sender,amt)": (None, "amount")}` with a name or None for each argument.
+    `impossible` names the outcomes (pays, zero, reverts) that the spec asserts no input reaches: a vector that reaches
+    one fails the run. An outcome that z3 proves no input reaches needs no entry; the record lists it as unreachable.
+    `stem` names the generated contracts, for two targets whose contract and function names give the same names, such
+    as `_quote` and `quote` (solidity.names). `project` is a conventional Foundry project by default, whose root the
+    command line gives (workspace.Project)."""
 
     name: str
     target: str
-    reads: dict[str, str]
-    link: Link
+    reads: dict[str, str] = field(default_factory=dict)
+    _: KW_ONLY
+    harness: Harness
+    call: str | None = None
+    post: dict = field(default_factory=dict)
+    outputs: dict = field(default_factory=dict)
+    adapters: dict = field(default_factory=dict)
+    observed: dict = field(default_factory=dict)
+    parameters: dict = field(default_factory=dict)
+    imports: tuple[str, ...] = ()
     project: Project = field(default_factory=Project)
-    theorems: list = field(default_factory=list)
     impossible: tuple[str, ...] = ()
     stem: str = ""
-    outputs: dict = field(default_factory=dict)
+    theorems: list = field(default_factory=list)
 
     def theorem(self, **options):
         def wrap(goal):
@@ -98,6 +112,7 @@ class _Checked:
 
     spec: Spec
     record: dict
+    setup: str = ""
     model: object = None
     generated: object = None
     samples: object = None
@@ -149,9 +164,9 @@ def run(
     try:
         record["versions"] = _tool_versions(engine)
         record["spec files"] = _spec_files(specs)
-        project, prepared = _prepared(specs)
-        for c, spec in zip(checked, prepared, strict=True):
-            c.spec = spec
+        project, setups = _prepared(specs)
+        for c, setup in zip(checked, setups, strict=True):
+            c.setup = setup
         record["project"] = _project(project)
         build = (workspace.fresh("build-out"), workspace.fresh("build-cache"))
         root = project.overlay(workspace, replace=replace)
@@ -163,7 +178,7 @@ def run(
     clock.stage("build")
 
     for c in checked:
-        _extract(c, infos, operators=len(specs) == 1, record=record, unread=unread)
+        _extract(c, infos, project, operators=len(specs) == 1, record=record, unread=unread)
     models = [c for c in checked if c.model is not None]
     stems: dict[str, str] = {}
     for c in list(models):
@@ -173,7 +188,9 @@ def run(
             models.remove(c)
             c.model = None
         stems.setdefault(stem, c.spec.name)
-    shared = operators_test([c.model for c in models], SHARED_OPERATORS) if len(specs) > 1 else None
+    shared = (
+        operators_test([c.model for c in models], SHARED_OPERATORS, project.test_import) if len(specs) > 1 else None
+    )
     files = {}
     for c in models:
         files.update(c.generated.files)
@@ -188,7 +205,7 @@ def run(
             try:
                 c.samples = sample(c.model, c.spec.impossible)
                 stem = names(c.model)[0].removesuffix("Model")
-                files[f"{stem}Vectors.t.sol"] = vectors_source(c.model, c.samples.vectors, c.spec.link.test_import)
+                files[f"{stem}Vectors.t.sol"] = vectors_source(c.model, c.samples.vectors, project.test_import)
             except Exception as err:
                 c.record["failures"].append(_failure(record, "vectors", err))
     clock.stage("extract and sample the vectors")
@@ -221,25 +238,27 @@ def run(
     return _finish(record, checked, guard, clock)
 
 
-def _prepared(specs: list[Spec]) -> tuple[Project, list[Spec]]:
-    """The specs' project with its inferred fields resolved and each `Harness` added to its overlay, and the specs on
-    it with each harness named as `path:Contract`. Specs may share a harness, and two harnesses at one place fail."""
+def _prepared(specs: list[Spec]) -> tuple[Project, list[str]]:
+    """The specs' project with its inferred fields resolved and each local harness added to its overlay, and the setup
+    of each spec as `path:Contract` from the overlay's root. Specs may share a harness, and two harnesses at one place
+    fail. A harness of the project must be under a copied path, as forge finds no AST for a linked file."""
     project = _rooted(specs[0].project).resolve()
     add, setups = dict(project.add), []
     for spec in specs:
-        setup = spec.link.setup
-        if isinstance(setup, Harness):
-            at, source = setup.destination(project.generated), pathlib.Path(setup.path).resolve()
-            if at in add and pathlib.Path(add[at]).resolve() != source:
-                raise WorkspaceError(f"two harnesses go to {at}: {add[at]} and {setup.path}")
-            add[at] = source
-            setup = f"{at}:{setup.contract}"
-        setups.append(setup)
-    project = dataclasses.replace(project, add=add)
-    return project, [
-        dataclasses.replace(spec, project=project, link=dataclasses.replace(spec.link, setup=setup))
-        for spec, setup in zip(specs, setups, strict=True)
-    ]
+        harness = spec.harness
+        if harness.in_project:
+            path = harness.path
+            if path not in add and not any(path == c or path.startswith(c.rstrip("/") + "/") for c in project.copy):
+                copied = ", ".join(project.copy) or "nothing"
+                raise WorkspaceError(f"the harness {path} is not under a path that the overlay copies ({copied})")
+            setups.append(harness.setup)
+            continue
+        at, source = harness.destination(project.generated), pathlib.Path(harness.path)
+        if at in add and pathlib.Path(add[at]).resolve() != source.resolve():
+            raise WorkspaceError(f"two harnesses go to {at}: {add[at]} and {harness.path}")
+        add[at] = source
+        setups.append(f"{at}:{harness.contract}")
+    return dataclasses.replace(project, add=add), setups
 
 
 def _rooted(project: Project) -> Project:
@@ -315,7 +334,8 @@ class _Clock:
 def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     """The terms of each spec's model, by spec name, from one build of the project: for checks that use the models
     without a run, such as a check of each deployed configuration. Raises the first extraction error."""
-    project, specs = _prepared(list(specs))
+    specs = list(specs)
+    project, _ = _prepared(specs)
     guard = project.guard(workspace)
     root = project.overlay(workspace)
     out, cache = workspace.fresh("ast-out"), workspace.fresh("ast-cache")
@@ -327,11 +347,26 @@ def load(specs: Sequence[Spec], workspace: Workspace) -> dict[str, Terms]:
     return loaded
 
 
-def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict, unread: dict | None = None) -> None:
+def _extract(
+    c: _Checked, infos: list[dict], project: Project, operators: bool, record: dict, unread: dict | None = None
+) -> None:
+    spec = c.spec
     try:
-        extraction = extract(infos, c.spec.target, c.spec.reads, c.spec.outputs, unread)
-        c.model = dataclasses.replace(extraction.model, stem=c.spec.stem)
-        c.generated = generate(c.model, c.spec.link, operators=operators)
+        extraction = extract(infos, spec.target, spec.reads, spec.outputs, unread)
+        c.model = dataclasses.replace(extraction.model, stem=spec.stem)
+        link = combine(
+            c.model,
+            spec.harness,
+            c.setup,
+            call=spec.call,
+            post=spec.post,
+            adapters=spec.adapters,
+            observed=spec.observed,
+            parameters=spec.parameters,
+            imports=spec.imports,
+            test_import=project.test_import,
+        )
+        c.generated = generate(c.model, link, operators=operators)
     except Exception as err:
         c.record["failures"].append(_failure(record, "extract", err))
         c.model = None
@@ -350,6 +385,7 @@ def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict, unre
             for o in c.model.outputs
         ],
     }
+    c.record["harness"] = {"setup": c.setup, "call": link.call}
 
 
 def _theorems(c: _Checked, only: tuple[str, ...] | None, record: dict) -> None:

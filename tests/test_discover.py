@@ -97,7 +97,7 @@ def test_a_function_without_a_value_gets_its_call_arguments_as_outputs(build):
     assert found.outputs == {"SWAPPER.buy(msg.sender,amount)": (None, "amount2")}
     assert found.read_map == {"SWAPPER.fee()": "fee"}
     text = report(found)
-    assert "outputs={\n    'SWAPPER.buy(msg.sender,amount)': (None, 'amount2'),  # an output\n}," in text
+    assert "    outputs={\n        'SWAPPER.buy(msg.sender,amount)': (None, 'amount2'),  # an output\n    }," in text
     assert "        'amount2': '/* read amount2 after the call */'," in text
     assert as_json(found)["outputs"] == [{"key": "SWAPPER.buy(msg.sender,amount)", "names": (None, "amount2")}]
 

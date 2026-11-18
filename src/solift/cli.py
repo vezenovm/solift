@@ -7,9 +7,9 @@ bytecode. The project root is `--root`, else the root that the specs' project na
 `--profile` builds with that foundry profile in place of the project's.
 
 `solift reads TARGET [--root PATH] [--profile NAME] [--link PATH ...] [--copy PATH ...] [--json]` builds the project and
-prints the read map that the target needs, a link skeleton, the internal calls that a read map entry can cut, and the
-writes and events that the model leaves out (discover.py). `--link` and `--copy` set the overlay's entries in place of
-the ones that `Project` infers. A build that fails prints forge's output and the overlay's entries.
+prints the read map that the target needs, a harness and spec skeleton, the internal calls that a read map entry can
+cut, and the writes and events that the model leaves out (discover.py). `--link` and `--copy` set the overlay's entries
+in place of the ones that `Project` infers. A build that fails prints forge's output and the overlay's entries.
 
 A spec module can also run itself with `sys.exit(main(SPEC))` and `python -m <module>`, with the options of `run`.
 The forge binary comes from SOLIFT_FORGE. The record is JSON (run.py).
@@ -51,7 +51,7 @@ def entrypoint(argv: list[str] | None = None) -> int:
     runs = commands.add_parser("run", help="run the specs of a module")
     runs.add_argument("specs", help="the module of the specs, as package.module or package.module:ATTR")
     _run_options(runs)
-    reads = commands.add_parser("reads", help="print the read map and a link skeleton for a target")
+    reads = commands.add_parser("reads", help="print the read map and a harness and spec skeleton for a target")
     reads.add_argument("target", help="the function, as path:Contract.function")
     reads.add_argument("--root", type=pathlib.Path, default=pathlib.Path("."), help="the foundry project")
     reads.add_argument("--profile", help="the foundry profile to build with")

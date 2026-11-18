@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import re
+import sys
 from dataclasses import dataclass, field
 
 from solift.ir import Model, Op, parts, walk
@@ -37,35 +38,90 @@ class LinkError(Exception):
     pass
 
 
+WORD = r"\b[A-Za-z_]\w*\b"
+
+
 @dataclass(frozen=True)
 class Harness:
-    """A harness kept next to the spec, outside the project, as the setup of a link. The run adds `path` to the overlay
-    at `at`, a path in the overlay that is by default `<generated>/harness/<file name>`, and the link test inherits
-    `contract`. Its imports resolve from that place, so a file that it imports by a relative path goes in
-    `Project.add` too."""
+    """The setup of the links: a Solidity contract that deploys the contract under test, and how the link test sets each
+    input through it. Specs share a harness, and each spec that uses it takes all of it (`combine`).
 
-    path: pathlib.Path
-    contract: str
+    `setup` is `path:Contract`. A relative path is a file next to the module that makes the Harness (a factory function
+    makes it next to the factory's module), and the run adds it to the overlay at `at`, by default
+    `<generated>/harness/<file name>`. Its imports resolve from that place, so it imports the project's files by their
+    path from the root. `Harness.from_project` names a file of the project instead, from its root, which the overlay
+    must copy.
+
+    `adapters` maps an input name, or a tuple of names, to the Solidity statements that set it, such as a struct
+    argument built from the inputs for its fields. `observed` maps an input name to the expression that the test reads
+    it from, before the call. `parameters` maps more symbolic parameters of the check, which are not inputs, to their
+    types: an adapter can use them to set what the contract reads, and an observed expression reads the input that
+    results, as for a cut point such as a price that the contract computes from a feed. `imports` are more import
+    directives that the adapters need. `instance` names the harness variable that holds the deployed contract, so that a
+    spec of a public or external target can leave out its call."""
+
+    setup: str
+    adapters: dict = field(default_factory=dict)
+    observed: dict = field(default_factory=dict)
+    parameters: dict = field(default_factory=dict)
+    imports: tuple[str, ...] = ()
     at: str | None = None
+    instance: str | None = None
+    in_project: bool = False
+
+    def __post_init__(self):
+        path, colon, contract = self.setup.rpartition(":")
+        if not colon or not path or not re.fullmatch(r"[A-Za-z_]\w*", contract):
+            raise LinkError(f"the harness {self.setup!r} is not path:Contract")
+        if self.in_project:
+            pure = pathlib.PurePosixPath(path)
+            if pure.is_absolute() or ".." in pure.parts or str(pure) != path:
+                raise LinkError(f"the harness {path} of the project is not a normalized path from the project's root")
+            if self.at is not None:
+                raise LinkError(f"the harness {path} of the project stays at its path, so it takes no at")
+        elif not pathlib.Path(path).is_absolute():
+            object.__setattr__(self, "setup", f"{(_caller_directory() / path).resolve()}:{contract}")
+        for key, code in self.adapters.items():
+            for name in key if isinstance(key, tuple) else (key,):
+                if not re.search(rf"\b{re.escape(name)}\b", code):
+                    raise LinkError(f"the harness adapter for {name} does not use it: {code}")
+
+    @classmethod
+    def from_project(cls, setup: str, **options) -> Harness:
+        """A harness that is a file of the project, as `path:Contract` with the path from the project's root."""
+        return cls(setup, in_project=True, **options)
+
+    @property
+    def path(self) -> str:
+        return self.setup.rpartition(":")[0]
+
+    @property
+    def contract(self) -> str:
+        return self.setup.rpartition(":")[2]
 
     def destination(self, generated: str) -> str:
         return self.at or f"{generated}/harness/{pathlib.Path(self.path).name}"
 
 
+def _caller_directory() -> pathlib.Path:
+    """The directory of the module that makes a Harness: the first frame outside this module and dataclasses, or the
+    current directory for code without a file, as in a REPL."""
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_globals.get("__name__") in (__name__, "dataclasses"):
+        frame = frame.f_back
+    file = frame.f_globals.get("__file__") if frame is not None else None
+    return pathlib.Path(file).resolve().parent if file else pathlib.Path.cwd()
+
+
 @dataclass(frozen=True)
 class Link:
-    """`setup` is the harness as `path:Contract`, with the path relative to the project root, or a `Harness` that the
-    run adds to the overlay. `call` calls the contract
-    under test from the harness, such as `quoter.exposedQuote(_gas, _price)`. `adapters` maps
-    an input name, or a tuple of names, to the Solidity statements that set it, such as a struct argument built from the
-    inputs for its fields. `observed` maps an input name to the expression that the test reads it from. `parameters`
-    maps more symbolic parameters of the check, which are not inputs, to their types: an adapter can use them to set
-    what the contract reads, and an observed expression reads the input that results, as for a cut point such as a
-    price that the contract computes from a feed. `imports` are more import directives that the adapters need. `post`
-    maps each output of the model to the expression that the test reads it from after the call, such as
-    `pool.leftOf(address(this))` for a write or `psm.lastAmount()` for an argument that a stub records."""
+    """The link of one model, which `combine` makes from its spec and harness: `setup` is the harness as `path:Contract`
+    from the overlay's root, `call` calls the contract under test from the harness, such as `quoter.exposedQuote(_gas,
+    _price)`, and `post` maps each output of the model to the expression that the test reads it from after the call,
+    such as `pool.leftOf(address(this))` for a write or `psm.lastAmount()` for an argument that a stub records. The
+    other fields are those of `Harness`."""
 
-    setup: str | Harness
+    setup: str
     call: str
     adapters: dict = field(default_factory=dict)
     observed: dict = field(default_factory=dict)
@@ -73,6 +129,82 @@ class Link:
     imports: tuple[str, ...] = ()
     parameters: dict = field(default_factory=dict)
     post: dict = field(default_factory=dict)
+
+
+def combine(
+    model: Model,
+    harness: Harness,
+    setup: str,
+    call: str | None = None,
+    post: dict | None = None,
+    adapters: dict | None = None,
+    observed: dict | None = None,
+    parameters: dict | None = None,
+    imports: tuple[str, ...] = (),
+    test_import: str = "forge-std/Test.sol",
+) -> Link:
+    """The link of a model from its harness and the parts that its spec gives itself. The whole harness applies to
+    every spec that uses it, and `generate` checks its parts as strictly as the spec's own: each name of an adapter's
+    key is an input of the model or a parameter of the check, and each observed value is of an input. So a harness
+    holds what its specs share, and a spec takes what it alone reads itself. An input that both set is refused."""
+    post, adapters, observed, parameters = post or {}, adapters or {}, observed or {}, parameters or {}
+    inputs = {v.name for v in model.inputs}
+    for name in harness.parameters:
+        if name in parameters:
+            raise LinkError(f"the harness and the spec both declare the parameter {name}")
+    checked = {**harness.parameters, **parameters}
+    for key in harness.adapters:
+        for name in key if isinstance(key, tuple) else (key,):
+            if name not in inputs and name not in checked:
+                raise LinkError(
+                    f"the harness adapter for {_label(key)} sets {name}, which {model.name} does not read: a harness's "
+                    f"adapters apply to every spec that uses it, so give this one to the specs that read {name}"
+                )
+    for name in harness.observed:
+        if name not in inputs:
+            raise LinkError(
+                f"the harness observes {name}, which {model.name} does not read: a harness's observed values apply to "
+                f"every spec that uses it, so give this one to the specs that read {name}"
+            )
+    for key in adapters:
+        if key in harness.adapters:
+            raise LinkError(f"the harness and the spec both have an adapter for {_label(key)}")
+    for name in observed:
+        if name in harness.observed:
+            raise LinkError(f"the harness and the spec both observe {name}")
+    return Link(
+        setup=setup,
+        call=call if call is not None else _derived_call(model, harness),
+        adapters={**harness.adapters, **adapters},
+        observed={**harness.observed, **observed},
+        test_import=test_import,
+        imports=tuple(dict.fromkeys((*harness.imports, *imports))),
+        parameters=checked,
+        post=post,
+    )
+
+
+def _label(key) -> str:
+    return f"({', '.join(key)})" if isinstance(key, tuple) else key
+
+
+def _derived_call(model: Model, harness: Harness) -> str:
+    """The call of a public or external target on the harness's instance, with the target's parameters, when each of
+    them is a parameter of the model: a struct, signed or user-defined value type parameter is not, and needs a call
+    that builds it."""
+    if harness.instance is None:
+        raise LinkError(f"the spec of {model.name} has no call, and its harness names no instance to call it on")
+    if model.visibility not in ("public", "external"):
+        raise LinkError(
+            f"{model.name} is {model.visibility or 'not external'}: give its spec a call, through the harness"
+        )
+    names = tuple(p.name for p in model.function.params)
+    if any(not name for name in model.signature) or model.signature != names:
+        missing = [name or "an unnamed parameter" for name in model.signature if not name or name not in names]
+        raise LinkError(
+            f"{model.name} takes {', '.join(missing)}, which no input is: give its spec a call that builds it"
+        )
+    return f"{harness.instance}.{model.function.name}({', '.join(names)})"
 
 
 @dataclass(frozen=True)
@@ -130,7 +262,7 @@ def _covered(model: Model, link: Link, arguments: str) -> dict[str, str]:
             raise LinkError(f"the link sets {name} twice")
         covered[name] = how
 
-    for name in re.findall(r"\b[A-Za-z_]\w*\b", arguments):
+    for name in re.findall(WORD, arguments):
         if name in inputs:
             cover(name, "call")
     for name in link.parameters:

@@ -68,7 +68,8 @@ class Workspace:
 class Project:
     """`root` is None until the command line gives it, for a project outside this repo. `add` maps a project path that
     the project does not have to the local file that the overlay writes there. `generated` is the overlay directory for
-    the generated files. It must be inside the profile's test directory, so that forge builds them.
+    the generated files. It must be inside the profile's test directory, so that forge builds them. `test_import` is
+    where the generated tests import forge-std's Test from.
 
     `link`, `copy` and `generated` default to None, which `resolve` infers from the project's foundry configuration once
     the root is known: a conventional Foundry project needs none of them. A field given as `()` stays empty."""
@@ -79,6 +80,7 @@ class Project:
     copy: tuple[str, ...] | None = None
     add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
     generated: str | None = None
+    test_import: str = "forge-std/Test.sol"
 
     def __post_init__(self):
         # The overlay links into the root, so a relative root would give links to themselves.

@@ -84,11 +84,11 @@ def test_the_root_is_the_option_else_the_specs_else_the_current_directory_and_th
     other.mkdir()
 
     def spec(project: str) -> str:
-        link = "Link('test/A.sol:A', 'a.f()')"
-        return f"from solift import Link, Project, Spec\n\nSPEC = Spec('a', 'src/A.sol:A.f', {{}}, {link}{project})\n"
+        harness = "harness=Harness.from_project('test/A.sol:A')"
+        return f"from solift import Harness, Project, Spec\n\nSPEC = Spec('a', 'src/A.sol:A.f', {harness}{project})\n"
 
     write(specs_dir, "rootless", spec(""))
-    write(specs_dir, "rooted", spec(f", Project({str(other)!r}, profile='deploy')"))
+    write(specs_dir, "rooted", spec(f", project=Project({str(other)!r}, profile='deploy')"))
     work = ["--workspace", str(tmp_path / "work")]
     assert entrypoint(["run", "userspecs.rootless", *work]) == 0
     assert entrypoint(["run", "userspecs.rooted", *work]) == 0
@@ -175,18 +175,24 @@ def test_a_harness_goes_into_the_overlay_once_and_two_harnesses_at_one_place_fai
     project = Project(
         root=ROOT, link=("foundry.toml", "lib"), copy=("tests/fixtures",), generated="tests/fixtures/test/solift"
     )
-    link = dataclasses.replace(SPEC.link, setup=Harness(harness, "VaultSetup"))
-    a, b = (dataclasses.replace(SPEC, name=name, link=link, project=project) for name in ("a", "b"))
-    resolved, (pa, pb) = _prepared([a, b])
+    shared = Harness(f"{harness}:VaultSetup")
+    a, b = (dataclasses.replace(SPEC, name=name, harness=shared, project=project) for name in ("a", "b"))
+    resolved, setups = _prepared([a, b])
     at = "tests/fixtures/test/solift/harness/VaultSetup.sol"
     assert resolved.add == {at: harness.resolve()}
-    assert pa.link.setup == pb.link.setup == f"{at}:VaultSetup" and pa.project == resolved
+    assert setups == [f"{at}:VaultSetup"] * 2 and resolved.link == project.link
     other = tmp_path / "other"
     other.mkdir()
     (other / "VaultSetup.sol").write_text("// another harness\n")
-    c = dataclasses.replace(a, link=dataclasses.replace(link, setup=Harness(other / "VaultSetup.sol", "VaultSetup")))
+    c = dataclasses.replace(a, harness=Harness(f"{other / 'VaultSetup.sol'}:VaultSetup"))
     with pytest.raises(WorkspaceError, match="two harnesses go to"):
         _prepared([a, c])
+    linked = dataclasses.replace(a, harness=Harness.from_project("lib/forge-std/src/Test.sol:Test"))
+    with pytest.raises(WorkspaceError, match="the harness lib/forge-std/src/Test.sol is not under a path that the"):
+        _prepared([linked])
+    assert _prepared([SPEC])[1] == ["tests/fixtures/test/QuoterSetup.sol:QuoterSetup"]
+    copied = dataclasses.replace(project, copy=(*project.copy, "lib/forge-std/src/Test.sol"), link=("foundry.toml",))
+    assert _prepared([dataclasses.replace(linked, project=copied)])[1] == ["lib/forge-std/src/Test.sol:Test"]
 
 
 def test_the_standalone_vault_example_runs_from_its_own_directory(tmp_path, monkeypatch):
@@ -229,8 +235,10 @@ def test_load_adds_a_harness_that_holds_the_target(tmp_path):
         "  function twice(uint256 _x) external pure returns (uint256) {\n    return _x * 2;\n  }\n}\n"
     )
     at = "tests/fixtures/test/solift/harness/Doubler.sol"
-    link = dataclasses.replace(SPEC.link, setup=Harness(harness, "Doubler"))
-    spec = dataclasses.replace(SPEC, name="doubler", target=f"{at}:Doubler.twice", reads={}, link=link, theorems=[])
+    doubler = Harness(f"{harness}:Doubler")
+    spec = dataclasses.replace(
+        SPEC, name="doubler", target=f"{at}:Doubler.twice", reads={}, harness=doubler, theorems=[]
+    )
     (q,) = load([spec], Workspace(tmp_path / "work")).values()
     assert z3.simplify(q.at(_x=21).value).as_long() == 42
 

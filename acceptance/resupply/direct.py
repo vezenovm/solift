@@ -41,7 +41,7 @@ import time
 
 from acceptance.common import pinned
 from acceptance.resupply import fix
-from acceptance.resupply.project import COMMIT, HARNESS, PROJECT
+from acceptance.resupply.project import COMMIT, HARNESS, PROJECT, SETUP
 from acceptance.resupply.solvency import (
     solvent_debt_within_twice_the_ltv,
     solvent_debt_within_twice_the_ltv_up_to_a_price_of_1e36,
@@ -167,7 +167,8 @@ def run_check(
 ) -> dict:
     """Builds the overlay with the test, runs the helpers' tests, replays solift's counterexample, runs Halmos on the
     check under the budget, and replays each counterexample that Halmos reports."""
-    project = dataclasses.replace(PROJECT, root=root, add={**PROJECT.add, f"_/{TEST}": HARNESS / TEST})
+    added = {SETUP: HARNESS / "ResupplySetup.sol", f"_/{TEST}": HARNESS / TEST}
+    project = dataclasses.replace(PROJECT, root=root, add={**PROJECT.add, **added})
     record = {
         "check": check.name,
         "theorem": check.theorem,

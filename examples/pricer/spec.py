@@ -4,46 +4,46 @@ tests/fixtures/test/PricerSetup.sol. Run them with the Quoter from the repo root
 import z3
 
 from examples.quoter.spec import PROJECT
-from solift.link import Link
-from solift.run import Spec
+from solift import Harness, Spec
 
 PRICER = "tests/fixtures/contracts/Pricer.sol"
-SETUP = "tests/fixtures/test/PricerSetup.sol:PricerSetup"
+
+# One harness for both specs, which applies whole to each: the setup, the import that the adapters need, and the
+# instance. Each spec sets what its own model reads.
+HARNESS = Harness.from_project(
+    "tests/fixtures/test/PricerSetup.sol:PricerSetup",
+    imports=(f'import {{Pricer}} from "{PRICER}";',),
+    instance="pricer",
+)
 
 PRICED = Spec(
-    name="pricer-priced",
-    target=f"{PRICER}:Pricer._priced",
-    reads={
+    "pricer-priced",
+    f"{PRICER}:Pricer._priced",
+    {
         "_meter.used": "used",
         "_meter.fresh": "fresh",
         "_meter.paid": "paid",
         "TOKEN": "token",
         "TOKEN.balanceOf(tx.origin)": "originBalance",
     },
-    link=Link(
-        setup=SETUP,
-        call="pricer.exposedPriced(_kind, _token, meter)",
-        adapters={
-            ("used", "fresh", "paid"): (
-                "Pricer.Meter memory meter = Pricer.Meter({startGas: 0, used: used, fresh: fresh, paid: paid});"
-            ),
-            "originBalance": "token.set(tx.origin, originBalance);",
-        },
-        observed={"token": "address(pricer.TOKEN())"},
-        imports=(f'import {{Pricer}} from "{PRICER}";',),
-    ),
+    harness=HARNESS,
+    call="pricer.exposedPriced(_kind, _token, meter)",
+    adapters={
+        ("used", "fresh", "paid"): (
+            "Pricer.Meter memory meter = Pricer.Meter({startGas: 0, used: used, fresh: fresh, paid: paid});"
+        ),
+        "originBalance": "token.set(tx.origin, originBalance);",
+    },
+    observed={"token": "address(pricer.TOKEN())"},
     project=PROJECT,
 )
 
 QUOTE_FOR = Spec(
-    name="pricer-quote-for",
-    target=f"{PRICER}:Pricer.quoteFor",
-    reads={"$rates[_kind].floor": "floor", "$rates[_kind].cap": "cap", "_price()": "price"},
-    link=Link(
-        setup=SETUP,
-        call="pricer.quoteFor(_kind)",
-        adapters={("floor", "cap"): "pricer.setRate(_kind, floor, cap);", "price": "token.set(address(0xFEE), price);"},
-    ),
+    "pricer-quote-for",
+    f"{PRICER}:Pricer.quoteFor",
+    {"$rates[_kind].floor": "floor", "$rates[_kind].cap": "cap", "_price()": "price"},
+    harness=HARNESS,
+    adapters={("floor", "cap"): "pricer.setRate(_kind, floor, cap);", "price": "token.set(address(0xFEE), price);"},
     project=PROJECT,
 )
 
