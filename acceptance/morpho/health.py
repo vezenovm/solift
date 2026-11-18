@@ -71,7 +71,7 @@ def mul_div_up_rounds_up(q):
     """where it does not revert, mulDivUp(x, y, d) * d >= x * y: Certora's checkSummaryMulDivUp"""
     x, y, d = (q.free(name, "uint256") for name in ("x", "y", "d"))
     call = q.call("mulDivUp", x, y, d)
-    return z3.Or(call.reverts, call.value * d >= x * y)
+    return z3.Or(call.reverts, call.result * d >= x * y)
 
 
 @HEALTHY.theorem(witness=runs("mulDivDown"))
@@ -79,4 +79,4 @@ def mul_div_down_rounds_down(q):
     """where it does not revert, mulDivDown(x, y, d) * d <= x * y: Certora's checkSummaryMulDivDown"""
     x, y, d = (q.free(name, "uint256") for name in ("x", "y", "d"))
     call = q.call("mulDivDown", x, y, d)
-    return z3.Or(call.reverts, call.value * d <= x * y)
+    return z3.Or(call.reverts, call.result * d <= x * y)

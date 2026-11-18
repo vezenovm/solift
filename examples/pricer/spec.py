@@ -69,4 +69,4 @@ def priced_refund_is_at_most_a_fifth(q):
 @QUOTE_FOR.theorem(assume=("no-revert",), witness=priced)
 def quote_at_most_the_units_at_the_price(q):
     """the quote is at most the units of the kind at the price"""
-    return q.result <= q.call("units", q._kind).value * q.price
+    return q.result <= q.call("units", q._kind).result * q.price

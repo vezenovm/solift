@@ -3,7 +3,7 @@ import z3
 
 from examples.quoter.spec import SPEC
 from solift import ops, solvers
-from solift.ir import UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var
+from solift.ir import UINT256, Assign, Call, Const, Function, If, Let, Model, Output, Read, Return, Tuple, Var, tuple_of
 from solift.theorem import Terms, TheoremError, prove, theorem
 from tests.models import quote
 
@@ -194,10 +194,10 @@ def test_a_theorem_can_run_a_called_function_name_a_declared_value_and_fix_input
         Return(x),
     )
     q = Terms(Model("C", Function("f", (a, b), UINT256, body), callees=(double,)))
-    assert z3.simplify(q.call("double", 21).value).as_long() == 42
+    assert z3.simplify(q.call("double", 21).result).as_long() == 42
     assert z3.simplify(z3.substitute(q.declared("x"), (q.a, z3.IntVal(5)))).as_long() == 10
     fixed = q.at(a=5, b=1)
-    assert z3.simplify(fixed.value).as_long() == 11 and z3.simplify(fixed.locals["x"]).as_long() == 11
+    assert z3.simplify(fixed.result).as_long() == 11 and z3.simplify(fixed.locals["x"]).as_long() == 11
     assert z3.is_false(z3.simplify(fixed.reverts))
     with pytest.raises(AttributeError, match="has no called function f"):
         q.call("f", 1, 2)
@@ -205,6 +205,66 @@ def test_a_theorem_can_run_a_called_function_name_a_declared_value_and_fix_input
         q.declared("y")
     with pytest.raises(AttributeError, match="has no input c"):
         q.at(c=1)
+
+
+def proves(claim: z3.BoolRef) -> bool:
+    solver = z3.Solver()
+    solver.add(z3.Not(claim))
+    return solver.check() == z3.unsat
+
+
+def test_a_view_at_some_inputs_has_the_interface_of_the_terms_and_a_helper_takes_it():
+    """f(a, b) with x = double(a) + b and a callee g(p) = p + c that reads the input c; f returns x and outputs a + c
+    as its write of $total."""
+    a, b, c, x, p, total = (Var(n, input=n in "abc") for n in ("a", "b", "c", "x", "p", "total"))
+    double = Function("double", (p,), UINT256, (Return(ops.make("mul", p, Const(2))),))
+    plus_c = Function("g", (p,), UINT256, (Return(ops.make("add", p, c)),))
+    body = (
+        Let(x, Call("double", (a,), UINT256)),
+        Assign(x, ops.make("add", x, b)),
+        Return(Tuple((x, ops.make("add", a, c)), tuple_of((UINT256, UINT256)))),
+    )
+    function = Function("f", (a, b), tuple_of((UINT256, UINT256)), body, results=(None, total))
+    outputs = (Output(total, "$total", "write"),)
+    q = Terms(Model("C", function, reads=(Read(c, "$c"),), callees=(double, plus_c), outputs=outputs))
+
+    def helper(t):
+        return t.result + t.a + t.post.total + t.locals["x"] + t.declared("x")
+
+    view = q.at(a=5, b=1)
+    assert z3.simplify(view.a).as_long() == 5 and view.c.eq(q.c)
+    assert proves(helper(view) == z3.substitute(helper(q), (q.a, z3.IntVal(5)), (q.b, z3.IntVal(1))))
+    assert proves(view.post.total == 5 + q.c) and proves(view.x == 11)
+    # An expression is used as given, and a call's arguments too: nothing is replaced twice.
+    shifted = q.at(a=q.a + 1)
+    assert shifted.a.eq(q.a + 1)
+    assert proves(shifted.call("double", shifted.a).result == 2 * (q.a + 1))
+    assert proves(shifted.result == 2 * (q.a + 1) + q.b)
+    # A nested view replaces by name, each value as given.
+    nested = q.at(a=q.b).at(b=1)
+    assert nested.a.eq(q.b) and z3.simplify(nested.b).as_long() == 1
+    assert proves(nested.result == 2 * q.b + 1)
+    assert proves(q.at(a=1).at(a=2).result == 4 + q.b)
+    # A callee reads the inputs of the view.
+    assert proves(q.at(c=3).call("g", 1).result == 4) and proves(q.call("g", 1).result == 1 + q.c)
+
+
+def test_the_old_name_value_raises_an_error_that_names_result_and_an_input_named_value_stays_one(q):
+    with pytest.raises(AttributeError, match="value is now result"):
+        q.at(_gas=1).value  # noqa: B018
+    with pytest.raises(AttributeError, match="value is now result"):
+        q.call("_withMargin", 1, 2).value  # noqa: B018
+    value = Var("value", input=True)
+    named = Terms(Model("C", Function("f", (value,), UINT256, (Return(ops.make("add", value, Const(1))),))))
+    assert z3.simplify(named.at(value=3).value).as_long() == 3
+
+    @theorem(given=lambda h: h.call("_withMargin", h.cost, 1).value > 0, witness=lambda q: True)
+    def old(q):
+        """a statement"""
+        return q.result >= 0
+
+    with pytest.raises(AttributeError, match="value is now result"):
+        prove(old, q)
 
 
 def test_a_counterexample_without_the_values_it_shows_fails(q, monkeypatch):
@@ -315,18 +375,18 @@ def test_a_theorem_on_a_callee_names_it_and_its_arguments_count_for_the_lemma_do
     def halves(q):
         """where it does not revert, halve(y) * 2 <= y"""
         call = q.call("halve", q.free("y"))
-        return z3.Or(call.reverts, call.value * 2 <= q.free("y"))
+        return z3.Or(call.reverts, call.result * 2 <= q.free("y"))
 
     @theorem(witness=lambda q: q.free("y") > 0)
     def halves_a_uint128(q):
         """halve(y) * 2 <= y for a uint128 y"""
         call = q.call("halve", q.free("y", "uint128"))
-        return z3.Or(call.reverts, call.value * 2 <= q.free("y"))
+        return z3.Or(call.reverts, call.result * 2 <= q.free("y"))
 
     @theorem(witness=lambda q: True)
     def halves_minus_one(q):
         """halve(-1) is below 1"""
-        return q.call("halve", -1).value < 1
+        return q.call("halve", -1).result < 1
 
     found = {t.id: prove(t, q) for t in (halves, halves_a_uint128, halves_minus_one)}
     assert {i: (r.lemma_domain, r.callees) for i, r in found.items()} == {
@@ -424,8 +484,8 @@ def test_a_result_after_a_revert_on_its_path_does_not_establish_the_lemma_domain
     q = Terms(Model("C", Function("f", (a,), UINT256, (Return(Call("halve", (a,), UINT256)),)), callees=(halve,)))
     goals = {
         "result": lambda q: z3.Implies(q.a < 5, q.result < 0),
-        "at": lambda q: z3.Implies(q.a < 5, q.at(a=q.a).value < 0),
-        "call": lambda q: z3.Implies(q.a < 5, q.call("halve", q.a).value < 0),
+        "at": lambda q: z3.Implies(q.a < 5, q.at(a=q.a).result < 0),
+        "call": lambda q: z3.Implies(q.a < 5, q.call("halve", q.a).result < 0),
     }
     found = {}
     for name, goal in goals.items():

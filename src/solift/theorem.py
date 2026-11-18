@@ -44,7 +44,7 @@ from solift.smt import domain, symbols, terms, terms_of_call
 
 ASSUMPTIONS = {"no-revert": "the model does not revert", "within-lemma-domain": "no mulDiv operand reaches 2**128"}
 # The names that an earlier version used, and the names that took their place.
-RENAMED = {"outside": "outside_lemma_domain"}
+RENAMED = {"outside": "outside_lemma_domain", "value": "result"}
 DEFAULT_TIMEOUT_MS = 300_000
 # The kinds of a free variable: an unbounded integer, a bool, or an unsigned Solidity type, which bounds it.
 KINDS = {"int": None, "bool": None, "address": 2**160, **{f"uint{n}": 2**n for n in range(8, 257, 8)}}
@@ -68,16 +68,34 @@ class Evaluation:
     witness: bool
 
 
+class _Scope:
+    """What the views of one theorem share: its free variables and their kinds, the runs of the model that it makes,
+    and whether its witness is running."""
+
+    def __init__(self):
+        self.free_variables: dict[str, z3.ExprRef] = {}
+        self.kinds: dict[str, str] = {}
+        self.evaluations: list[Evaluation] = []
+        self.witnessing = False
+
+
 class Terms:
-    """A model's terms, by their Solidity names: `result`, `reverts`, `outside_lemma_domain`, each input, and each local
-    of the modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for
-    each value (`q.result[1]`). `post` holds each output by its name (`q.post.left`): the value that the function writes
-    there, or passes to an external call. `declared(name)` is a local's value where it is declared, before any
-    assignment. A parameter that the function assigns is an input and a local of one name: `q.<name>` is its value at
-    the call, and `locals[name]` its value at the return. `free(name, kind)` adds a variable that the theorem quantifies
-    over, such as `shares`. `call(name, *args)` runs a function of the model on terms, and `at(**values)` gives the
-    terms with inputs replaced, as for one configuration. Each theorem proves on its own `scoped()` view, which records
-    its free variables and the runs of the model that it makes (`evaluations`)."""
+    """A model's terms on a vector of input values, by their Solidity names: `result`, `reverts`,
+    `outside_lemma_domain`, each input, and each local of the modeled function at the return that runs. `result` of a
+    function of several returns is a tuple, one term for each value (`q.result[1]`). `post` holds each output by its
+    name (`q.post.left`): the value that the function writes there, or passes to an external call. `declared(name)` is
+    a local's value where it is declared, before any assignment. A parameter that the function assigns is an input and
+    a local of one name: `q.<name>` is its value at the call, and `locals[name]` its value at the return. `free(name,
+    kind)` adds a variable that the theorem quantifies over, such as `shares`. `call(name, *args)` runs a function of
+    the model on terms.
+
+    `at(**values)` is the same interface on the model with the named inputs replaced, as for one configuration: each
+    value is used as given (a number becomes a constant), `q.at(a=x).a` is `x`, a nested `at` replaces by name again,
+    and every term of the view is the model's term with each input's symbol replaced by its value at once. A helper
+    written for `q` takes a view too.
+
+    Each theorem proves on its own `scoped()` view, which records its free variables and the runs of the model that it
+    makes (`evaluations`), and which its `at` views share."""
 
     def __init__(self, model: Model):
         self.model = model
@@ -87,67 +105,101 @@ class Terms:
         self._declared, self._anywhere, self._leaves = t.declared, t.anywhere, t.lemma
         self._lemma = _uses_lemma(model, model.function)
         self.domain = domain(model, self.inputs)
-        self.free_variables: dict[str, z3.ExprRef] = {}
-        self.kinds: dict[str, str] = {}
-        self.evaluations: list[Evaluation] = []
-        self.witnessing = False
+        self._values: dict[str, z3.ExprRef] = dict(self.inputs)
+        self._pairs: tuple = ()
+        self._ranges: tuple = ()
+        self._scope = _Scope()
+
+    @property
+    def free_variables(self) -> dict[str, z3.ExprRef]:
+        return self._scope.free_variables
+
+    @property
+    def kinds(self) -> dict[str, str]:
+        return self._scope.kinds
+
+    @property
+    def evaluations(self) -> list[Evaluation]:
+        return self._scope.evaluations
+
+    @property
+    def witnessing(self) -> bool:
+        return self._scope.witnessing
+
+    @witnessing.setter
+    def witnessing(self, value: bool) -> None:
+        self._scope.witnessing = value
 
     def scoped(self) -> Terms:
         """The same terms, with no free variables and no evaluations yet: the view of one theorem."""
         view = object.__new__(Terms)
         view.__dict__.update(self.__dict__)
-        view.free_variables, view.kinds, view.evaluations, view.witnessing = {}, {}, [], False
+        view._scope = _Scope()
         return view
 
+    def _fix(self, term):
+        """The term with each input's symbol replaced by its value in this view, at once."""
+        if isinstance(term, tuple):
+            return tuple(self._fix(part) for part in term)
+        return z3.substitute(term, *self._pairs) if self._pairs else term
+
     def _evaluated(self, what: str, lemma: bool, obligation: z3.BoolRef) -> None:
-        once = what in ("model", "model locals")
-        if not (once and any(e.what == what and e.witness == self.witnessing for e in self.evaluations)):
-            self.evaluations.append(Evaluation(what, lemma, obligation, self.witnessing))
+        scope = self._scope
+        if not any(
+            e.what == what and e.witness == scope.witnessing and e.obligation.eq(obligation) for e in scope.evaluations
+        ):
+            scope.evaluations.append(Evaluation(what, lemma, obligation, scope.witnessing))
 
     def _model(self) -> None:
-        self._evaluated("model", self._lemma, self._leaves)
+        if self._pairs:
+            self._evaluated("at", self._lemma, z3.Or(self._fix(self._leaves), *self._ranges))
+        else:
+            self._evaluated("model", self._lemma, self._leaves)
 
     def _model_locals(self) -> None:
         """A local's value is a term also on the paths where its statement does not run, so a theorem that reads one
         rests on the lemma wherever the function's operations leave its domain."""
-        self._evaluated("model locals", self._lemma, self._anywhere)
+        if self._pairs:
+            self._evaluated("at locals", self._lemma, z3.Or(self._fix(self._anywhere), *self._ranges))
+        else:
+            self._evaluated("model locals", self._lemma, self._anywhere)
 
     @property
     def result(self) -> z3.ExprRef:
         self._model()
-        return _own(self.model, self._value)
+        return _own(self.model, self._fix(self._value))
 
     @property
     def post(self) -> Post:
         self._model()
-        return _post(self.model, self._value)
+        return _post(self.model, self._fix(self._value))
 
     @property
     def reverts(self) -> z3.BoolRef:
         self._model()
-        return self._reverts
+        return self._fix(self._reverts)
 
     @property
     def outside_lemma_domain(self) -> z3.BoolRef:
         self._model()
-        return self._outside
+        return self._fix(self._outside)
 
     @property
     def locals(self) -> dict[str, z3.ExprRef]:
         self._model_locals()
-        return dict(self._locals)
+        return {name: self._fix(term) for name, term in self._locals.items()}
 
     def __getattr__(self, name: str) -> z3.ExprRef:
         names = self.__dict__
-        if name.startswith("__") or "inputs" not in names:
+        if name.startswith("__") or "_scope" not in names:
             raise AttributeError(name)
-        if name in names["inputs"]:
-            return names["inputs"][name]
+        if name in names["_values"]:
+            return names["_values"][name]
         if name in names["_locals"]:
             self._model_locals()
-            return names["_locals"][name]
-        if name in names["free_variables"]:
-            return names["free_variables"][name]
+            return self._fix(names["_locals"][name])
+        if name in names["_scope"].free_variables:
+            return names["_scope"].free_variables[name]
         _renamed(name)
         raise AttributeError(f"{self.model.name} has no input, local or free variable {name}")
 
@@ -181,48 +233,39 @@ class Terms:
         if name not in self._declared:
             raise AttributeError(f"{self.model.name} declares no local {name}")
         self._model_locals()
-        return self._declared[name]
+        return self._fix(self._declared[name])
 
     def call(self, name: str, *args) -> Run:
-        """The value, reverts and outside_lemma_domain of the model's function `name` on the argument terms."""
+        """The result, reverts and outside_lemma_domain of the model's function `name` on the argument terms, which are
+        used as given; the inputs that the function reads take their values in this view."""
         functions = {f.name: f for f in (self.model.function, *self.model.callees)}
         if name not in functions or functions[name] is self.model.function:
             raise AttributeError(f"{self.model.name} has no called function {name}")
         function = functions[name]
-        called = terms_of_call(self.model, function, self.inputs, args)
+        called = terms_of_call(self.model, function, self._values, args)
         params = [(p, a if z3.is_expr(a) else z3.IntVal(a)) for p, a in zip(function.params, args, strict=True)]
         outside = [z3.Not(_in_range(p.type.bound, a)) for p, a in params if p.type != BOOL]
-        self._evaluated(f"call {name}", _uses_lemma(self.model, function), z3.Or(called.lemma, *outside))
+        obligation = z3.Or(called.lemma, *outside, *self._ranges)
+        self._evaluated(f"call {name}", _uses_lemma(self.model, function), obligation)
         return Run(called.value, called.reverts, called.outside)
 
-    def at(self, **values) -> _Fixed:
-        """The value, reverts, outside_lemma_domain and locals with the named inputs replaced by the given terms or
-        numbers."""
-        pairs, outside = [], []
+    def at(self, **values) -> Terms:
+        """The view of the model with the named inputs replaced by the given terms or numbers."""
+        replaced = dict(self._values)
         for name, value in values.items():
             if name not in self.inputs:
                 raise AttributeError(f"{self.model.name} has no input {name}")
-            term = self.inputs[name]
-            pairs.append((term, value if z3.is_expr(value) else _const(term, value)))
-            var = next(v for v in self.model.inputs if v.name == name)
-            if var.type != BOOL:
-                outside.append(z3.Not(_in_range(var.type.bound, pairs[-1][1])))
-
-        def fixed(term):
-            if isinstance(term, tuple):
-                return tuple(fixed(part) for part in term)
-            return z3.substitute(term, *pairs) if pairs else term
-
-        value, reverts, out = (fixed(x) for x in (self._value, self._reverts, self._outside))
-        values = {k: fixed(v) for k, v in self._locals.items()}
-        leaves, anywhere = fixed(self._leaves), fixed(self._anywhere)
-        self._evaluated("at", self._lemma, z3.Or(leaves, *outside))
-        obligation = z3.Or(anywhere, *outside)
-
-        def record() -> None:
-            self._evaluated("at locals", self._lemma, obligation)
-
-        return _Fixed(self.model, value, reverts, out, values, record)
+            replaced[name] = value if z3.is_expr(value) else _const(self.inputs[name], value)
+        view = object.__new__(Terms)
+        view.__dict__.update(self.__dict__)
+        view._values = replaced
+        view._pairs = tuple((self.inputs[n], v) for n, v in replaced.items() if not v.eq(self.inputs[n]))
+        view._ranges = tuple(
+            z3.Not(_in_range(var.type.bound, replaced[var.name]))
+            for var in self.model.inputs
+            if var.type != BOOL and not replaced[var.name].eq(self.inputs[var.name])
+        )
+        return view
 
 
 def _renamed(name: str) -> None:
@@ -232,9 +275,9 @@ def _renamed(name: str) -> None:
 
 @dataclass(frozen=True)
 class Run:
-    """A run of a called function of the model: its value, and where it reverts or leaves the lemma's domain."""
+    """A run of a called function of the model: its result, and where it reverts or leaves the lemma's domain."""
 
-    value: z3.ExprRef | tuple
+    result: z3.ExprRef | tuple
     reverts: z3.BoolRef
     outside_lemma_domain: z3.BoolRef
 
@@ -276,33 +319,6 @@ def _post(model: Model, value) -> Post:
     values = value if isinstance(value, tuple) else (value,)
     outputs = values[len(values) - len(model.outputs) :] if model.outputs else ()
     return Post({o.var.name: v for o, v in zip(model.outputs, outputs, strict=True)})
-
-
-class _Fixed:
-    """The model with inputs replaced: `value`, `post`, `reverts` and `outside_lemma_domain`, and `locals`, which
-    records the obligation of the run's locals when the theorem takes them."""
-
-    def __init__(self, model: Model, value, reverts, outside, values: dict, record: Callable[[], None]):
-        self._model, self._value = model, value
-        self.reverts, self.outside_lemma_domain = reverts, outside
-        self._values, self._record = values, record
-
-    def __getattr__(self, name: str):
-        _renamed(name)
-        raise AttributeError(name)
-
-    @property
-    def value(self):
-        return _own(self._model, self._value)
-
-    @property
-    def post(self) -> Post:
-        return _post(self._model, self._value)
-
-    @property
-    def locals(self) -> dict[str, z3.ExprRef]:
-        self._record()
-        return dict(self._values)
 
 
 def _uses_lemma(model: Model, function: Function) -> bool:
@@ -418,7 +434,7 @@ class _Hypotheses:
         self.free_variables = q.free_variables
         self.free = lambda name, kind=None: q.free(name, kind)
         self.declared = lambda name: q.declared(name)
-        self.call = lambda function, *args: _Value(q.call(function, *args).value)
+        self.call = lambda function, *args: _Value(q.call(function, *args).result)
         self._result = lambda: q.result
         self._post = lambda: q.post
         self._locals = lambda: q.locals
@@ -452,7 +468,11 @@ class _Hypotheses:
 
 @dataclass(frozen=True)
 class _Value:
-    value: z3.ExprRef
+    result: z3.ExprRef
+
+    def __getattr__(self, name: str):
+        _renamed(name)
+        raise AttributeError(name)
 
 
 def _const(term: z3.ExprRef, value) -> z3.ExprRef:
