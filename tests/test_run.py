@@ -29,7 +29,8 @@ def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_
         record["versions"]
     )
     assert QUOTER in spec["sources"]
-    assert record["schema"] == 3
+    assert spec["bytecode"]["size"] > 0 and len(spec["bytecode"]["sha256"]) == 64
+    assert record["schema"] == 4
 
 
 def test_the_record_holds_the_scope_of_each_theorem_and_what_the_results_rest_on(tmp_path):
