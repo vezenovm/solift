@@ -4,12 +4,14 @@ A theorem is a function of the model's terms (`Terms`) that returns the goal. It
 it proves:
 
 - the domain: each input in the range of its type. Every theorem assumes it.
-- `assume`: "no-revert" (the model does not revert) and "inside" (no mulDiv operand reaches 2**128, where the lemma is
-  not proved). A theorem that must prove these, such as liveness, puts them in its goal instead.
-- `given`: a function of the terms that gives more hypotheses. It must not mention the model's reverts or outside:
-  those go in `assume`, so that each result lists them. It sees the terms without `reverts`, `outside` and `at`, and
-  a called function gives it only its value. This keeps a theorem from using them by mistake. It is not a sandbox: a
-  theorem file is Python, which can reach any object, so it is reviewed like other code.
+- `assume`: "no-revert" (the model does not revert) and "within-lemma-domain" (no mulDiv operand reaches 2**128, where
+  the lemma is not proved; `outside_lemma_domain` is where one does). A theorem that must prove these, such as
+  liveness, puts them in its goal instead.
+- `given`: a function of the terms that gives more hypotheses. It must not mention the model's reverts or
+  outside_lemma_domain: those go in `assume`, so that each result lists them. It sees the terms without `reverts`,
+  `outside_lemma_domain` and `at`, and a called function gives it only its value. This keeps a theorem from using them
+  by mistake. It is not a sandbox: a theorem file is Python, which can reach any object, so it is reviewed like other
+  code.
 
 A theorem expected to prove needs a `witness`: a condition that, together with the hypotheses, z3 must satisfy, so a
 proof from hypotheses that never hold fails. A theorem can instead expect a counterexample, with the `issue` of the
@@ -38,10 +40,11 @@ import z3
 from solift import solvers
 from solift.ir import BOOL, Call, Function, Model, Op, walk
 from solift.ops import TABLE
-from solift.smt import Terms as ModelTerms
 from solift.smt import domain, symbols, terms, terms_of_call
 
-ASSUMPTIONS = {"no-revert": "the model does not revert", "inside": "no mulDiv operand reaches 2**128"}
+ASSUMPTIONS = {"no-revert": "the model does not revert", "within-lemma-domain": "no mulDiv operand reaches 2**128"}
+# The names that an earlier version used, and the names that took their place.
+RENAMED = {"outside": "outside_lemma_domain"}
 DEFAULT_TIMEOUT_MS = 300_000
 # The kinds of a free variable: an unbounded integer, a bool, or an unsigned Solidity type, which bounds it.
 KINDS = {"int": None, "bool": None, "address": 2**160, **{f"uint{n}": 2**n for n in range(8, 257, 8)}}
@@ -66,9 +69,9 @@ class Evaluation:
 
 
 class Terms:
-    """A model's terms, by their Solidity names: `result`, `reverts`, `outside`, each input, and each local of the
-    modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for each
-    value (`q.result[1]`). `post` holds each output by its name (`q.post.left`): the value that the function writes
+    """A model's terms, by their Solidity names: `result`, `reverts`, `outside_lemma_domain`, each input, and each local
+    of the modeled function at the return that runs. `result` of a function of several returns is a tuple, one term for
+    each value (`q.result[1]`). `post` holds each output by its name (`q.post.left`): the value that the function writes
     there, or passes to an external call. `declared(name)` is a local's value where it is declared, before any
     assignment. A parameter that the function assigns is an input and a local of one name: `q.<name>` is its value at
     the call, and `locals[name]` its value at the return. `free(name, kind)` adds a variable that the theorem quantifies
@@ -125,7 +128,7 @@ class Terms:
         return self._reverts
 
     @property
-    def outside(self) -> z3.BoolRef:
+    def outside_lemma_domain(self) -> z3.BoolRef:
         self._model()
         return self._outside
 
@@ -145,6 +148,7 @@ class Terms:
             return names["_locals"][name]
         if name in names["free_variables"]:
             return names["free_variables"][name]
+        _renamed(name)
         raise AttributeError(f"{self.model.name} has no input, local or free variable {name}")
 
     def __getitem__(self, name: str) -> z3.ExprRef:
@@ -179,8 +183,8 @@ class Terms:
         self._model_locals()
         return self._declared[name]
 
-    def call(self, name: str, *args) -> ModelTerms:
-        """The value, reverts and outside of the model's function `name` on the argument terms."""
+    def call(self, name: str, *args) -> Run:
+        """The value, reverts and outside_lemma_domain of the model's function `name` on the argument terms."""
         functions = {f.name: f for f in (self.model.function, *self.model.callees)}
         if name not in functions or functions[name] is self.model.function:
             raise AttributeError(f"{self.model.name} has no called function {name}")
@@ -189,10 +193,11 @@ class Terms:
         params = [(p, a if z3.is_expr(a) else z3.IntVal(a)) for p, a in zip(function.params, args, strict=True)]
         outside = [z3.Not(_in_range(p.type.bound, a)) for p, a in params if p.type != BOOL]
         self._evaluated(f"call {name}", _uses_lemma(self.model, function), z3.Or(called.lemma, *outside))
-        return called
+        return Run(called.value, called.reverts, called.outside)
 
     def at(self, **values) -> _Fixed:
-        """The value, reverts, outside and locals with the named inputs replaced by the given terms or numbers."""
+        """The value, reverts, outside_lemma_domain and locals with the named inputs replaced by the given terms or
+        numbers."""
         pairs, outside = [], []
         for name, value in values.items():
             if name not in self.inputs:
@@ -218,6 +223,24 @@ class Terms:
             self._evaluated("at locals", self._lemma, obligation)
 
         return _Fixed(self.model, value, reverts, out, values, record)
+
+
+def _renamed(name: str) -> None:
+    if name in RENAMED:
+        raise AttributeError(f"{name} is now {RENAMED[name]}")
+
+
+@dataclass(frozen=True)
+class Run:
+    """A run of a called function of the model: its value, and where it reverts or leaves the lemma's domain."""
+
+    value: z3.ExprRef | tuple
+    reverts: z3.BoolRef
+    outside_lemma_domain: z3.BoolRef
+
+    def __getattr__(self, name: str):
+        _renamed(name)
+        raise AttributeError(name)
 
 
 class Post:
@@ -256,13 +279,17 @@ def _post(model: Model, value) -> Post:
 
 
 class _Fixed:
-    """The model with inputs replaced: `value`, `post`, `reverts` and `outside`, and `locals`, which records the
-    obligation of the run's locals when the theorem takes them."""
+    """The model with inputs replaced: `value`, `post`, `reverts` and `outside_lemma_domain`, and `locals`, which
+    records the obligation of the run's locals when the theorem takes them."""
 
     def __init__(self, model: Model, value, reverts, outside, values: dict, record: Callable[[], None]):
         self._model, self._value = model, value
-        self.reverts, self.outside = reverts, outside
+        self.reverts, self.outside_lemma_domain = reverts, outside
         self._values, self._record = values, record
+
+    def __getattr__(self, name: str):
+        _renamed(name)
+        raise AttributeError(name)
 
     @property
     def value(self):
@@ -315,6 +342,8 @@ class Theorem:
 
     def __post_init__(self):
         unknown = set(self.assume) - set(ASSUMPTIONS)
+        if "inside" in unknown:
+            raise TheoremError(f'{self.id}: assume takes "within-lemma-domain" in place of "inside"')
         if unknown:
             raise TheoremError(f"{self.id}: assume takes {', '.join(ASSUMPTIONS)}, not {', '.join(sorted(unknown))}")
         if self.expect not in ("proved", "counterexample"):
@@ -377,11 +406,11 @@ def _mentions(term: z3.ExprRef, sub: z3.ExprRef) -> bool:
 
 class _Hypotheses:
     """The terms as `given` sees them: the result, the outputs (`post`), the inputs, the locals, `declared`, `free`, and
-    a called function's value. None of its attributes or items is the model's reverts or outside, or the model or
-    Terms. `h[name]` is an input, a local or a free variable, as for Terms, and `h.name` too unless the view has an
-    attribute of that name."""
+    a called function's value. None of its attributes or items is the model's reverts or outside_lemma_domain, or the
+    model or Terms. `h[name]` is an input, a local or a free variable, as for Terms, and `h.name` too unless the view
+    has an attribute of that name."""
 
-    HIDDEN = ("reverts", "outside", "at", "model")
+    HIDDEN = ("reverts", "outside_lemma_domain", "outside", "at", "model")
 
     def __init__(self, q: Terms):
         self.inputs = dict(q.inputs)
@@ -437,12 +466,12 @@ def prove(t: Theorem, q: Terms) -> Result:
     if "no-revert" in t.assume:
         hypotheses.append(z3.Not(q.reverts))
         assumed.append(ASSUMPTIONS["no-revert"])
-    if "inside" in t.assume:
-        hypotheses.append(z3.Not(q.outside))
-        assumed.append(ASSUMPTIONS["inside"])
+    if "within-lemma-domain" in t.assume:
+        hypotheses.append(z3.Not(q.outside_lemma_domain))
+        assumed.append(ASSUMPTIONS["within-lemma-domain"])
     if t.given is not None:
         given = t.given(_Hypotheses(q))
-        for name, term in (("reverts", q._reverts), ("outside", q._outside)):
+        for name, term in (("reverts", q._reverts), ("outside_lemma_domain", q._outside)):
             if _mentions(given, term):
                 raise TheoremError(f"{t.id}: given mentions the model's {name}; state it with assume")
         hypotheses.append(given)

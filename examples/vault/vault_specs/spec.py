@@ -27,7 +27,7 @@ def pays(q):
     return q.result > 0
 
 
-@REDEEM.theorem(assume=("no-revert", "inside"), witness=pays)
+@REDEEM.theorem(assume=("no-revert", "within-lemma-domain"), witness=pays)
 def redeem_rounds_down(q):
     """a redeem pays at most the shares' exact part of the assets, shares * (held + 1) / (supply + 1)"""
     return q.result * (q.supply + 1) <= q._shares * (q.held + 1)
@@ -44,13 +44,13 @@ def redeem_pays_at_most_the_assets(q):
     return q.result <= q.held
 
 
-@REDEEM.theorem(assume=("no-revert", "inside"), expect="counterexample", reason="the redeem rounds down")
+@REDEEM.theorem(assume=("no-revert", "within-lemma-domain"), expect="counterexample", reason="the redeem rounds down")
 def redeem_pays_the_exact_part(q):
     """a redeem pays exactly the shares' part of the assets"""
     return q.result * (q.supply + 1) == q._shares * (q.held + 1)
 
 
-@DEPOSIT.theorem(assume=("no-revert", "inside"), witness=pays)
+@DEPOSIT.theorem(assume=("no-revert", "within-lemma-domain"), witness=pays)
 def deposit_mints_at_most_the_exact_shares(q):
     """a deposit mints at most the assets' exact part of the shares, assets * (supply + 1) / (held + 1)"""
     return q.result * (q.held + 1) <= q._assets * (q.supply + 1)

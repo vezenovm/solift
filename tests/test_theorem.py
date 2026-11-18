@@ -85,12 +85,37 @@ def test_a_theorem_states_itself_and_assumes_only_the_named_facts():
         def undocumented(q):
             return q.result >= 0
 
-    with pytest.raises(TheoremError, match="assume takes no-revert, inside, not no-overflow"):
+    with pytest.raises(TheoremError, match="assume takes no-revert, within-lemma-domain, not no-overflow"):
 
         @theorem(assume=("no-overflow",), witness=lambda q: True)
         def unknown_assumption(q):
             """a statement"""
             return q.result >= 0
+
+
+def test_the_old_names_of_the_lemma_domain_raise_errors_that_name_the_new_ones(q):
+    with pytest.raises(TheoremError, match='assume takes "within-lemma-domain" in place of "inside"'):
+
+        @theorem(assume=("inside",))
+        def old(q):
+            """a statement"""
+            return q.result >= 0
+
+    with pytest.raises(AttributeError, match="outside is now outside_lemma_domain"):
+        q.outside  # noqa: B018
+    with pytest.raises(AttributeError, match="outside is now outside_lemma_domain"):
+        q.at(_gas=1).outside  # noqa: B018
+    with pytest.raises(AttributeError, match="outside is now outside_lemma_domain"):
+        q.call("_withMargin", 1, 2).outside  # noqa: B018
+    assert z3.is_bool(q.outside_lemma_domain) and z3.is_bool(q.at(_gas=1).outside_lemma_domain)
+
+
+def test_an_input_named_like_a_term_of_the_model_is_an_item_and_outside_an_attribute_too():
+    """f(uint256 outside, uint256 outside_lemma_domain) returns outside + outside_lemma_domain."""
+    a, b = Var("outside", input=True), Var("outside_lemma_domain", input=True)
+    q = Terms(Model("C", Function("f", (a, b), UINT256, (Return(ops.make("add", a, b)),))))
+    assert q.outside.eq(z3.Int("outside")) and q["outside"].eq(z3.Int("outside"))
+    assert q["outside_lemma_domain"].eq(z3.Int("outside_lemma_domain")) and z3.is_bool(q.outside_lemma_domain)
 
 
 def test_a_hypothesis_that_mentions_reverts_is_refused(q):
@@ -110,7 +135,8 @@ def test_a_hypothesis_that_mentions_reverts_is_refused(q):
     "given, name",
     [
         (lambda q: z3.Not(z3.simplify(q.reverts)), "reverts"),
-        (lambda q: z3.Not(q["outside"]), "outside"),
+        (lambda q: z3.Not(q["outside_lemma_domain"]), "outside_lemma_domain"),
+        (lambda q: z3.Not(q.outside), "outside"),
         (lambda q: z3.Not(q.at(_gas=0).reverts), "at"),
     ],
 )
@@ -374,13 +400,13 @@ def test_a_mulDiv_operand_below_zero_on_a_path_that_reverted_is_outside_the_lemm
     assert (result.verdict, result.lemma_domain) == ("PROVED", "not-established")
 
 
-def test_inside_assumes_away_only_mulDiv_operands_at_or_above_half_width():
-    """uint256 b = a - 5; return Math.mulDiv(b, 1, 2): `inside` does not hide the revert at a < 5."""
+def test_within_lemma_domain_assumes_away_only_mulDiv_operands_at_or_above_half_width():
+    """uint256 b = a - 5; return Math.mulDiv(b, 1, 2): `within-lemma-domain` does not hide the revert at a < 5."""
     a, b = Var("a", input=True), Var("b")
     body = (Let(b, ops.make("sub", a, Const(5))), Return(ops.make("mulDiv", b, Const(1), Const(2))))
     q = Terms(Model("C", Function("f", (a,), UINT256, body)))
 
-    @theorem(assume=("inside",), witness=lambda q: q.a == 5)
+    @theorem(assume=("within-lemma-domain",), witness=lambda q: q.a == 5)
     def live(q):
         """the quote does not revert"""
         return z3.Not(q.reverts)
