@@ -462,7 +462,7 @@ def prove(t: Theorem, q: Terms) -> Result:
     result = Result(t.id, t.statement, "", t.expect, False, assumed, issue=t.issue, reason=t.reason)
     query = z3.Solver()
     query.add(*hypotheses, z3.Not(goal))
-    result.query_sha256 = hashlib.sha256(query.to_smt2().encode()).hexdigest()
+    result.query_sha256 = query_sha256(query)
     answer = solvers.check(hypotheses + [z3.Not(goal)], shown, t.timeout_ms)
     result.time, result.solver, result.answers = answer.time, answer.solver, answer.answers
     result.verdict = {"unsat": "PROVED", "sat": "COUNTEREXAMPLE"}.get(answer.verdict, "UNKNOWN")
@@ -481,6 +481,13 @@ def prove(t: Theorem, q: Terms) -> Result:
     result.ok = result.verdict == expected and result.witness in (None, "WITNESS")
     result.ok = result.ok and not (result.verdict == "COUNTEREXAMPLE" and missing)
     return result
+
+
+def query_sha256(query: z3.Solver) -> str:
+    """The sha256 of the query's SMT-LIB text, printed from a copy in a fresh context. z3 names a shared subterm of the
+    text after its id in the context, which counts every term that the process made before, so the same query printed
+    in the process's own context has another text after an earlier run."""
+    return hashlib.sha256(query.translate(z3.Context()).to_smt2().encode()).hexdigest()
 
 
 def _lemma_domain(hypotheses: list, proof: list[Evaluation], timeout_ms: int) -> str:

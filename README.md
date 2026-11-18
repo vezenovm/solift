@@ -39,7 +39,8 @@ exploit, not the transaction: that the solvency check reads the rate that `_upda
 hypothesis, and the borrower's debt is a cut point.
 
 On Morpho Blue v1.0.0's `_isHealthy`, the tighter bound proves: debt at most the loan-to-value limit of the
-collateral's value. CI runs both, with mutants that a theorem must reject (`acceptance/`).
+collateral's value. CI runs both, with mutants that a theorem must reject (`acceptance/`), and Resupply's again under
+other compilers and settings ([Across compilers](#across-compilers)).
 
 ## Install
 
@@ -144,6 +145,31 @@ an hour.
 - Measured on an Apple M4 Pro (14 cores, 48 GiB, macOS 15.7.4), with solc 0.8.28, forge 1.8.5, Halmos 0.3.3,
   yices 2.6.4 and z3 4.12.6.
 
+## Across compilers
+
+The theorems are about the model, which comes from the source, so a new compiler or new settings change only the
+bytecode that the link checks. At the exploit commit, the Resupply acceptance run checks its spec again under five
+builds of the pair (the harness's `ResupplyPairHarness`), with the spec and the theorems unchanged:
+
+| Build | solc | Bytecode | Debt below twice the LTV limit | Up to a price of 1e36 | Vectors | Link |
+|---|---|---|---|---|---|---|
+| as deployed: via-IR, 200 runs | 0.8.28 | 18,323 B, `61eb88a4` | counterexample | proved | 192 of 192 | PASS |
+| optimizer off | 0.8.28 | 33,240 B, `a6841332` | counterexample | proved | 192 of 192 | PASS |
+| 1,000,000 runs | 0.8.28 | 24,929 B, `5ed63fb8` | counterexample | proved | 192 of 192 | PASS |
+| legacy pipeline, no via-IR | 0.8.28 | 19,785 B, `562d4715` | counterexample | proved | 192 of 192 | PASS |
+| solc 0.8.30, with the pins moved | 0.8.30 | 18,323 B, `243f929c` | counterexample | proved | 192 of 192 | PASS |
+
+- Each build gives the solvers the same two queries, which the run checks by their `query_sha256`, so a theorem has
+  one answer for every build, and Halmos links the model to each bytecode with nothing to write. A Lean proof on
+  bytecode follows its bytecode, so each row would need its own proof.
+- The compiler stays trusted. Halmos proves the operator lemmas again under each build, but the link compares two
+  programs that the same compiler builds.
+- The bytecode column is the size and the sha256 of the deployed bytecode as solc gives it, which the record keeps.
+- `python -m acceptance.compilers` runs the vault example under six builds the same way: solc 0.8.27 to 0.8.30, the
+  optimizer off and at 1,000,000 runs, and via-IR.
+- A build's whole run, with its link and vectors, takes 6 to 15 seconds in either project, measured with forge 1.4.1
+  on the machine of [Proof performance](#proof-performance).
+
 ## How it compares
 
 solift is a small, inspectable workflow for one call of a function, with a stated trust base. It does not claim
@@ -166,7 +192,8 @@ A Lean proof on bytecode trusts only the Lean kernel and the EVM semantics, a sm
 proof follows the bytecode it is about, so a new contract or a changed one needs a new proof, even when an agent
 writes it, and a proof that does not close does not say whether the property is false. In solift the theorems are
 written once: each run extracts the model again, Halmos checks the link with no proof to write, and a false theorem
-gives a counterexample.
+gives a counterexample. A new compiler or new settings leave the queries as they were ([Across
+compilers](#across-compilers)).
 
 ## Roadmap
 
@@ -202,6 +229,7 @@ git submodule update --init
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/pytest
 .venv/bin/solift run examples.quoter.spec                   # one spec on the test fixtures
+.venv/bin/python -m acceptance.compilers                    # the vault example under six compilers and settings
 .venv/bin/python -m acceptance.resupply --root <resupply>   # setup in acceptance/resupply/__main__.py
 .venv/bin/python -m acceptance.morpho --root <morpho-blue>  # setup in acceptance/morpho/__main__.py
 # the Resupply checks directly on the bytecode, as in Proof performance: up to an hour each, so not in CI

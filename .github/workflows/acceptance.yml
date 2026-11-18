@@ -1,7 +1,8 @@
 name: acceptance
 
-# The public acceptance runs, at their pinned commits: Resupply's exploit and fix, and Morpho Blue. They run on main,
-# weekly, by hand, and on a pull request that can change what they prove.
+# The public acceptance runs, at their pinned commits: Resupply's exploit and fix, and its spec under other compilers
+# and settings, and Morpho Blue. They run on main, weekly, by hand, and on a pull request that can change what they
+# prove. forge installs each solc that a variant names.
 on:
   push:
     branches: [main]

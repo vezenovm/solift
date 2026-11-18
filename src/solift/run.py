@@ -11,8 +11,10 @@ record when it is not one of solift's own errors. The run fails when a result is
 project changed during the run.
 
 The record is JSON. `schema` numbers its format. Next to the results, it holds what they rest on: the versions of the
-tools, the sha256 of each solc standard-JSON input of the build, of each theorem's query, of the spec's Python files
-and of each file that the overlay adds, the profile, and the options of the link engine.
+tools, the sha256 of each solc standard-JSON input of the build, of each target's deployed bytecode, of each theorem's
+query, of the spec's Python files and of each file that the overlay adds, the profile, and the options of the link
+engine. A query's sha256 is the same in every run that proves the same query (theorem.query_sha256), so two records
+show whether a theorem was proved again on the same terms, as after a change of the compiler or its settings.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from solift.vectors import VectorError, sample, vectors_source
 from solift.workspace import Project, Workspace, WorkspaceError
 
 MATH_PATH = "utils/math/Math.sol"
-SCHEMA = 3
+SCHEMA = 4
 SHARED_OPERATORS = "Solift"
 # The errors that say what went wrong without a traceback.
 KNOWN_ERRORS = (
@@ -330,6 +332,7 @@ def _extract(c: _Checked, infos: list[dict], operators: bool, record: dict, unre
         return
     info = next(i for i in infos if c.spec.target.rpartition(":")[0] in i["output"]["sources"])
     c.record["versions"] = _versions(info, c.spec.target, extraction.sources)
+    c.record["bytecode"] = _bytecode(info, c.spec.target)
     c.record["sources"] = extraction.sources
     c.record["model"] = {
         "inputs": [{"name": v.name, "type": v.type.solidity} for v in c.model.inputs],
@@ -497,6 +500,14 @@ def _own_commit() -> str | None:
         return None
     dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"], capture_output=True, text=True)
     return result.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
+
+
+def _bytecode(info: dict, target: str) -> dict:
+    """The target contract's deployed bytecode as solc gives it, with its immutables and library addresses unset: its
+    size and the sha256 of its hex."""
+    path, _, qualified = target.rpartition(":")
+    code = info["output"]["contracts"][path][qualified.partition(".")[0]]["evm"]["deployedBytecode"]["object"]
+    return {"size": len(code.removeprefix("0x")) // 2, "sha256": _sha256(code)}
 
 
 def _versions(info: dict, target: str, sources: dict[str, str]) -> dict:

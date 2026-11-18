@@ -285,7 +285,7 @@ files have the rows and lemmas of each file proved on that file, in a test of th
 
 A run builds the project once. A failed theorem, vector or link check does not stop the others, but a failed build or
 a failed write of the generated files ends the run, and a spec whose extraction fails gets no later checks.
-`results.json` (`schema` 3) holds:
+`results.json` (`schema` 4) holds:
 
 - `ok`, `failures`, and `times`, the seconds of each stage;
 - `project`: the root, commit, dirty flag, profile, what the overlay links and copies, where the generated files go,
@@ -294,8 +294,11 @@ a failed write of the generated files ends the run, and a spec whose extraction 
   `spec files` with the sha256 of each Python file of the specs, and `generated` with the sha256 of each generated file;
 - `specs`, one for each spec:
   - `model`: its inputs, reads, callees, outputs, and the writes, calls and events that it leaves out (`effects`);
+  - `bytecode`: the size and the sha256 of the target contract's deployed bytecode, with its immutables unset;
   - `theorems`: each with its verdict, witness, the values of a counterexample or a witness, what it assumed,
-    `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver;
+    `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver. `query_sha256` depends only on
+    the query, so it is the same in two runs that prove the same theorem on the same model, even with another compiler
+    or other settings;
   - `vectors`: the count, how many agree, and which outcomes and boundaries were reached or unreachable;
   - `link`: each Halmos check with its verdict;
 - `link`: the shared operator checks and the problems of the Halmos run, and `tracebacks` for an error that is not one

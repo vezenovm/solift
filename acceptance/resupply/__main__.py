@@ -8,6 +8,8 @@
    deploy profile.
 2. The fix (fix.py): on the fixed source, the theorem that found the exploit proves, and the link passes.
 3. Each mutant fails on the theorem it breaks.
+4. The spec under other compilers and settings (project.VARIANTS): the same theorems on the same queries, each linked to
+   its variant's bytecode (acceptance/compilers.py).
 
 The run fails when any of these fails, when the project is not the pinned commit, and when it changed during the run.
 """
@@ -19,8 +21,9 @@ import sys
 import time
 
 from acceptance.common import finish, pinned, run_mutants
+from acceptance.compilers import across, queries, table
 from acceptance.resupply import fix, mutants
-from acceptance.resupply.project import COMMIT
+from acceptance.resupply.project import COMMIT, VARIANTS
 from acceptance.resupply.solvency import SOLVENT
 from solift.run import run, summary
 from solift.workspace import Workspace
@@ -59,8 +62,17 @@ def main(argv=None) -> int:
     failures += found
     times["mutants"] = time.time() - start
 
+    print("\n== across compilers")
+    start = time.time()
+    variant_records, found = across([spec], VARIANTS, workspace, prefix="compilers-")
+    failures += [f"compilers: {f}" for f in found]
+    print(table(variant_records) + "\n\n" + queries(variant_records))
+    for failure in found:
+        print(f"FAILED {failure}")
+    times["compilers"] = time.time() - start
+
     failures += [f"resupply: {change}" for change in guard.changes()]
-    result = {"spec": record, "fix": fixed, "mutants": mutant_records}
+    result = {"spec": record, "fix": fixed, "mutants": mutant_records, "compilers": variant_records}
     return finish(result, failures, times, args.results or workspace.path / "acceptance.json")
 
 
