@@ -45,7 +45,7 @@ from solift.vectors import VectorError, sample, vectors_source
 from solift.workspace import Project, Workspace, WorkspaceError
 
 MATH_PATH = "utils/math/Math.sol"
-SCHEMA = 3
+SCHEMA = 4
 SHARED_OPERATORS = "Solift"
 # The errors that say what went wrong without a traceback.
 KNOWN_ERRORS = (
@@ -574,7 +574,7 @@ def summary(record: dict) -> str:
             lines.append(f"model: {len(model['inputs'])} inputs; reads {reads}{outputs}")
         for t in spec.get("theorems", []):
             mark = "" if t["ok"] else "   <-- unexpected" + (f": {t['detail']}" if t["detail"] else "")
-            witness = f" {t['witness']}" if t["witness"] else ""
+            witness = _witness(t)
             shown = " ".join(f"{k}={v}" for k, v in t["counterexample"].items())
             solver = f" ({t['solver']})" if t["solver"] not in ("", "z3") else ""
             line = f"{t['verdict']}{witness} [{t['id']}] {t['statement']} [{t['time']:.2f}s]{solver} {shown}{mark}"
@@ -598,6 +598,15 @@ def summary(record: dict) -> str:
     lines += [f"FAILED {failure}" for failure in record["failures"]]
     lines.append("ok" if record["ok"] else f"{len(record['failures'])} failure(s)")
     return "\n".join(lines)
+
+
+def _witness(t: dict) -> str:
+    """The witness of a theorem's line, with the check it rests on when the theorem gave none. A counterexample that
+    shows the hypotheses is its own witness."""
+    kind = t.get("witness_kind", "explicit")
+    if not t["witness"] or (t["verdict"] == "COUNTEREXAMPLE" and kind == "hypotheses" and t["witness"] == "WITNESS"):
+        return ""
+    return f" {t['witness']}" + ("" if kind == "explicit" else f" ({kind})")
 
 
 def _output_source(output: dict) -> str:

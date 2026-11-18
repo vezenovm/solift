@@ -23,11 +23,7 @@ DEPOSIT = Spec("vault-deposit", "src/Vault.sol:Vault.previewDeposit", READS, har
 SPECS = [REDEEM, DEPOSIT]
 
 
-def pays(q):
-    return q.result > 0
-
-
-@REDEEM.theorem(assume=("no-revert", "within-lemma-domain"), witness=pays)
+@REDEEM.theorem(assume=("no-revert", "within-lemma-domain"))
 def redeem_rounds_down(q):
     """a redeem pays at most the shares' exact part of the assets, shares * (held + 1) / (supply + 1)"""
     return q.result * (q.supply + 1) <= q._shares * (q.held + 1)
@@ -38,7 +34,7 @@ def within_the_supply(q):
     return z3.And(q._shares <= q.supply, q.supply < 2**64, q.held < 2**64)
 
 
-@REDEEM.theorem(assume=("no-revert",), given=within_the_supply, witness=pays)
+@REDEEM.theorem(assume=("no-revert",), given=within_the_supply)
 def redeem_pays_at_most_the_assets(q):
     """a redeem of at most the supply pays at most the assets that the vault holds"""
     return q.result <= q.held
@@ -50,7 +46,7 @@ def redeem_pays_the_exact_part(q):
     return q.result * (q.supply + 1) == q._shares * (q.held + 1)
 
 
-@DEPOSIT.theorem(assume=("no-revert", "within-lemma-domain"), witness=pays)
+@DEPOSIT.theorem(assume=("no-revert", "within-lemma-domain"))
 def deposit_mints_at_most_the_exact_shares(q):
     """a deposit mints at most the assets' exact part of the shares, assets * (supply + 1) / (held + 1)"""
     return q.result * (q.held + 1) <= q._assets * (q.supply + 1)

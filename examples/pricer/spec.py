@@ -50,23 +50,19 @@ QUOTE_FOR = Spec(
 SPECS = [PRICED, QUOTE_FOR]
 
 
-def priced(q):
-    return q.result > 0
-
-
-@PRICED.theorem(witness=priced)
+@PRICED.theorem()
 def priced_at_most_the_gross(q):
     """the priced gas is at most the gross gas, and never reverts below 2**200 gas"""
     return z3.And(z3.Implies(q.used < 2**200, z3.Not(q.reverts)), z3.Implies(z3.Not(q.reverts), q.result <= q.gross))
 
 
-@PRICED.theorem(assume=("no-revert",), witness=priced)
+@PRICED.theorem(assume=("no-revert",))
 def priced_refund_is_at_most_a_fifth(q):
     """the refund is at most a fifth of the gross gas, and the estimate is at least 400 gas"""
     return z3.And(q.refund * 5 <= q.gross, q.declared("refund") >= 400)
 
 
-@QUOTE_FOR.theorem(assume=("no-revert",), witness=priced)
+@QUOTE_FOR.theorem(assume=("no-revert",))
 def quote_at_most_the_units_at_the_price(q):
     """the quote is at most the units of the kind at the price"""
     return q.result <= q.call("units", q._kind).result * q.price

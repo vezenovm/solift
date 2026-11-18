@@ -127,7 +127,7 @@ PROJECT = Project(
 ## 4. Write theorems
 
 ```python
-@SPEC.theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+@SPEC.theorem(assume=("no-revert",))
 def redeem_at_most_the_assets(q):
     """a redeem pays at most the vault's assets"""
     return q.result <= q.assets
@@ -154,7 +154,7 @@ Options:
 |---|---|
 | `assume` | `"no-revert"`: the model does not revert (`q.reverts` is false). `"within-lemma-domain"`: no `mulDiv` operand reaches 2**128 (`q.outside_lemma_domain` is false), where the lemma is not proved. |
 | `given` | More hypotheses, as a function of `q`. |
-| `witness` | Required to prove. The hypotheses and the witness must hold together, or the theorem fails as VACUOUS. |
+| `witness` | A condition that the hypotheses must hold with, such as `lambda q: z3.And(q.result, q.debt > 0)`, or the theorem fails as VACUOUS. Optional: without it, and beside it, the hypotheses must hold with the antecedent of each implication that the goal states at its top, through `And` (`Implies(a, b)` needs an input where `a` holds), and without an implication or a witness they must hold on their own. The check reads the goal's form: `Implies(a, Implies(b, c))` checks only `a`, and `Or(Not(a), b)` only the hypotheses, so write `Implies(And(a, b), c)` or give a witness. `witness_kind` in the record is `explicit`, `antecedent` or `hypotheses`, the weakest. |
 | `expect="counterexample"` | Pins a known failure, with `reason=` or `issue=`. |
 | `show` | Locals to print with a counterexample, next to every input and free variable. |
 
@@ -191,7 +191,8 @@ pin a commit: `pip install 'git+https://github.com/vezenovm/solift@<commit>'`. I
   integer model of a callee.
 - **"no input reaches it"** after the vectors: z3 proved that no input pays, returns zero or reverts. It is not a
   failure. `impossible=("zero",)` on the spec turns it into an assertion.
-- **VACUOUS**: the hypotheses contradict each other, or the witness cannot hold with them.
+- **VACUOUS**: the hypotheses contradict each other, or the witness or the antecedent of an implication of the goal
+  cannot hold with them; the detail says which.
 
 The README says what a run proves and what it trusts.
 
@@ -320,7 +321,7 @@ files have the rows and lemmas of each file proved on that file, in a test of th
 
 A run builds the project once. A failed theorem, vector or link check does not stop the others, but a failed build or
 a failed write of the generated files ends the run, and a spec whose extraction fails gets no later checks.
-`results.json` (`schema` 3) holds:
+`results.json` (`schema` 4) holds:
 
 - `ok`, `failures`, and `times`, the seconds of each stage;
 - `project`: the root, commit, dirty flag, profile, what the overlay links and copies, where the generated files go,
@@ -330,8 +331,9 @@ a failed write of the generated files ends the run, and a spec whose extraction 
 - `specs`, one for each spec:
   - `model`: its inputs, reads, callees, outputs, and the writes, calls and events that it leaves out (`effects`);
   - `harness`: the setup and the call of the link;
-  - `theorems`: each with its verdict, witness, the values of a counterexample or a witness, what it assumed,
-    `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver;
+  - `theorems`: each with its verdict, what it assumed, the values of a counterexample, its witness (`witness`,
+    `witness_kind`, `witness_values`, and `witness_checks`, each check with its verdict and values), `lemma_domain`,
+    `callees`, `link`, `query_sha256`, and the answer of each solver;
   - `vectors`: the count, how many agree, and which outcomes and boundaries were reached or unreachable;
   - `link`: each Halmos check with its verdict;
 - `link`: the shared operator checks and the problems of the Halmos run, and `tracebacks` for an error that is not one

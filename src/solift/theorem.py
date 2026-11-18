@@ -13,9 +13,20 @@ it proves:
   by mistake. It is not a sandbox: a theorem file is Python, which can reach any object, so it is reviewed like other
   code.
 
-A theorem expected to prove needs a `witness`: a condition that, together with the hypotheses, z3 must satisfy, so a
-proof from hypotheses that never hold fails. A theorem can instead expect a counterexample, with the `issue` of the
-known gap or the `reason` it is expected. A proof then fails the run, so a fix that closes the gap updates the theorem.
+Each theorem gets checks that its proof is not vacuous: z3 must satisfy the hypotheses together with each of these
+conditions, or the result is VACUOUS and fails.
+
+- `witness`, when the theorem gives one: a condition that shows the case the theorem is about, such as a borrower with
+  debt.
+- The antecedent of each implication that the goal states at its top, through `And`: for `Implies(solvent, bound)`, z3
+  must find a solvent input. This check is syntactic: `Implies(a, Implies(b, c))` checks `a` only, and `Or(Not(a), b)`
+  checks nothing more than the hypotheses, so such a goal gives a witness or is written `Implies(And(a, b), c)`.
+- The hypotheses alone, when neither of the above applies. A counterexample with a value for every input and free
+  variable shows them, so a theorem with one needs no further check.
+
+`witness_kind` in the result says which applied: "explicit", "antecedent" or "hypotheses", the weakest, which catches
+only hypotheses that contradict each other. A theorem can expect a counterexample, with the `issue` of the known gap or
+the `reason` it is expected. A proof then fails the run, so a fix that closes the gap updates the theorem.
 
 Every result other than the expected one fails the run, and so does "unknown" from every solver.
 
@@ -364,8 +375,6 @@ class Theorem:
             raise TheoremError(f"{self.id}: assume takes {', '.join(ASSUMPTIONS)}, not {', '.join(sorted(unknown))}")
         if self.expect not in ("proved", "counterexample"):
             raise TheoremError(f"{self.id}: expect is proved or counterexample, not {self.expect}")
-        if self.expect == "proved" and self.witness is None:
-            raise TheoremError(f"{self.id}: a theorem expected to prove needs a witness that its hypotheses hold")
         if self.expect == "counterexample" and not (self.issue or self.reason):
             raise TheoremError(f"{self.id}: an expected counterexample needs the issue of its gap or a reason")
 
@@ -391,6 +400,8 @@ class Result:
     ok: bool
     assumed: list[str]
     witness: str | None = None
+    witness_kind: str = ""
+    witness_checks: list = field(default_factory=list)
     counterexample: dict = field(default_factory=dict)
     time: float = 0.0
     issue: str | None = None
@@ -517,19 +528,63 @@ def prove(t: Theorem, q: Terms) -> Result:
     result.verdict = {"unsat": "PROVED", "sat": "COUNTEREXAMPLE"}.get(answer.verdict, "UNKNOWN")
     result.counterexample = answer.values
     result.detail = answer.detail
-    if witness is not None:
-        w = solvers.check(hypotheses + [witness], values, timeout_ms=t.timeout_ms)
-        result.witness = {"sat": "WITNESS", "unsat": "VACUOUS"}.get(w.verdict, "UNKNOWN")
-        result.witness_values = w.values
+    missing = [name for name in shown if name not in result.counterexample]
+    _vacuity(result, hypotheses, witness, goal, values, missing, t.timeout_ms)
     result.lemma_domain = _lemma_domain(hypotheses, proof, t.timeout_ms)
     result.callees = sorted({e.what.removeprefix("call ") for e in proof if e.what.startswith("call ")})
-    missing = [name for name in shown if name not in result.counterexample]
     if result.verdict == "COUNTEREXAMPLE" and missing:
         result.detail = f"the solver gave no value for {', '.join(missing)}. {result.detail}".strip()
     expected = "PROVED" if t.expect == "proved" else "COUNTEREXAMPLE"
-    result.ok = result.verdict == expected and result.witness in (None, "WITNESS")
+    result.ok = result.verdict == expected and result.witness == "WITNESS"
     result.ok = result.ok and not (result.verdict == "COUNTEREXAMPLE" and missing)
     return result
+
+
+# Why a check of a theorem's vacuity fails, by the check.
+VACUOUS = {
+    "witness": "the witness never holds with the hypotheses",
+    "antecedent": "the antecedent of the goal's implication {n} never holds with the hypotheses",
+    "hypotheses": "the hypotheses never hold",
+}
+
+
+def _antecedents(goal) -> list[z3.BoolRef]:
+    """The antecedent of each implication that the goal states at its top, through `And`."""
+    found, stack = [], [goal]
+    while stack:
+        term = stack.pop(0)
+        if not z3.is_expr(term):
+            continue
+        if z3.is_and(term):
+            stack[0:0] = list(term.children())
+        elif z3.is_implies(term):
+            found.append(term.arg(0))
+    return found
+
+
+def _vacuity(result: Result, hypotheses: list, witness, goal, values: dict, missing: list, timeout_ms: int) -> None:
+    """Checks that the hypotheses hold together with the witness, and with the antecedent of each implication of the
+    goal, or alone when neither applies, unless a complete counterexample shows them. Records each check, and the
+    verdict: VACUOUS when a check is unsatisfiable, else UNKNOWN when one is unknown, else WITNESS."""
+    checks = [("witness", 0, witness)] if witness is not None else []
+    checks += [("antecedent", n, a) for n, a in enumerate(_antecedents(goal), start=1)]
+    result.witness_kind = "explicit" if witness is not None else "antecedent" if checks else "hypotheses"
+    if not checks and result.verdict == "COUNTEREXAMPLE" and not missing:
+        shown = {name: value for name, value in result.counterexample.items() if name in values}
+        result.witness_checks = [
+            {"check": "hypotheses", "verdict": "WITNESS", "values": shown, "from": "counterexample"}
+        ]
+    else:
+        for kind, n, condition in checks or [("hypotheses", 0, z3.BoolVal(True))]:
+            answer = solvers.check(hypotheses + [condition], values, timeout_ms=timeout_ms)
+            verdict = {"sat": "WITNESS", "unsat": "VACUOUS"}.get(answer.verdict, "UNKNOWN")
+            name = f"{kind} {n}" if kind == "antecedent" else kind
+            result.witness_checks.append({"check": name, "verdict": verdict, "values": answer.values})
+            if verdict == "VACUOUS":
+                result.detail = f"{VACUOUS[kind].format(n=n)}. {result.detail}".strip()
+    verdicts = {check["verdict"] for check in result.witness_checks}
+    result.witness = "VACUOUS" if "VACUOUS" in verdicts else "UNKNOWN" if "UNKNOWN" in verdicts else "WITNESS"
+    result.witness_values = result.witness_checks[0]["values"]
 
 
 def _lemma_domain(hypotheses: list, proof: list[Evaluation], timeout_ms: int) -> str:
