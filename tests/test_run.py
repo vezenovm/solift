@@ -7,9 +7,16 @@ from examples.pricer.spec import SPECS as PRICER_SPECS
 from examples.quoter.spec import QUOTER, SPEC
 from solift import forge
 from solift.extract import extract
-from solift.link import Harness, Link, generate
+from solift.link import Harness, combine, generate
 from solift.run import Spec, run, summary, vector_failures
 from solift.workspace import Project, Workspace
+
+
+def wired(setup: str, call: str, **parts) -> dict:
+    """The fields of a spec that link it: `setup` is `path:Contract`, an absolute path for a harness that the overlay
+    adds, and a path from the project's root for one of the fixture project's harnesses."""
+    harness = Harness(setup) if setup.startswith("/") else Harness.from_project(setup)
+    return {"harness": harness, "call": call, **parts}
 
 
 def test_a_run_proves_vectors_and_links_the_quoter_and_records_each_version(tmp_path):
@@ -75,6 +82,19 @@ def test_a_mutant_that_breaks_a_theorem_fails_the_run_and_its_link_still_passes(
     assert record["replaced"] == [QUOTER]
 
 
+def test_the_model_holds_the_signature_and_the_visibility_of_its_target(tmp_path):
+    workspace = Workspace(tmp_path / "work")
+    infos = forge.build(SPEC.project.overlay(workspace), workspace.fresh("out"), workspace.fresh("cache"))
+    model = extract(infos, SPEC.target, SPEC.reads).model
+    assert (model.signature, model.visibility) == (("_gas", "_price"), "internal")
+    pricer = PRICER_SPECS[0]
+    priced = extract(infos, pricer.target, pricer.reads).model
+    assert priced.signature == ("_kind", "_token", "_meter") and [p.name for p in priced.function.params] == [
+        "_kind",
+        "_token",
+    ]
+
+
 def test_an_extraction_error_fails_the_run(tmp_path):
     spec = dataclasses.replace(SPEC, reads={k: v for k, v in SPEC.reads.items() if k != "tx.gasprice"})
     record = run(spec, Workspace(tmp_path / "work"), link=False)
@@ -88,16 +108,50 @@ def test_the_committed_generated_files_of_the_example_are_current(tmp_path):
     workspace = Workspace(tmp_path / "work")
     root = SPEC.project.overlay(workspace)
     infos = forge.build(root, workspace.fresh("out"), workspace.fresh("cache"))
-    generated = generate(extract(infos, SPEC.target, SPEC.reads).model, SPEC.link)
+    model = extract(infos, SPEC.target, SPEC.reads).model
+    generated = generate(model, combine(model, SPEC.harness, SPEC.harness.setup, call=SPEC.call))
     committed = SPEC.project.root / "examples" / "quoter" / "generated"
     assert sorted(p.name for p in committed.iterdir()) == sorted(generated.files)
     for name, text in generated.files.items():
         assert (committed / name).read_text() == text, f"{name} is stale"
 
 
+def test_a_harness_entry_that_one_spec_cannot_take_fails_that_spec_alone(tmp_path):
+    """A harness applies whole: the shared harness with quoteFor's price adapter fails _priced, whose model does not
+    read price, and quoteFor, which sets price itself, still runs."""
+    priced, quote_for = PRICER_SPECS
+    price = {"price": quote_for.adapters["price"]}
+    harness = dataclasses.replace(priced.harness, adapters=price)
+    specs = [
+        dataclasses.replace(priced, harness=harness),
+        dataclasses.replace(
+            quote_for, harness=harness, adapters={("floor", "cap"): quote_for.adapters[("floor", "cap")]}
+        ),
+    ]
+    record = run(specs, Workspace(tmp_path / "work"), link=False)
+    assert not record["ok"]
+    assert record["failures"] == [
+        "pricer-priced: extract: the harness adapter for price sets price, which Pricer._priced does not read: a "
+        "harness's adapters apply to every spec that uses it, so give this one to the specs that read price"
+    ]
+    assert [t["ok"] for t in record["specs"][1]["theorems"]] == [True]
+
+
 def test_one_run_of_several_specs_links_every_model_in_one_halmos_run_with_one_operators_test(tmp_path):
-    record = run([SPEC, *PRICER_SPECS], Workspace(tmp_path / "work"))
+    """The pricer's specs share one harness, which applies whole to each, and each sets what its own model reads;
+    quoteFor is public, so its link calls it on the harness's instance. The project names where the tests import
+    forge-std from."""
+    project = dataclasses.replace(SPEC.project, test_import="lib/forge-std/src/Test.sol")
+    specs = [dataclasses.replace(spec, project=project) for spec in (SPEC, *PRICER_SPECS)]
+    record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
+    harnesses = {s["spec"]: s["harness"] for s in record["specs"]}
+    setup = "tests/fixtures/test/PricerSetup.sol:PricerSetup"
+    assert harnesses["pricer-priced"] == {"setup": setup, "call": "pricer.exposedPriced(_kind, _token, meter)"}
+    assert harnesses["pricer-quote-for"] == {"setup": setup, "call": "pricer.quoteFor(_kind)"}
+    generated = tmp_path / "work" / "root" / project.generated
+    for name in ("SoliftOperators.t.sol", "QuoterQuoteVectors.t.sol", "PricerQuoteForVectors.t.sol"):
+        assert 'import {Test} from "lib/forge-std/src/Test.sol";' in (generated / name).read_text()
     assert [s["spec"] for s in record["specs"]] == ["quoter", "pricer-priced", "pricer-quote-for"]
     for spec in record["specs"]:
         assert [r["check"] for r in spec["link"]] == ["check_link"]
@@ -142,7 +196,7 @@ def test_a_function_that_writes_storage_links_to_its_model_and_its_vectors_agree
         name="writes",
         target="tests/fixtures/contracts/Writes.sol:Writes.updateThenRead",
         reads={"$info.rate": "stored", "$balances[_who]": "balance"},
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/WritesSetup.sol:WritesSetup",
             call="writes.updateThenRead(_price, _who)",
             adapters={("stored", "balance"): "writes.set(stored, _who, balance);"},
@@ -163,7 +217,7 @@ def test_a_function_of_several_returns_links_value_by_value_and_a_theorem_reads_
         name="tuples-split",
         target="tests/fixtures/contracts/Tuples.sol:Tuples.split",
         reads={"$cap": "cap"},
-        link=Link(setup=setup, call="tuples.split(_a)", adapters={"cap": "tuples.setCap(cap);"}),
+        **wired(setup=setup, call="tuples.split(_a)", adapters={"cap": "tuples.setCap(cap);"}),
         project=SPEC.project,
     )
 
@@ -176,7 +230,7 @@ def test_a_function_of_several_returns_links_value_by_value_and_a_theorem_reads_
         name="tuples-pullable",
         target="tests/fixtures/contracts/Tuples.sol:Tuples.pullable",
         reads={},
-        link=Link(setup=setup, call="tuples.pullable(_a, _b)"),
+        **wired(setup=setup, call="tuples.pullable(_a, _b)"),
         project=SPEC.project,
     )
     record = run([split, pullable], Workspace(tmp_path / "work"))
@@ -199,7 +253,7 @@ def test_a_storage_pointer_passed_to_callees_links_to_its_model(tmp_path):
             "$spenders[_who].left": "left",
             "$main.left": "mainLeft",
         },
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/PointersSetup.sol:PointersSetup",
             call="pointers.available(_who)",
             adapters={
@@ -231,7 +285,7 @@ def test_writes_and_call_arguments_are_outputs_that_the_link_reads_after_the_cal
         target=f"{target}.buy",
         reads={"SWAPPER.fee()": "fee"},
         outputs={"SWAPPER.buy(msg.sender,amount)": (None, "bought")},
-        link=Link(
+        **wired(
             setup=setup,
             call="effects.buy(_amountIn)",
             adapters={"fee": "swapper.setFee(fee);"},
@@ -250,7 +304,7 @@ def test_writes_and_call_arguments_are_outputs_that_the_link_reads_after_the_cal
         target=f"{target}.pull",
         reads={"$allowances[msg.sender].left": "stored", "block.timestamp": "time"},
         outputs={"$allowances[msg.sender].left": "remaining", "$allowances[msg.sender].last": "last"},
-        link=Link(
+        **wired(
             setup=setup,
             call="effects.pull(_amount, _refill)",
             adapters={"stored": "effects.setLeft(address(this), stored);", "time": "vm.warp(time);"},
@@ -282,7 +336,7 @@ def test_writes_and_call_arguments_are_outputs_that_the_link_reads_after_the_cal
         target=f"{target}.add",
         reads={"$total": "before"},
         outputs={"$total": "total"},
-        link=Link(
+        **wired(
             setup=setup,
             call="effects.add(_x, _y)",
             adapters={"before": "effects.setTotal(before);"},
@@ -318,7 +372,7 @@ def test_max_and_a_mulDiv_rounded_down_prove_their_lemmas_and_a_signed_parameter
         name="rounded-share",
         target="tests/fixtures/contracts/Rounded.sol:Rounded.share",
         reads={},
-        link=Link(setup=setup, call="rounded.share(_x, _y, _d)"),
+        **wired(setup=setup, call="rounded.share(_x, _y, _d)"),
         project=SPEC.project,
     )
 
@@ -332,7 +386,7 @@ def test_max_and_a_mulDiv_rounded_down_prove_their_lemmas_and_a_signed_parameter
         target="tests/fixtures/contracts/Rounded.sol:Rounded.swap",
         reads={},
         outputs={"POOL.exchange(0,_out,_dx,minDy)": (None, None, None, "minOut")},
-        link=Link(
+        **wired(
             setup=setup,
             call="rounded.swap(_out, _dx)",
             parameters={"_out": "int128"},
@@ -355,7 +409,7 @@ def test_a_balance_that_the_harness_deals_links_to_its_model(tmp_path):
         name="balances-share",
         target="tests/fixtures/contracts/Balances.sol:Balances.share",
         reads={"address(this).balance": "held"},
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/BalancesSetup.sol:BalancesSetup",
             call="balances.share(_amount)",
             adapters={"held": "vm.deal(address(balances), held);"},
@@ -382,7 +436,7 @@ def test_internal_calls_of_virtual_functions_run_the_override_and_link_to_their_
             name=target.replace(".", "-").lower(),
             target=f"tests/fixtures/contracts/Virtual.sol:{target}",
             reads=reads or {},
-            link=Link(setup="tests/fixtures/test/VirtualSetup.sol:VirtualSetup", call=call, adapters=adapters or {}),
+            **wired(setup="tests/fixtures/test/VirtualSetup.sol:VirtualSetup", call=call, adapters=adapters or {}),
             project=SPEC.project,
         )
 
@@ -453,8 +507,8 @@ def test_two_specs_whose_targets_import_math_from_two_files_prove_its_lemma_on_e
         harness = tmp_path / f"{name}.sol"
         harness.write_text(SMALLER.format(name=name, math=math))
         at = f"{project.generated}/harness/{name}.sol"
-        link = Link(setup=Harness(harness, f"{name}Setup"), call="smaller.smaller(_a, _b)")
-        specs.append(Spec(name=name, target=f"{at}:{name}.smaller", reads={}, link=link, project=project))
+        link = wired(setup=f"{harness}:{name}Setup", call="smaller.smaller(_a, _b)")
+        specs.append(Spec(name=name, target=f"{at}:{name}.smaller", reads={}, **link, project=project))
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["path"] for r in (s["versions"]["OpenZeppelin"] for s in record["specs"])] == [
@@ -503,8 +557,8 @@ def test_two_specs_whose_targets_take_enums_of_one_name_from_two_files_link(tmp_
         harness = tmp_path / f"{name}.sol"
         harness.write_text(SIDED.format(name=name))
         at = f"{SPEC.project.generated}/harness/{name}.sol"
-        link = Link(setup=Harness(harness, f"{name}Setup"), call="sided.bump(_side, _x)")
-        specs.append(Spec(name=name, target=f"{at}:{name}.bump", reads={}, link=link, project=SPEC.project))
+        link = wired(setup=f"{harness}:{name}Setup", call="sided.bump(_side, _x)")
+        specs.append(Spec(name=name, target=f"{at}:{name}.bump", reads={}, **link, project=SPEC.project))
     record = run(specs, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)
     assert [r["check"] for r in record["link"]["shared"]] == ["check_row_addRevertsExactlyOnOverflow"]
@@ -592,8 +646,8 @@ def test_a_project_on_an_older_solc_links_with_its_operator_rows_and_vectors(tmp
         name="old-solc",
         target="src/Old.sol:Old.share",
         reads={"total": "total"},
-        link=Link(
-            setup=Harness(tmp_path / "OldSetup.sol", "OldSetup"),
+        **wired(
+            setup=f"{tmp_path / 'OldSetup.sol'}:OldSetup",
             call="old.share(_a, _b)",
             adapters={"total": "old.set(total);"},
         ),
@@ -615,7 +669,7 @@ def test_a_payable_address_parameter_and_read_link_as_payable(tmp_path):
         name="payable",
         target="tests/fixtures/contracts/Payable.sol:Payable.paid",
         reads={"recipient": "recipient"},
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/PayableSetup.sol:PayableSetup",
             call="payer.paid(_to, _a)",
             adapters={"recipient": "payer.setRecipient(recipient);"},
@@ -637,7 +691,7 @@ def test_the_link_check_of_a_model_with_many_inputs_and_two_outputs_fits_the_sta
         target="tests/fixtures/contracts/Wide.sol:Wide.take",
         reads={"a": "a", "b": "b", "c": "c", "d": "d", "e": "e", "held[_who]": "held"},
         outputs={"a": "aAfter", "held[_who]": "heldAfter"},
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/WideSetup.sol:WideSetup",
             call="wide.take(_who, _x, _y)",
             adapters={("a", "b", "c", "d", "e"): "wide.set(a, b, c, d, e);", "held": "wide.setHeld(_who, held);"},
@@ -675,7 +729,7 @@ def test_shifts_and_masks_by_constants_link_with_a_row_for_each_constant(tmp_pat
             name=f"bits-{function}",
             target=f"{target}.{function}",
             reads=reads,
-            link=Link(setup=setup, call=f"bits.{function}({args})", adapters=adapters),
+            **wired(setup=setup, call=f"bits.{function}({args})", adapters=adapters),
             project=SPEC.project,
         )
         for function, args, reads, adapters in cases
@@ -701,7 +755,7 @@ def test_ceil_div_links_with_the_row_of_its_copy_of_math(tmp_path):
             name=f"ceil-{function}",
             target=f"tests/fixtures/contracts/Ceil.sol:Ceil.{function}",
             reads={},
-            link=Link(setup="tests/fixtures/test/CeilSetup.sol:CeilSetup", call=f"ceil.{function}({args})"),
+            **wired(setup="tests/fixtures/test/CeilSetup.sol:CeilSetup", call=f"ceil.{function}({args})"),
             project=SPEC.project,
         )
         for function, args in [("half", "_x"), ("ceil", "_a, _b"), ("olderCeil", "_a, _b")]
@@ -722,7 +776,7 @@ def test_memory_structs_that_the_function_builds_link_to_their_models(tmp_path):
             name=f"structs-{function}",
             target=f"{target}.{function}",
             reads=reads,
-            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            **wired(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
             project=SPEC.project,
         )
         for function, args, reads, adapters in [
@@ -774,7 +828,7 @@ def test_structs_passed_to_callees_link_to_their_models(tmp_path):
             name=f"structs-{function}",
             target=f"{target}.{function}",
             reads=reads,
-            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters, imports=imports),
+            **wired(setup=setup, call=f"structs.{function}({args})", adapters=adapters, imports=imports),
             project=SPEC.project,
         )
         for function, args, reads, adapters, imports in cases
@@ -809,7 +863,7 @@ def test_structs_that_internal_calls_return_link_to_their_models(tmp_path):
             name=f"structs-{function}",
             target=f"{target}.{function}",
             reads=reads,
-            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            **wired(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
             project=SPEC.project,
         )
         for function, args, reads, adapters in cases
@@ -841,7 +895,7 @@ def test_the_values_of_an_external_call_link_to_their_models(tmp_path):
             name=f"structs-{function}",
             target=f"{target}.{function}",
             reads=reads,
-            link=Link(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
+            **wired(setup=setup, call=f"structs.{function}({args})", adapters=adapters),
             project=SPEC.project,
         )
         for function, args, reads, adapters in cases
@@ -861,7 +915,7 @@ def test_cuts_that_take_new_memory_link_with_the_cut_value_observed(tmp_path):
             name="structs-cut-constructed",
             target=f"{target}.openedConstructed",
             reads={"Windows.opened(Window(_s,_s),_t)": "opened"},
-            link=Link(
+            **wired(
                 setup=setup,
                 call="structs.openedConstructed(_s, _t)",
                 observed={"opened": "Windows.opened(Window(_s, _s), _t)"},
@@ -873,7 +927,7 @@ def test_cuts_that_take_new_memory_link_with_the_cut_value_observed(tmp_path):
             name="structs-cut-owed",
             target=f"{target}.owed",
             reads={"config.end": "end", "window().opened(_t)": "opened"},
-            link=Link(
+            **wired(
                 setup=setup,
                 call="structs.owed(_t)",
                 adapters={("start", "end"): "structs.setConfig(start, end);"},
@@ -896,7 +950,7 @@ def test_a_key_on_an_assigned_local_links_to_its_model(tmp_path):
             name=f"keys-{function}",
             target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
             reads={"gate.quote(_who,amount)": "quote"},
-            link=Link(
+            **wired(
                 setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
                 call=f"keys.{function}({args})",
                 adapters={"quote": "gate.set(quote);"},
@@ -917,7 +971,7 @@ def test_the_result_of_a_call_that_is_not_a_view_links_to_its_model(tmp_path):
             name=f"keys-{function}",
             target=f"tests/fixtures/contracts/Keys.sol:Keys.{function}",
             reads={key: "answer"},
-            link=Link(
+            **wired(
                 setup="tests/fixtures/test/KeysSetup.sol:KeysSetup",
                 call=f"keys.{function}({args})",
                 adapters={"answer": "gate.setAnswer(answer);"},
@@ -948,7 +1002,7 @@ def test_checks_called_as_statements_link_to_their_models(tmp_path):
             name=f"checks-{function}",
             target=f"tests/fixtures/contracts/Checks.sol:Checks.{function}",
             reads=reads,
-            link=Link(
+            **wired(
                 setup=setup,
                 call=f"checks.{function}({args})",
                 adapters=adapters,
@@ -986,9 +1040,7 @@ def test_the_modifiers_of_a_target_link_to_its_model(tmp_path):
             name=f"gated-{function}",
             target=f"tests/fixtures/contracts/Gated.sol:Gated.{function}",
             reads=reads,
-            link=Link(
-                setup=setup, call=f"gated.{function}(_a)", adapters=adapters, observed={"caller": "address(this)"}
-            ),
+            **wired(setup=setup, call=f"gated.{function}(_a)", adapters=adapters, observed={"caller": "address(this)"}),
             project=SPEC.project,
         )
         for function, reads, adapters in cases
@@ -1004,7 +1056,7 @@ def test_a_call_in_an_error_argument_links_to_its_model(tmp_path):
         name="kept",
         target="tests/fixtures/contracts/Kept.sol:Kept.kept",
         reads={"keeper": "keeper", "msg.sender": "caller"},
-        link=Link(
+        **wired(
             setup="tests/fixtures/test/KeptSetup.sol:KeptSetup",
             call="kept.kept(_a)",
             adapters={"keeper": "kept.setKeeper(keeper);"},
@@ -1021,9 +1073,9 @@ def test_a_call_in_an_error_argument_links_to_its_model(tmp_path):
 def test_a_mutant_that_drops_a_read_keeps_its_key_as_a_free_input_and_its_theorem_fails(tmp_path):
     """The mutant no longer reads $config.cap. Without `unread` its spec fails, as the read map names a key that the
     function does not read, and the theorem on the cap gets no verdict."""
-    from examples.quoter.spec import LINK, PROJECT, READS
+    from examples.quoter.spec import HARNESS, PROJECT, READS
 
-    spec = Spec(name="capped", target=f"{QUOTER}:Quoter._quote", reads=READS, link=LINK, project=PROJECT)
+    spec = Spec("capped", f"{QUOTER}:Quoter._quote", READS, harness=HARNESS, call=SPEC.call, project=PROJECT)
 
     @spec.theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
     def quote_at_most_the_cap(q):

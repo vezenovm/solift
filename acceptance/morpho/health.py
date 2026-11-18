@@ -13,37 +13,35 @@ bytecode only where _isHealthy calls them, so the record lists them as callees.
 
 import z3
 
-from acceptance.morpho.project import PROJECT, SETUP
-from solift.link import Link
-from solift.run import Spec
+from acceptance.morpho.project import MORPHO, PROJECT
+from solift import Spec
 
 WAD = 10**18
 ORACLE_PRICE_SCALE = 10**36
 VIRTUAL_SHARES = 10**6
 VIRTUAL_ASSETS = 1
 
+# The adapters are this spec's own: a harness applies whole to every spec of it, and the share math reads none of this.
 HEALTHY = Spec(
-    name="morpho-healthy",
-    target="src/Morpho.sol:Morpho._isHealthy(MarketParams,Id,address,uint256)",
-    reads={
+    "morpho-healthy",
+    "src/Morpho.sol:Morpho._isHealthy(MarketParams,Id,address,uint256)",
+    {
         "marketParams.lltv": "lltv",
         "position[id][borrower].borrowShares": "borrowShares",
         "position[id][borrower].collateral": "collateral",
         "market[id].totalBorrowAssets": "totalBorrowAssets",
         "market[id].totalBorrowShares": "totalBorrowShares",
     },
-    link=Link(
-        setup=SETUP,
-        call="morpho.exposedIsHealthy(marketParams, id, borrower, collateralPrice)",
-        adapters={
-            "lltv": "MarketParams memory marketParams = MarketParams(NONE, NONE, NONE, NONE, lltv);",
-            ("borrowShares", "collateral", "totalBorrowAssets", "totalBorrowShares"): (
-                "morpho.setPosition(id, borrower, borrowShares, collateral, totalBorrowAssets, totalBorrowShares);"
-            ),
-        },
-        parameters={"id": "Id"},
-        imports=('import {Id, MarketParams} from "src/interfaces/IMorpho.sol";',),
-    ),
+    harness=MORPHO,
+    call="morpho.exposedIsHealthy(marketParams, id, borrower, collateralPrice)",
+    adapters={
+        "lltv": "MarketParams memory marketParams = MarketParams(NONE, NONE, NONE, NONE, lltv);",
+        ("borrowShares", "collateral", "totalBorrowAssets", "totalBorrowShares"): (
+            "morpho.setPosition(id, borrower, borrowShares, collateral, totalBorrowAssets, totalBorrowShares);"
+        ),
+    },
+    parameters={"id": "Id"},
+    imports=('import {Id, MarketParams} from "src/interfaces/IMorpho.sol";',),
     project=PROJECT,
 )
 

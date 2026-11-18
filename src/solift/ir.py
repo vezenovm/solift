@@ -312,7 +312,9 @@ class Model:
     instead of the contract and function names (solidity.names). `effects` are the writes, external calls and events
     of the function and its callees, which the model leaves out. `outputs` are those it has as values, which the
     modeled function returns after its own. `solc` is the version of the compiler that built the target, as `0.8.10`, or
-    empty where it is not known: the generated tests call the contract as that version can (solidity.encoded_call)."""
+    empty where it is not known: the generated tests call the contract as that version can (solidity.encoded_call).
+    `signature` holds the names of the target's Solidity parameters in order, those that are not inputs too, and
+    `visibility` its visibility, so that a link can call a public or external target directly (link.combine)."""
 
     contract: str
     function: Function
@@ -326,6 +328,8 @@ class Model:
     effects: tuple[Effect, ...] = ()
     outputs: tuple[Output, ...] = ()
     solc: str = ""
+    signature: tuple[str, ...] = ()
+    visibility: str = ""
 
     @property
     def name(self) -> str:

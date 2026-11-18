@@ -13,11 +13,11 @@ solift reads 'src/Vault.sol:Vault._redeem' --root <project> [--profile deploy]
 ```
 
 `solift reads` builds the project into `build/reads`, with a file that imports the target's file, so that a target in a
-library that no source imports is built too, and runs the extractor until it has every read of the function:
-storage variables and fields, mapping entries, fields of a struct parameter, fields of `tx`, `block` and `msg`, and
-external calls. It prints them as a read map with proposed input names, a link skeleton, the internal calls that a read
-map entry can cut, the outputs it needs, and the writes, calls and events that the model leaves out. `--json` prints
-the same as JSON.
+library that no source imports is built too, and runs the extractor until it has every read of the function: storage
+variables and fields, mapping entries, fields of a struct parameter, fields of `tx`, `block` and `msg`, and external
+calls. It prints them as a read map with proposed input names, a skeleton of the harness and the spec, the internal
+calls that a read map entry can cut, the outputs it needs, and the writes, calls and events that the model leaves out.
+`--json` prints the same as JSON.
 
 It stops at the first construct the extractor refuses, with its place in the source, and says "incomplete". The
 function must be loop-free and use checked `uint` arithmetic: the extractor refuses loops, `unchecked`, signed
@@ -34,41 +34,51 @@ The harness is a Foundry test contract with `setUp()`. Keep it next to your spec
 - deploys the contract, through a subclass with an `exposed` function when the target is internal;
 - has setters for the state that the function reads, and stubs for the contracts that it calls.
 
-The generated test inherits from the harness, so `call` and the adapters use its variables. A `Harness` puts it into
-the overlay, at `<test>/solift/harness/` unless `at=` names a place. Its imports resolve from there, so import the
-project's files by their path from the root (`import {Vault} from "src/Vault.sol";`), not by a relative path.
+The generated test inherits from the harness, so `call` and the adapters use its variables. In the spec file,
+`Harness("VaultSetup.sol:VaultSetup")` names it by its path next to that file (a factory function names it next to the
+factory's module), and the run puts it into the overlay, at `<test>/solift/harness/` unless `at=` names a place. Its
+imports resolve from there, so import the project's files by their path from the root (`import {Vault} from
+"src/Vault.sol";`), not by a relative path. A harness that is a file of the project is
+`Harness.from_project("test/VaultSetup.sol:VaultSetup")`, by its path from the root, under a directory that the overlay
+copies.
+
+The `Harness` also says how the link test sets each input: its `adapters`, `observed` values, `parameters` and `imports`
+([Adapters](#adapters)). Specs of one contract share one harness, and each takes all of it.
 
 ## 3. Write the spec
 
 ```python
-import pathlib
+from solift import Harness, Spec
 
-from solift import Harness, Link, Spec
-
-HERE = pathlib.Path(__file__).parent
+VAULT = Harness(
+    "VaultSetup.sol:VaultSetup",  # next to this file
+    adapters={  # how the test sets each input
+        ("assets", "rate"): "vault.set(assets, rate);",
+        "price": "oracle.set(price);",
+        "time": "vm.warp(time);",
+    },
+    observed={},  # an input that the test reads instead of setting, such as {"gasPrice": "tx.gasprice"}
+)
 SPEC = Spec(
-    name="vault-redeem",
-    target="src/Vault.sol:Vault._redeem",  # add "(uint256,address)" to pick one overload
-    reads={  # a value the function reads -> its input name, as `solift reads` prints them
+    "vault-redeem",
+    "src/Vault.sol:Vault._redeem",  # add "(uint256,address)" to pick one overload
+    {  # the read map: a value the function reads -> its input name, as `solift reads` prints them
         "totalAssets": "assets",  # storage, by name
         "$fees.rate": "rate",  # a field of a storage struct
         "ORACLE.price()": "price",  # an external view call, by its source text
         "block.timestamp": "time",
     },
-    link=Link(
-        setup=Harness(HERE / "VaultSetup.sol", "VaultSetup"),
-        call="vault.exposedRedeem(shares, owner)",  # with the target's parameter names
-        adapters={  # how the test sets each input
-            ("assets", "rate"): "vault.set(assets, rate);",
-            "price": "oracle.set(price);",
-            "time": "vm.warp(time);",
-        },
-        observed={},  # an input that the test reads instead of setting, such as {"gasPrice": "tx.gasprice"}
-    ),
+    harness=VAULT,
+    call="vault.exposedRedeem(shares, owner)",  # with the target's parameter names
 )
 ```
 
-Each input needs an adapter or an `observed` expression. Otherwise the link refuses to generate.
+A public or external target needs no `call` when the harness names the deployed contract: with
+`Harness(..., instance="vault")`, the link calls `vault.previewRedeem(_shares)` with the target's parameters. A target
+with a struct, signed or user-defined value type parameter, which is not an input, needs a `call` that builds it.
+
+Each input that is not a parameter of the target needs an adapter or an `observed` expression. Otherwise the link
+refuses to generate.
 
 A write or an external call argument becomes an output with the output map, and `post` reads it after the call:
 
@@ -81,14 +91,11 @@ SPEC = Spec(
         "$allowances[msg.sender].last": "last",
         "SWAPPER.buy(msg.sender,amount)": (None, "bought"),
     },
-    link=Link(
-        ...,
-        post={  # how the test reads each output after the call
-            "remaining": "pool.leftOf(address(this))",
-            "last": "pool.lastOf(address(this))",
-            "bought": "swapper.lastAmount()",  # a stub that records its arguments
-        },
-    ),
+    post={  # how the test reads each output after the call
+        "remaining": "pool.leftOf(address(this))",
+        "last": "pool.lastOf(address(this))",
+        "bought": "swapper.lastAmount()",  # a stub that records its arguments
+    },
 )
 ```
 
@@ -112,7 +119,7 @@ PROJECT = Project(
     profile="deploy",
     link=("foundry.toml", "remappings.txt", "node_modules"),  # symlinked into the overlay
     copy=("src",),  # copied: forge finds no AST for a symlinked source
-    add={"_/VaultSetup.sol": HERE / "VaultSetup.sol"},  # local files at paths the project does not have
+    add={"_/Stubs.sol": HERE / "Stubs.sol"},  # local files at paths the project does not have
     generated="_/solift",  # inside the profile's test directory
 )
 ```
@@ -248,15 +255,35 @@ way: as an argument of `call`, through an adapter, or as an `observed` value.
 | an immutable that the harness sets | `observed={"token": "address(pricer.TOKEN())"}`, which takes only that value |
 
 `parameters` are symbolic parameters of the check that are not inputs: an adapter uses them to set what the contract
-reads. `observed` maps an input to the expression that the check reads it from, before the call. `post` maps each
-output to the expression that the check reads it from after the call, such as a getter of the harness or a stub that
-records its arguments. `imports` adds the
-import directives that the adapters need.
+reads. `observed` maps an input to the expression that the check reads it from, before the call. `post`, on the spec,
+maps each output to the expression that the check reads it from after the call, such as a getter of the harness or a
+stub that records its arguments. `imports` adds the import directives that the adapters need.
+
+`adapters`, `observed`, `parameters` and `imports` go on the `Harness`, which the specs of a contract share, or on the
+`Spec`, for that spec alone. A harness applies whole: every spec that uses it takes all of its entries, and they are
+checked as strictly as the spec's own. Each name of an adapter's key is an input of the spec's model or a parameter of
+the check, each `observed` value is of an input, and an input that both the spec and the harness set fails. Nothing is
+skipped, so an adapter that only one spec's model reads goes on that spec, and the harness holds what its specs share.
+
+Specs that read different things can still share setup code:
+
+- a setter that runs for every spec takes a typed parameter (`parameters={"answer": "uint128"}` with `"answer":
+  "feed.set(answer);"`), whose name is no input, and each spec observes what it reads of the state that results, as
+  for a cut point;
+- a dict of adapters in the spec module, which several specs pass as `adapters={**SETTERS}`;
+- another harness for another setup: `dataclasses.replace(SHARED, adapters=...)`.
 
 ### Spec options
 
+`Spec(name, target, reads, harness=..., ...)` takes the name, the target and the read map, then by keyword:
+
 | Option | Meaning |
 |---|---|
+| `harness` | The `Harness` of the link. |
+| `call` | How the harness calls the target, with its parameters by name. Without it, the link calls a public or external target on the harness's `instance`. |
+| `post` | Each output to the expression that the check reads it from after the call. |
+| `adapters`, `observed`, `parameters`, `imports` | As on the `Harness`, for this spec alone ([Adapters](#adapters)). |
+| `project` | The `Project`; `Project()` by default. |
 | `outputs` | The output map: each write's place, as `solift reads` names it, to its output name, and each external call's source text to a tuple of a name or None for each argument. |
 | `impossible` | Outcomes (`"pays"`, `"zero"`, `"reverts"`) that the spec asserts no input reaches. A vector that reaches one fails the run. An outcome that z3 proves no input reaches needs no entry: the record lists it as unreachable. |
 | `stem` | The name of the generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and `quote`. |
@@ -297,6 +324,7 @@ a failed write of the generated files ends the run, and a spec whose extraction 
   `spec files` with the sha256 of each Python file of the specs, and `generated` with the sha256 of each generated file;
 - `specs`, one for each spec:
   - `model`: its inputs, reads, callees, outputs, and the writes, calls and events that it leaves out (`effects`);
+  - `harness`: the setup and the call of the link;
   - `theorems`: each with its verdict, witness, the values of a counterexample or a witness, what it assumed,
     `lemma_domain`, `callees`, `link`, `query_sha256`, and the answer of each solver;
   - `vectors`: the count, how many agree, and which outcomes and boundaries were reached or unreachable;

@@ -263,6 +263,8 @@ class _Extractor(Statements, Structs, Effects, Reads, Expressions, Values):
             effects=tuple(self.effects),
             outputs=tuple(self.outputs.values()),
             solc=self.solc,
+            signature=tuple(param.get("name", "") for param in node["parameters"]["parameters"]),
+            visibility=node.get("visibility", ""),
         )
         self.used.update((path, self._place(node)[0]))
         sources = {p: hashlib.sha256(self.contents[p]).hexdigest() for p in sorted(self.used)}

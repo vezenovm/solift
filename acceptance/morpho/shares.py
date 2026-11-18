@@ -9,18 +9,14 @@ The theorem is Certora's supplyWithdraw (certora/specs/ExactMath.spec): there is
 withdraw. Certora proves it on Morpho's supply and withdraw, storage included, and for a withdraw by assets too.
 """
 
-from acceptance.morpho.project import HARNESS, PROJECT, SETUP
-from solift.link import Link
-from solift.run import Spec
+from acceptance.morpho.project import HARNESS, MORPHO, PROJECT
+from solift import Spec
 
 SUPPLY_WITHDRAW = Spec(
-    name="morpho-supply-withdraw",
-    target=f"{HARNESS}:MorphoShares.supplyThenWithdraw",
-    reads={},
-    link=Link(
-        setup=SETUP,
-        call="shares.supplyThenWithdraw(assets, totalSupplyAssets, totalSupplyShares)",
-    ),
+    "morpho-supply-withdraw",
+    f"{HARNESS}:MorphoShares.supplyThenWithdraw",
+    harness=MORPHO,
+    call="shares.supplyThenWithdraw(assets, totalSupplyAssets, totalSupplyShares)",
     project=PROJECT,
 )
 

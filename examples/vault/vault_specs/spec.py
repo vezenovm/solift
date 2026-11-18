@@ -5,28 +5,21 @@ of it made with `cp -rL`:
     solift run vault_specs.spec
 """
 
-import pathlib
-
 import z3
 
-from solift import Harness, Link, Spec
+from solift import Harness, Spec
 
-SETUP = Harness(pathlib.Path(__file__).parent / "VaultSetup.sol", "VaultSetup")
+# The harness next to this file: the setters that the adapters call, and `vault`, the deployed contract, on which the
+# links call the targets, as `vault.previewRedeem(_shares)`.
+VAULT = Harness(
+    "VaultSetup.sol:VaultSetup",
+    adapters={"held": "asset.set(held);", "supply": "vault.setSupply(supply);"},
+    instance="vault",
+)
 READS = {"ASSET.balanceOf(address(this))": "held", "totalSupply": "supply"}
-ADAPTERS = {"held": "asset.set(held);", "supply": "vault.setSupply(supply);"}
 
-REDEEM = Spec(
-    name="vault-redeem",
-    target="src/Vault.sol:Vault.previewRedeem",
-    reads=READS,
-    link=Link(setup=SETUP, call="vault.previewRedeem(_shares)", adapters=ADAPTERS),
-)
-DEPOSIT = Spec(
-    name="vault-deposit",
-    target="src/Vault.sol:Vault.previewDeposit",
-    reads=READS,
-    link=Link(setup=SETUP, call="vault.previewDeposit(_assets)", adapters=ADAPTERS),
-)
+REDEEM = Spec("vault-redeem", "src/Vault.sol:Vault.previewRedeem", READS, harness=VAULT)
+DEPOSIT = Spec("vault-deposit", "src/Vault.sol:Vault.previewDeposit", READS, harness=VAULT)
 SPECS = [REDEEM, DEPOSIT]
 
 

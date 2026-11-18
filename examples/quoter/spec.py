@@ -3,9 +3,7 @@ tests/fixtures/test/QuoterSetup.sol. Run it from the repo root with `python -m e
 
 import pathlib
 
-from solift.link import Link
-from solift.run import Spec
-from solift.workspace import Project
+from solift import Harness, Project, Spec
 
 WAD = 10**18
 QUOTER = "tests/fixtures/contracts/Quoter.sol"
@@ -24,9 +22,8 @@ READS = {
     "tx.gasprice": "txGasPrice",
     "block.basefee": "baseFee",
 }
-LINK = Link(
-    setup="tests/fixtures/test/QuoterSetup.sol:QuoterSetup",
-    call="quoter.exposedQuote(_gas, _price)",
+HARNESS = Harness.from_project(
+    "tests/fixtures/test/QuoterSetup.sol:QuoterSetup",
     adapters={
         ("margin", "cap", "floor"): "quoter.setConfig(margin, cap, floor);",
         "pot": "token.set(pot);",
@@ -34,7 +31,14 @@ LINK = Link(
     },
     observed={"txGasPrice": "tx.gasprice"},
 )
-SPEC = Spec(name="quoter", target=f"{QUOTER}:Quoter._quote", reads=READS, link=LINK, project=PROJECT)
+SPEC = Spec(
+    "quoter",
+    f"{QUOTER}:Quoter._quote",
+    READS,
+    harness=HARNESS,
+    call="quoter.exposedQuote(_gas, _price)",
+    project=PROJECT,
+)
 
 
 def paying(q):

@@ -5,12 +5,10 @@ copies src, under the default profile (via-IR). It has none of Morpho's tests: i
 and the generated files only. The harness keeps its place, test/MorphoSetup.sol, because a target is in it.
 """
 
-import pathlib
-
 from solift import Harness, Project
 
 COMMIT = "55d2d99304fb3fb930c688462ae2ccabb1d533ad"
 HARNESS = "test/MorphoSetup.sol"
 
 PROJECT = Project()
-SETUP = Harness(pathlib.Path(__file__).parent / "harness" / "MorphoSetup.sol", "MorphoSetup", at=HARNESS)
+MORPHO = Harness("harness/MorphoSetup.sol:MorphoSetup", at=HARNESS)
