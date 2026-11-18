@@ -21,11 +21,7 @@ SUPPLY_WITHDRAW = Spec(
 )
 
 
-def paid(q):
-    return q.result > 0
-
-
-@SUPPLY_WITHDRAW.theorem(assume=("no-revert",), witness=paid)
+@SUPPLY_WITHDRAW.theorem(assume=("no-revert",))
 def supply_then_withdraw_pays_at_most_the_supply(q):
     """a withdraw of the shares that a supply of assets minted pays at most the assets: Certora's supplyWithdraw, on
     the share math"""

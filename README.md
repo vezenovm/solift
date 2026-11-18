@@ -25,10 +25,10 @@ At the commit of Resupply's lending pair that the exploit of 2025-06-26 drained,
 finds solvent has debt below twice the loan-to-value limit of its collateral's value" fails:
 
 ```
-COUNTEREXAMPLE WITNESS [solvent-debt-within-twice-the-ltv] a borrower that the pair finds solvent has debt below twice
+COUNTEREXAMPLE WITNESS (antecedent) [solvent-debt-within-twice-the-ltv] a borrower that the pair finds solvent has debt below twice
   (maxLTV + 1) / LTV_PRECISION of the collateral's value at the oracle price [0.01s]
   _borrower=0 price=1000000000000000000000000000000000002 storedRate=0 maxLTV=1 collateral=2 borrowed=80000000000001
-PROVED WITNESS [solvent-debt-within-twice-the-ltv-up-to-a-price-of-1e36] up to an oracle price of 1e36, ... [0.01s]
+PROVED WITNESS (antecedent) [solvent-debt-within-twice-the-ltv-up-to-a-price-of-1e36] up to an oracle price of 1e36, ... [0.01s]
 vectors: 192 of 192 agree
 PASS ResupplyPairHarnessSolventAfterUpdateLink.check_link [0.76s]
 ```
@@ -74,7 +74,7 @@ SPEC = Spec(
 )
 
 
-@SPEC.theorem(assume=("no-revert", "within-lemma-domain"), witness=lambda q: q.result > 0)
+@SPEC.theorem(assume=("no-revert", "within-lemma-domain"))
 def redeem_rounds_down(q):
     """a redeem pays at most the shares' exact part of the assets, shares * (held + 1) / (supply + 1)"""
     return q.result * (q.supply + 1) <= q._shares * (q.held + 1)
@@ -92,8 +92,10 @@ rest of your project untouched ([docs/overlay.md](docs/overlay.md)).
 - **The lemmas** that the model uses, in the same build: each checked operator reverts exactly when the table says,
   `Math.min` and `Math.max` are the smaller and the larger value, and `Math.mulDiv(x, y, d)` is `x * y / d` rounded
   down when `x` and `y` are below 2**128.
-- **The theorems**, each with its assumptions listed, starting with the input types. A theorem that is expected to
-  prove needs a witness, so that its hypotheses can hold, and an expected counterexample needs a reason.
+- **The theorems**, each with its assumptions listed, starting with the input types, and with a check that it is not
+  vacuous: its hypotheses must hold together with its `witness` if it gives one, and with the antecedent of each
+  implication that its goal states (`Implies(solvent, ...)` needs a solvent input), or else on their own. The record's
+  `witness_kind` says which. An expected counterexample needs a reason.
 
 Each theorem's record also says how far it reaches: `lemma_domain` (whether its hypotheses keep mulDiv where the lemma
 is proved), `callees` (functions that it runs with `q.call` on its own arguments, which the link covers only where the

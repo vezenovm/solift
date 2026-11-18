@@ -62,10 +62,8 @@ def lent_below_a_price_of_1e36(q):
     return z3.And(lent(q), q.price <= 10**36)
 
 
-def solvent(q):
-    return q.result
-
-
+# Both theorems state `Implies(q.result, ...)`, so the check of the antecedent (theorem.py) shows that some borrower is
+# solvent under their hypotheses: a proof cannot rest on a pair that finds no borrower solvent.
 def within_twice_the_ltv(q):
     """debt * LTV_PRECISION < 2 * (maxLTV + 1) * collateral * price / 1e18, where the result is solvent"""
     value = q.collateral * q.price
@@ -75,7 +73,6 @@ def within_twice_the_ltv(q):
 @SOLVENT.theorem(
     assume=("no-revert",),
     given=lent,
-    witness=solvent,
     expect="counterexample",
     reason="the exploit of 2025-06-26: a price above 1e36 rounds the exchange rate down to 0, and at a rate of 0 one "
     "wei of collateral backs any debt",
@@ -88,7 +85,7 @@ def solvent_debt_within_twice_the_ltv(q):
     return within_twice_the_ltv(q)
 
 
-@SOLVENT.theorem(assume=("no-revert",), given=lent_below_a_price_of_1e36, witness=solvent)
+@SOLVENT.theorem(assume=("no-revert",), given=lent_below_a_price_of_1e36)
 def solvent_debt_within_twice_the_ltv_up_to_a_price_of_1e36(q):
     """up to an oracle price of 1e36, a borrower that the pair finds solvent has debt below twice (maxLTV + 1) /
     LTV_PRECISION of the collateral's value at that price"""

@@ -32,13 +32,21 @@ def test_the_quoter_theorems_give_their_results_on_the_hand_built_model(q):
     found = results(q)
     assert {i: (r.verdict, r.witness) for i, r in found.items()} == {
         "quote-at-most-gas-plus-margin": ("PROVED", "WITNESS"),
-        "quote-at-most-gas": ("COUNTEREXAMPLE", None),
+        "quote-at-most-gas": ("COUNTEREXAMPLE", "WITNESS"),
         "capped-without-a-margin": ("PROVED", "WITNESS"),
     }
     assert all(r.ok for r in found.values())
     inputs = {"_gas", "_price", "margin", "cap", "floor", "pot", "txGasPrice", "baseFee"}
     assert set(found["quote-at-most-gas"].counterexample) == inputs
     assert set(found["quote-at-most-gas-plus-margin"].witness_values) == inputs
+    assert {i: r.witness_kind for i, r in found.items()} == {
+        "quote-at-most-gas-plus-margin": "hypotheses",
+        "quote-at-most-gas": "hypotheses",
+        "capped-without-a-margin": "explicit",
+    }
+    # The counterexample shows the hypotheses, so the expected counterexample needs no check of its own.
+    (shown,) = found["quote-at-most-gas"].witness_checks
+    assert shown["from"] == "counterexample" and set(shown["values"]) == inputs
 
 
 def test_each_result_lists_what_its_theorem_assumed(q):
@@ -55,13 +63,93 @@ def test_each_result_lists_what_its_theorem_assumed(q):
     ]
 
 
-def test_a_theorem_expected_to_prove_needs_a_witness():
-    with pytest.raises(TheoremError, match="needs a witness"):
+def test_a_theorem_without_a_witness_checks_that_its_hypotheses_hold(q):
+    @theorem(given=lambda h: h._gas < 0)
+    def vacuous(q):
+        """the quote is at most the pot"""
+        return q.result <= q.pot
 
-        @theorem()
-        def no_witness(q):
-            """a statement"""
-            return q.result >= 0
+    result = prove(vacuous, q)
+    assert (result.verdict, result.witness, result.witness_kind, result.ok) == (
+        "PROVED",
+        "VACUOUS",
+        "hypotheses",
+        False,
+    )
+    assert result.detail.startswith("the hypotheses never hold.")
+    assert [c["check"] for c in result.witness_checks] == ["hypotheses"]
+
+
+def test_the_antecedent_of_each_implication_of_the_goal_must_hold_with_the_hypotheses_also_beside_a_witness(q):
+    @theorem(assume=("no-revert",))
+    def capped(q):
+        """a quote above the cap and the pot pays nothing, and a quote of no gas pays nothing"""
+        return z3.And(
+            z3.Implies(z3.And(q.result > q.cap, q.result > q.pot), q.result == 0),
+            z3.Implies(q._gas == 0, q.result == 0),
+        )
+
+    result = prove(capped, q)
+    assert (result.verdict, result.witness, result.witness_kind) == ("PROVED", "VACUOUS", "antecedent")
+    assert [(c["check"], c["verdict"]) for c in result.witness_checks] == [
+        ("antecedent 1", "VACUOUS"),
+        ("antecedent 2", "WITNESS"),
+    ]
+    assert result.detail.startswith("the antecedent of the goal's implication 1 never holds with the hypotheses")
+
+    @theorem(assume=("no-revert",), witness=lambda q: q.result > 0)
+    def witnessed(q):
+        """a quote of no gas above the pot is any value"""
+        return z3.Implies(z3.And(q._gas == 0, q.result > 0), q.result >= 0)
+
+    result = prove(witnessed, q)
+    assert (result.witness, result.witness_kind, result.ok) == ("VACUOUS", "explicit", False)
+    assert [(c["check"], c["verdict"]) for c in result.witness_checks] == [
+        ("witness", "WITNESS"),
+        ("antecedent 1", "VACUOUS"),
+    ]
+
+    @theorem(assume=("no-revert",))
+    def paying(q):
+        """a quote that pays is at most the pot"""
+        return z3.Implies(q.result > 0, q.result <= q.pot)
+
+    result = prove(paying, q)
+    assert (result.verdict, result.witness, result.witness_kind, result.ok) == ("PROVED", "WITNESS", "antecedent", True)
+    assert (
+        z3.simplify(
+            z3.substitute(q.result, *[(q.inputs[k], z3.IntVal(v)) for k, v in result.witness_values.items()])
+        ).as_long()
+        > 0
+    )
+
+
+def test_an_unknown_check_makes_the_witness_unknown_and_an_unsatisfiable_one_vacuous(q, monkeypatch):
+    marker = z3.Bool("unknowable")
+    check = solvers.check
+
+    def answers(assertions, show=None, timeout_ms=300_000):
+        if any(a.eq(marker) for a in assertions):
+            return solvers.Answer("unknown", "", 0.0)
+        return check(assertions, show, timeout_ms)
+
+    monkeypatch.setattr(solvers, "check", answers)
+
+    @theorem(witness=lambda q: marker)
+    def unsure(q):
+        """the quote is not negative"""
+        return q.result >= 0
+
+    assert (prove(unsure, q).witness, prove(unsure, q).ok) == ("UNKNOWN", False)
+
+    @theorem(witness=lambda q: marker)
+    def unsure_and_vacuous(q):
+        """a quote of no gas below zero is zero"""
+        return z3.Implies(q._gas < 0, q.result == 0)
+
+    result = prove(unsure_and_vacuous, q)
+    assert result.witness == "VACUOUS"
+    assert [c["verdict"] for c in result.witness_checks] == ["UNKNOWN", "VACUOUS"]
 
 
 def test_an_expected_counterexample_needs_an_issue_or_a_reason():
@@ -278,6 +366,8 @@ def test_a_counterexample_without_the_values_it_shows_fails(q, monkeypatch):
     result = prove(pays_nothing, q)
     assert not result.ok
     assert result.detail.startswith("the solver gave no value for _price, margin, cap, floor, pot, txGasPrice, baseFee")
+    # A counterexample without every value does not show the hypotheses: they get a check of their own.
+    assert "from" not in result.witness_checks[0]
 
 
 def test_given_indexes_an_input_as_terms_do_even_when_it_is_named_like_an_attribute():

@@ -41,11 +41,7 @@ SPEC = Spec(
 )
 
 
-def paying(q):
-    return q.result > 0
-
-
-@SPEC.theorem(assume=("no-revert", "within-lemma-domain"), witness=paying)
+@SPEC.theorem(assume=("no-revert", "within-lemma-domain"))
 def quote_at_most_gas_plus_margin(q):
     """the quote is at most the gas at tx.gasprice plus the margin"""
     return q.result * WAD <= q._gas * q.txGasPrice * q._price + q.margin * WAD
