@@ -7,8 +7,8 @@ import pytest
 import z3
 
 from examples.quoter.spec import SPEC
-from solift import forge
-from solift.cli import SpecError, entrypoint, load_specs
+from solift import cli, forge
+from solift.cli import SpecError, entrypoint, load_specs, main
 from solift.link import Harness
 from solift.run import _prepared, load, run
 from solift.workspace import Project, Workspace, WorkspaceError
@@ -74,6 +74,38 @@ def test_the_command_line_runs_a_module_and_prints_the_reads_of_a_target(tmp_pat
     assert data["complete"] and len(data["reads"]) == 6
 
 
+def test_the_root_is_the_option_else_the_specs_else_the_current_directory_and_the_profile_replaces_the_specs(
+    specs_dir, tmp_path, monkeypatch
+):
+    seen = []
+    monkeypatch.setattr(cli, "run", lambda specs, workspace, **options: seen.append(specs[0].project) or {"ok": True})
+    monkeypatch.setattr(cli, "summary", lambda record: "")
+    other = tmp_path / "other"
+    other.mkdir()
+
+    def spec(project: str) -> str:
+        link = "Link('test/A.sol:A', 'a.f()')"
+        return f"from solift import Link, Project, Spec\n\nSPEC = Spec('a', 'src/A.sol:A.f', {{}}, {link}{project})\n"
+
+    write(specs_dir, "rootless", spec(""))
+    write(specs_dir, "rooted", spec(f", Project({str(other)!r}, profile='deploy')"))
+    work = ["--workspace", str(tmp_path / "work")]
+    assert entrypoint(["run", "userspecs.rootless", *work]) == 0
+    assert entrypoint(["run", "userspecs.rooted", *work]) == 0
+    assert entrypoint(["run", "userspecs.rooted", "--root", str(specs_dir), "--profile", "ci", *work]) == 0
+    (rooted,) = load_specs("userspecs.rooted")
+    assert main(rooted, ["--profile", "ci", *work]) == 0
+    here, other = specs_dir.resolve(), other.resolve()
+    assert [(p.root, p.profile) for p in seen] == [(here, None), (other, "deploy"), (here, "ci"), (other, "ci")]
+    with pytest.raises(SystemExit):
+        entrypoint(["run", "userspecs.rootless", "--root", str(tmp_path / "missing"), *work])
+
+
+def test_a_run_of_a_project_without_a_root_is_an_error(tmp_path):
+    with pytest.raises(ValueError, match="has no root"):
+        run(dataclasses.replace(SPEC, project=Project()), Workspace(tmp_path / "work"))
+
+
 def test_reads_takes_the_overlay_entries_and_prints_a_failed_build_without_a_traceback(tmp_path, capsys):
     config = '[profile.default]\nsrc = "src"\nremappings = ["@mylib/=.deps/mylib/src/"]\n'
     (tmp_path / "foundry.toml").write_text(config)
@@ -116,21 +148,25 @@ def test_a_foundry_project_infers_its_overlay_from_the_profile(tmp_path):
     )
     for directory in ("src", "contracts", "checks", "deps", ".vendor"):
         (tmp_path / directory).mkdir()
-    default = Project.foundry(root=tmp_path).resolve()
+    default = Project(root=tmp_path).resolve()
     assert (default.link, default.copy, default.generated) == (
         ("foundry.toml", "remappings.txt", "deps", ".vendor"),
         ("src",),
         "test/solift",
     )
-    deploy = Project.foundry(root=tmp_path, profile="deploy").resolve()
+    deploy = Project(root=tmp_path, profile="deploy").resolve()
     assert deploy.link == ("foundry.toml", "remappings.txt", "deps", "src", ".vendor")
     assert (deploy.copy, deploy.generated) == (("contracts",), "checks/solift")
-    kept = Project.foundry(root=tmp_path, copy=("src", "contracts"), link=()).resolve()
+    kept = Project(root=tmp_path, copy=("src", "contracts"), link=()).resolve()
     assert (kept.link, kept.copy) == ((), ("src", "contracts"))
-    copied = Project.foundry(root=tmp_path, copy=("src", ".vendor")).resolve()
+    copied = Project(root=tmp_path, copy=("src", ".vendor")).resolve()
     assert copied.link == ("foundry.toml", "remappings.txt", "deps")
-    assert Project(root=tmp_path).resolve() == Project(root=tmp_path)
-    assert Project.foundry(root=pathlib.Path(".")).root == pathlib.Path(".").resolve()
+    explicit = Project(root=tmp_path, link=(), copy=(), generated="test/gen", add={"x.sol": tmp_path / "x.sol"})
+    assert explicit.resolve() is explicit
+    assert Project(root=tmp_path, add=explicit.add).resolve().add == explicit.add
+    assert Project(root=pathlib.Path(".")).root == pathlib.Path(".").resolve()
+    with pytest.raises(WorkspaceError, match="the project has no root"):
+        Project().resolve()
 
 
 def test_a_harness_goes_into_the_overlay_once_and_two_harnesses_at_one_place_fail(tmp_path):
@@ -158,7 +194,7 @@ def test_the_standalone_vault_example_runs_from_its_own_directory(tmp_path, monk
     monkeypatch.setattr(sys, "path", list(sys.path))
     work = tmp_path / "work"
     try:
-        assert entrypoint(["run", "vault_specs.spec", "--root", ".", "--workspace", str(work)]) == 0
+        assert entrypoint(["run", "vault_specs.spec", "--workspace", str(work)]) == 0
     finally:
         for name in [n for n in sys.modules if n.startswith("vault_specs")]:
             del sys.modules[name]
@@ -183,7 +219,7 @@ def test_a_missing_added_file_fails_the_run_with_a_record(tmp_path):
 def test_a_foundry_config_that_forge_cannot_read_is_a_build_error(tmp_path):
     (tmp_path / "foundry.toml").write_text("[profile.default\nsrc = \n")
     with pytest.raises(forge.BuildError, match="config --json"):
-        Project.foundry(root=tmp_path).resolve()
+        Project(root=tmp_path).resolve()
 
 
 def test_load_adds_a_harness_that_holds_the_target(tmp_path):

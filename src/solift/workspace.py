@@ -18,6 +18,7 @@ changed during the run.
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import os
 import pathlib
@@ -69,42 +70,34 @@ class Project:
     the project does not have to the local file that the overlay writes there. `generated` is the overlay directory for
     the generated files. It must be inside the profile's test directory, so that forge builds them.
 
-    `Project.foundry()` leaves `link`, `copy` and `generated` as None, which `resolve` infers from the project's foundry
-    configuration once the root is known. A field given as `()` stays empty."""
+    `link`, `copy` and `generated` default to None, which `resolve` infers from the project's foundry configuration once
+    the root is known: a conventional Foundry project needs none of them. A field given as `()` stays empty."""
 
     root: pathlib.Path | None = None
     profile: str | None = None
-    link: tuple[str, ...] | None = ()
-    copy: tuple[str, ...] | None = ()
+    link: tuple[str, ...] | None = None
+    copy: tuple[str, ...] | None = None
     add: dict[str, pathlib.Path] = field(default_factory=dict, hash=False)
-    generated: str | None = "test/solift"
+    generated: str | None = None
 
     def __post_init__(self):
         # The overlay links into the root, so a relative root would give links to themselves.
         if self.root is not None:
             object.__setattr__(self, "root", pathlib.Path(self.root).resolve())
 
-    @classmethod
-    def foundry(
-        cls,
-        root: pathlib.Path | None = None,
-        profile: str | None = None,
-        link: tuple[str, ...] | None = None,
-        copy: tuple[str, ...] | None = None,
-        add: dict[str, pathlib.Path] | None = None,
-        generated: str | None = None,
-    ) -> Project:
-        """A conventional Foundry project, whose fields `resolve` infers: it links foundry.toml, remappings.txt and the
-        library directories, copies the source directory, and writes the generated files to `<test>/solift`."""
-        return cls(root, profile, link, copy, add or {}, generated)
+    @property
+    def resolved(self) -> bool:
+        return self.link is not None and self.copy is not None and self.generated is not None
 
     def resolve(self) -> Project:
-        """The project with each inferred field set from `forge config --json` under its profile. `link` holds
-        foundry.toml, remappings.txt, the library directories and the top directory of each remapping's target, such as
-        `.deps` for `@lib/=.deps/lib/src/`, each that the project has and that holds no copied or generated path.
-        `copy` holds the source directory if it exists."""
-        if self.link is not None and self.copy is not None and self.generated is not None:
+        """The project with each inferred field set from `forge config --json` under its profile: it links foundry.toml,
+        remappings.txt, the library directories and the top directory of each remapping's target, such as `.deps` for
+        `@lib/=.deps/lib/src/`, each that the project has and that holds no copied or generated path; it copies the
+        source directory if it exists; and it writes the generated files to `<test>/solift`."""
+        if self.resolved:
             return self
+        if self.root is None:
+            raise WorkspaceError("the project has no root: give it with Project(root=...) or --root")
         config = forge.config(self.root, self.profile)
         src, test = str(pathlib.PurePosixPath(config["src"])), pathlib.PurePosixPath(config["test"])
         copy = self.copy if self.copy is not None else ((src,) if (self.root / src).is_dir() else ())
@@ -118,12 +111,14 @@ class Project:
                 for p in dict.fromkeys(("foundry.toml", "remappings.txt", *config["libs"], *filter(None, remapped)))
                 if (self.root / p).exists() and not any(_overlap(pathlib.PurePosixPath(p), k) for k in kept)
             )
-        return Project(root=self.root, profile=self.profile, link=link, copy=copy, add=self.add, generated=generated)
+        return dataclasses.replace(self, link=link, copy=copy, generated=generated)
 
     def overlay(self, workspace: Workspace, name: str = "root", replace: dict[str, str] | None = None) -> pathlib.Path:
         """Builds the overlay root, with `replace` (a project path to new content) applied to the copies. An entry under
         another entry would be built through it, through a link into the project, so the overlay refuses it before it
-        writes anything."""
+        writes anything. A project whose fields are not resolved yet is resolved first."""
+        if not self.resolved:
+            return self.resolve().overlay(workspace, name, replace)
         entries = [pathlib.PurePosixPath(rel) for rel in (*self.link, *self.copy)]
         for entry in entries:
             for other in entries:
@@ -169,6 +164,8 @@ class Project:
 
     def write(self, root: pathlib.Path, name: str, text: str) -> None:
         """Writes a generated file into the overlay's directory for them."""
+        if self.generated is None:
+            raise WorkspaceError("the project is not resolved, so it has no directory for the generated files")
         _write(root, root / self.generated / name, text)
 
     def guard(self, workspace: Workspace, exclude=()) -> Guard:

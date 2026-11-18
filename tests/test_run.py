@@ -597,7 +597,7 @@ def test_a_project_on_an_older_solc_links_with_its_operator_rows_and_vectors(tmp
             call="old.share(_a, _b)",
             adapters={"total": "old.set(total);"},
         ),
-        project=Project.foundry(root),
+        project=Project(root),
     )
     record = run(spec, Workspace(tmp_path / "work"))
     assert record["ok"], summary(record)

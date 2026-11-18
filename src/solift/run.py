@@ -68,13 +68,14 @@ class Spec:
     outcomes (pays, zero, reverts) that the spec asserts no input reaches: a vector that reaches one fails the run. An
     outcome that z3 proves no input reaches needs no entry; the record lists it as unreachable. `stem` names the
     generated contracts, for two targets whose contract and function names give the same names, such as `_quote` and
-    `quote` (solidity.names)."""
+    `quote` (solidity.names). `project` is a conventional Foundry project by default, whose root the command line gives
+    (workspace.Project)."""
 
     name: str
     target: str
     reads: dict[str, str]
     link: Link
-    project: Project
+    project: Project = field(default_factory=Project)
     theorems: list = field(default_factory=list)
     impossible: tuple[str, ...] = ()
     stem: str = ""
@@ -124,6 +125,7 @@ def run(
         raise ValueError("a run needs specs, and its specs share one project")
     if len({spec.name for spec in specs}) != len(specs):
         raise ValueError("two specs of the run have the same name")
+    _rooted(specs[0].project)
     engine = engine or HalmosEngine()
     project = specs[0].project
     record = {
@@ -222,7 +224,7 @@ def run(
 def _prepared(specs: list[Spec]) -> tuple[Project, list[Spec]]:
     """The specs' project with its inferred fields resolved and each `Harness` added to its overlay, and the specs on
     it with each harness named as `path:Contract`. Specs may share a harness, and two harnesses at one place fail."""
-    project = specs[0].project.resolve()
+    project = _rooted(specs[0].project).resolve()
     add, setups = dict(project.add), []
     for spec in specs:
         setup = spec.link.setup
@@ -238,6 +240,12 @@ def _prepared(specs: list[Spec]) -> tuple[Project, list[Spec]]:
         dataclasses.replace(spec, project=project, link=dataclasses.replace(spec.link, setup=setup))
         for spec, setup in zip(specs, setups, strict=True)
     ]
+
+
+def _rooted(project: Project) -> Project:
+    if project.root is None:
+        raise ValueError("the specs' project has no root: give it with Project(root=...), or run them with solift run")
+    return project
 
 
 def _link(models, shared, root, workspace, build, project, allow, engine, record) -> None:

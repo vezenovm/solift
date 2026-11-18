@@ -1,17 +1,18 @@
 """The command line.
 
-`solift run MODULE[:ATTR] [--root PATH] [--workspace PATH] [--results PATH] [--no-link] [--emit DIR]` runs the specs of
-a Python module: `ATTR` names a Spec or a list of them, and without it the module has exactly one of `SPEC` and
-`SPECS`. The module is found from the current directory, as `python -m` finds it, and imports without writing bytecode.
+`solift run MODULE[:ATTR] [--root PATH] [--profile NAME] [--workspace PATH] [--results PATH] [--no-link] [--emit DIR]`
+runs the specs of a Python module: `ATTR` names a Spec or a list of them, and without it the module has exactly one of
+`SPEC` and `SPECS`. The module is found from the current directory, as `python -m` finds it, and imports without writing
+bytecode. The project root is `--root`, else the root that the specs' project names, else the current directory.
+`--profile` builds with that foundry profile in place of the project's.
 
 `solift reads TARGET [--root PATH] [--profile NAME] [--link PATH ...] [--copy PATH ...] [--json]` builds the project and
 prints the read map that the target needs, a link skeleton, the internal calls that a read map entry can cut, and the
 writes and events that the model leaves out (discover.py). `--link` and `--copy` set the overlay's entries in place of
-the ones that `Project.foundry` infers. A build that fails prints forge's output and the overlay's entries.
+the ones that `Project` infers. A build that fails prints forge's output and the overlay's entries.
 
 A spec module can also run itself with `sys.exit(main(SPEC))` and `python -m <module>`, with the options of `run`.
-`--root` is the project root, for specs whose project lives outside their repo. The forge binary comes from
-SOLIFT_FORGE. The record is JSON (run.py).
+The forge binary comes from SOLIFT_FORGE. The record is JSON (run.py).
 """
 
 from __future__ import annotations
@@ -99,7 +100,12 @@ def load_specs(text: str) -> list[Spec]:
 
 
 def _run_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--root", type=pathlib.Path, help="the root of the foundry project that holds the targets")
+    parser.add_argument(
+        "--root",
+        type=pathlib.Path,
+        help="the root of the foundry project (default: the spec's, else the current directory)",
+    )
+    parser.add_argument("--profile", help="the foundry profile to build with (default: the spec's)")
     parser.add_argument("--workspace", type=pathlib.Path, help="the run's workspace (default: build/<spec or run>)")
     parser.add_argument("--results", type=pathlib.Path, help="where to write the record (default: in the workspace)")
     parser.add_argument("--no-link", action="store_true", help="do not run Halmos")
@@ -107,12 +113,14 @@ def _run_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _run(specs: list[Spec], args, parser: argparse.ArgumentParser) -> int:
-    if args.root is not None:
-        project = dataclasses.replace(specs[0].project, root=args.root.resolve())
-        specs = [dataclasses.replace(spec, project=project) for spec in specs]
-    root = specs[0].project.root
-    if root is None or not root.is_dir():
-        parser.error(f"the project root {root} is not a directory: pass it with --root")
+    project = specs[0].project
+    if args.root is not None or project.root is None:
+        project = dataclasses.replace(project, root=(args.root or pathlib.Path.cwd()).resolve())
+    if args.profile is not None:
+        project = dataclasses.replace(project, profile=args.profile)
+    specs = [dataclasses.replace(spec, project=project) for spec in specs]
+    if not project.root.is_dir():
+        parser.error(f"the project root {project.root} is not a directory: pass it with --root")
     name = specs[0].name if len(specs) == 1 else "run"
     workspace = Workspace(args.workspace or pathlib.Path("build") / name)
     record = run(specs, workspace, link=not args.no_link, emit=args.emit)
@@ -143,7 +151,7 @@ def _reads(args) -> int:
     root = args.root.resolve()
     link, copy = (tuple(paths) if paths else None for paths in (args.link, args.copy))
     try:
-        project = Project.foundry(root=root, profile=args.profile, link=link, copy=copy).resolve()
+        project = Project(root=root, profile=args.profile, link=link, copy=copy).resolve()
         workspace = Workspace(args.workspace)
         guard = project.guard(workspace)
         overlay = project.overlay(workspace)
