@@ -376,7 +376,7 @@ def test_max_and_a_mulDiv_rounded_down_prove_their_lemmas_and_a_signed_parameter
         project=SPEC.project,
     )
 
-    @share.theorem(assume=("no-revert", "inside"), witness=lambda q: q.result > 1)
+    @share.theorem(assume=("no-revert", "within-lemma-domain"), witness=lambda q: q.result > 1)
     def the_share_is_at_least_each_floor(q):
         """The share is at least each of the two floors."""
         return z3.And(q.result >= q._x * q._y / q._d, q.result >= q._y * q._y / q._d)

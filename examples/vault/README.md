@@ -10,6 +10,6 @@ solift reads src/Vault.sol:Vault.previewRedeem       # the read map that preview
 solift run vault_specs.spec                          # both specs: the theorems, the vectors and the Halmos link
 ```
 
-`redeem-pays-at-most-the-assets` proves without `assume=("inside",)`: its hypotheses keep the mulDiv operands below
+`redeem-pays-at-most-the-assets` proves without `assume=("within-lemma-domain",)`: its hypotheses keep the mulDiv operands below
 2**128, so the record says `lemma_domain: established`. `redeem-pays-the-exact-part` is an expected counterexample:
 the redeem rounds down.

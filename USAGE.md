@@ -148,7 +148,7 @@ Options:
 
 | Option | Meaning |
 |---|---|
-| `assume` | `"no-revert"`: the model does not revert. `"inside"`: no `mulDiv` operand reaches 2**128. |
+| `assume` | `"no-revert"`: the model does not revert (`q.reverts` is false). `"within-lemma-domain"`: no `mulDiv` operand reaches 2**128 (`q.outside_lemma_domain` is false), where the lemma is not proved. |
 | `given` | More hypotheses, as a function of `q`. |
 | `witness` | Required to prove. The hypotheses and the witness must hold together, or the theorem fails as VACUOUS. |
 | `expect="counterexample"` | Pins a known failure, with `reason=` or `issue=`. |
@@ -182,8 +182,9 @@ pin a commit: `pip install 'git+https://github.com/vezenovm/solift@<commit>'`. I
 - **The link fails**: an adapter does not set what the contract reads, or the read map misses a read.
 - **The vectors disagree**: this is a solift bug.
 - **COUNTEREXAMPLE**: the output prints every input and free variable. `show` adds locals.
-- **A note under a theorem**: it rests on `Math.mulDiv` outside the domain this build proves (add `assume=("inside",)`
-  or hypotheses that keep the operands below 2**128), or it is a theorem of the integer model of a callee.
+- **A note under a theorem**: it rests on `Math.mulDiv` outside the domain this build proves (add
+  `assume=("within-lemma-domain",)` or hypotheses that keep the operands below 2**128), or it is a theorem of the
+  integer model of a callee.
 - **"no input reaches it"** after the vectors: z3 proved that no input pays, returns zero or reverts. It is not a
   failure. `impossible=("zero",)` on the spec turns it into an assertion.
 - **VACUOUS**: the hypotheses contradict each other, or the witness cannot hold with them.

@@ -49,10 +49,10 @@ class Terms:
     min or max runs and its two operand values, for the boundary vectors.
 
     Three terms say where an operation leaves its lemma's domain. `outside` is where an operation that runs reaches the
-    table's outside, which `inside` assumes away. `lemma` is where an operation that runs reaches it or takes an operand
-    out of the uint256 range, which an operand after a revert on its path can be: the obligation of a theorem that
-    reads the result. `anywhere` is the same whether or not the operation runs: a local's value is a term also where its
-    statement does not run, so a theorem that reads a local rests on the lemma there too."""
+    table's outside, which `within-lemma-domain` assumes away. `lemma` is where an operation that runs reaches it or
+    takes an operand out of the uint256 range, which an operand after a revert on its path can be: the obligation of a
+    theorem that reads the result. `anywhere` is the same whether or not the operation runs: a local's value is a term
+    also where its statement does not run, so a theorem that reads a local rests on the lemma there too."""
 
     value: z3.ExprRef | tuple
     reverts: z3.BoolRef

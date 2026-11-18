@@ -74,7 +74,7 @@ SPEC = Spec(
 )
 
 
-@SPEC.theorem(assume=("no-revert", "inside"), witness=lambda q: q.result > 0)
+@SPEC.theorem(assume=("no-revert", "within-lemma-domain"), witness=lambda q: q.result > 0)
 def redeem_rounds_down(q):
     """a redeem pays at most the shares' exact part of the assets, shares * (held + 1) / (supply + 1)"""
     return q.result * (q.supply + 1) <= q._shares * (q.held + 1)
