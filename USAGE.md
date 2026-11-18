@@ -135,14 +135,18 @@ def redeem_at_most_the_assets(q):
 
 The docstring is the statement. A theorem returns a z3 condition on `q`, which has:
 
-- `result` and `reverts`; for a function of several returns, `result` is a tuple (`q.result[1]`);
+- `result`, `reverts` and `outside_lemma_domain`; for a function of several returns, `result` is a tuple
+  (`q.result[1]`);
 - `post`, each output by name (`q.post.remaining`): the value written, or passed to the external call;
 - each input, parameter and local, by name. A parameter that the function assigns is its value at the call, and
   `locals[name]` is its value at the return;
 - `free(name, kind)`, a variable that the theorem quantifies over: an unbounded integer by default, or `"bool"`,
   `"address"` or an unsigned type such as `"uint256"`, whose range the theorem then assumes;
-- `call(function, *args)`, with `.value` and `.reverts`;
-- `at(**inputs)`, which fixes inputs.
+- `call(function, *args)`, a run of a function that the target calls, on the given arguments: `.result`, `.reverts`
+  and `.outside_lemma_domain`;
+- `at(**inputs)`, the same interface with those inputs replaced by the given terms or numbers, as for one
+  configuration: `q.at(price=10**18).result`, `q.at(price=10**18).price`. A helper written for `q`, such as a `given`
+  or a part of a goal, takes it too.
 
 Options:
 

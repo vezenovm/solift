@@ -240,7 +240,7 @@ def test_load_adds_a_harness_that_holds_the_target(tmp_path):
         SPEC, name="doubler", target=f"{at}:Doubler.twice", reads={}, harness=doubler, theorems=[]
     )
     (q,) = load([spec], Workspace(tmp_path / "work")).values()
-    assert z3.simplify(q.at(_x=21).value).as_long() == 42
+    assert z3.simplify(q.at(_x=21).result).as_long() == 42
 
 
 def test_reads_takes_a_target_in_a_library_that_no_source_imports(tmp_path, capsys):
