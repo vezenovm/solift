@@ -4,7 +4,7 @@ import z3
 from examples.quoter.spec import SPEC
 from solift import ops, solvers
 from solift.ir import UINT256, Assign, Call, Const, Function, If, Let, Model, Return, Var
-from solift.theorem import Terms, TheoremError, prove, theorem
+from solift.theorem import Terms, TheoremError, prove, query_sha256, theorem
 from tests.models import quote
 
 
@@ -53,6 +53,22 @@ def test_each_result_lists_what_its_theorem_assumed(q):
         "the model does not revert",
         "no_margin_no_floor: no margin and no floor",
     ]
+
+
+def test_the_query_sha256_does_not_depend_on_the_terms_made_before_the_query():
+    def query(made_before: int) -> z3.Solver:
+        ctx = z3.Context()
+        kept = [z3.Int(f"before{i}", ctx) + i for i in range(made_before)]
+        x, y = z3.Int("x", ctx), z3.Int("y", ctx)
+        shared = (x + 1) * y
+        solver = z3.Solver(ctx=ctx)
+        solver.add(shared >= x + 1, z3.Not(shared * shared > shared + y))
+        assert len(kept) == made_before
+        return solver
+
+    first, later = query(0), query(40)
+    assert first.to_smt2() != later.to_smt2()  # z3 names the shared terms after their ids
+    assert query_sha256(first) == query_sha256(later)
 
 
 def test_a_theorem_expected_to_prove_needs_a_witness():
